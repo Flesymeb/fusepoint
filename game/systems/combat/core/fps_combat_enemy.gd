@@ -38,6 +38,9 @@ enum Difficulty { EASY, MEDIUM, HARD }
 @export_range(0.0, 3.0, 0.05) var target_height := 1.15
 @export_range(1.0, 90.0, 1.0) var fire_facing_tolerance_degrees := 10.0
 @export_flags_3d_physics var sight_collision_mask := 0xFFFFFFFF
+@export_range(0.5, 5.0, 0.1) var targetless_patrol_radius := 2.8
+@export_range(0.5, 5.0, 0.1) var targetless_scan_seconds := 1.2
+@export_range(1.0, 5.0, 0.1) var targetless_watchdog_seconds := 4.0
 
 @export_group("Tactical response")
 @export var difficulty: Difficulty = Difficulty.MEDIUM
@@ -134,12 +137,22 @@ var _last_reposition_reason: StringName = &"none"
 var _attack_attempts_on_current_target := 0
 var _squad_alert_count := 0
 var _last_alert_source_path := ""
+var _targetless_destination := Vector3.ZERO
+var _has_targetless_destination := false
+var _targetless_action_remaining := 0.0
+var _targetless_watchdog_remaining := 0.0
+var _targetless_action: StringName = &"spawn_scan"
+var _targetless_action_serial := 0
+var _scan_direction := 1.0
 
 
 func _ready() -> void:
 	_apply_difficulty_profile()
 	_rng.seed = tactical_random_seed if tactical_random_seed != 0 else hash("%s:%s" % [name, String(get_path())])
 	_reposition_decision_remaining = _rng.randf_range(0.4, reposition_interval_seconds)
+	_targetless_action_remaining = _rng.randf_range(0.15, 0.65)
+	_targetless_watchdog_remaining = targetless_watchdog_seconds
+	_scan_direction = -1.0 if _rng.randf() < 0.5 else 1.0
 	_health = get_node_or_null(health_path) as FPSHealth
 	_navigation_agent = get_node_or_null(navigation_agent_path) as NavigationAgent3D
 	_collision_shape = get_node_or_null(collision_shape_path) as CollisionShape3D
@@ -289,6 +302,13 @@ func set_target(next_target: Node3D) -> void:
 		_set_ai_state(AIState.IDLE)
 
 
+func acquire_candidate_if_visible(candidate: Node3D) -> bool:
+	if candidate == null or not is_instance_valid(candidate) or not _can_detect_candidate(candidate):
+		return false
+	set_target(candidate)
+	return true
+
+
 func force_attack_if_ready() -> Dictionary:
 	if target == null or _reaction_remaining > 0.0 or _attack_remaining > 0.0 or _reload_remaining > 0.0:
 		return {"applied": false, "reason": "not_ready"}
@@ -382,6 +402,10 @@ func snapshot() -> Dictionary:
 		"attack_attempts_on_current_target": _attack_attempts_on_current_target,
 		"squad_alert_count": _squad_alert_count,
 		"last_alert_source_path": _last_alert_source_path,
+		"targetless_action": _targetless_action,
+		"targetless_route_target": _targetless_destination if _has_targetless_destination else _home_position,
+		"targetless_watchdog_remaining": _targetless_watchdog_remaining,
+		"targetless_action_serial": _targetless_action_serial,
 	}
 
 
@@ -894,20 +918,58 @@ func _restore_navigation_arrival_distance() -> void:
 
 
 func _search_or_return_home(delta: float) -> void:
-	var destination := _home_position if _has_home_position else global_position
-	var distance := global_position.distance_to(destination)
 	if _last_seen_target_remaining > 0.0 and _has_last_seen_target_position:
 		_set_ai_state(AIState.SEARCH)
 		_chase_or_search(delta, false)
 		return
-	if distance > home_return_distance:
-		_set_ai_state(AIState.SEARCH)
-		_chase_or_search(delta, false)
-		return
+	_process_targetless_behavior(delta)
+
+
+func _process_targetless_behavior(delta: float) -> void:
+	_targetless_action_remaining = maxf(0.0, _targetless_action_remaining - delta)
+	_targetless_watchdog_remaining = maxf(0.0, _targetless_watchdog_remaining - delta)
+	if _targetless_watchdog_remaining <= 0.0:
+		_has_targetless_destination = false
+		_targetless_action_remaining = 0.0
+		_targetless_action = &"watchdog_replan"
+	if not _has_targetless_destination and _targetless_action_remaining <= 0.0:
+		_select_targetless_patrol_destination()
+	if _has_targetless_destination:
+		var horizontal := _targetless_destination - global_position
+		horizontal.y = 0.0
+		if horizontal.length() > home_return_distance * 0.55:
+			_set_ai_state(AIState.SEARCH)
+			_move_to_tactical_destination(_targetless_destination, delta, &"walk", home_return_distance * 0.45)
+			_targetless_action = &"patrol"
+			return
+		_has_targetless_destination = false
+		_targetless_action = &"scan"
+		_targetless_action_remaining = targetless_scan_seconds
+		_targetless_watchdog_remaining = targetless_watchdog_seconds
 	velocity.x = 0.0
 	velocity.z = 0.0
-	_set_ai_state(AIState.IDLE)
+	rotation.y += _scan_direction * rotation_speed * 0.18 * delta
+	_set_ai_state(AIState.SEARCH)
 	_drive_locomotion_presentation(&"idle")
+
+
+func _select_targetless_patrol_destination() -> void:
+	_targetless_action_serial += 1
+	var angle := float(_targetless_action_serial) * 2.399963 + _rng.randf_range(-0.3, 0.3)
+	var radius := targetless_patrol_radius * _rng.randf_range(0.72, 1.0)
+	var candidate := _home_position + Vector3(cos(angle) * radius, 0.0, sin(angle) * radius)
+	if _navigation_agent != null:
+		var navigation_map := _navigation_agent.get_navigation_map()
+		if navigation_map.is_valid() and NavigationServer3D.map_get_iteration_id(navigation_map) > 0:
+			var projected := NavigationServer3D.map_get_closest_point(navigation_map, candidate)
+			if projected.distance_to(candidate) <= max_navigation_projection_distance:
+				candidate = projected
+	_targetless_destination = candidate
+	_has_targetless_destination = true
+	_targetless_action = &"patrol_planned"
+	_targetless_action_remaining = targetless_scan_seconds
+	_targetless_watchdog_remaining = targetless_watchdog_seconds
+	_scan_direction *= -1.0
 
 
 func remember_target_position(position: Vector3) -> void:

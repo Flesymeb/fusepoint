@@ -146,14 +146,9 @@ func _instantiate_roster() -> void:
 		agent.configure_roster_entry(entry, player)
 		var objective := _objective_for(StringName(entry["region"]))
 		var requested: Vector3 = objective.global_position - Vector3.UP * 1.2 + (entry["offset"] as Vector3)
-		var projected: Vector3 = NavigationServer3D.map_get_closest_point(nav_map, requested)
-		var used_fallback := projected.distance_to(requested) > 4.0
-		for placed in placed_positions:
-			if projected.distance_to(placed) < 1.2:
-				used_fallback = true
-				break
-		if used_fallback:
-			projected = requested
+		var primary_projection: Vector3 = NavigationServer3D.map_get_closest_point(nav_map, requested)
+		var projected := _select_distinct_navigation_slot(nav_map, requested, primary_projection, placed_positions)
+		var used_separation_fallback := not projected.is_equal_approx(primary_projection)
 		placed_positions.append(projected)
 		agent.global_position = projected + Vector3.UP * 0.04
 		agent.look_at(objective.global_position, Vector3.UP)
@@ -166,8 +161,40 @@ func _instantiate_roster() -> void:
 			"requested": requested,
 			"projected": projected,
 			"projection_distance": requested.distance_to(projected),
-			"fallback_to_authored_slot": used_fallback,
+			"navigation_slot_bound": true,
+			"separation_fallback": used_separation_fallback,
 		})
+
+
+func _select_distinct_navigation_slot(
+	nav_map: RID,
+	requested: Vector3,
+	primary: Vector3,
+	placed_positions: Array[Vector3],
+) -> Vector3:
+	if _is_separated_slot(primary, placed_positions):
+		return primary
+	var best := primary
+	var best_score := INF
+	for radius: float in [1.5, 2.25, 3.0, 4.0]:
+		for step: int in 8:
+			var angle := TAU * float(step) / 8.0
+			var sample := requested + Vector3(cos(angle) * radius, 0.0, sin(angle) * radius)
+			var projected := NavigationServer3D.map_get_closest_point(nav_map, sample)
+			if projected.distance_to(sample) > 2.0 or not _is_separated_slot(projected, placed_positions):
+				continue
+			var score := requested.distance_to(projected)
+			if score < best_score:
+				best = projected
+				best_score = score
+	return best
+
+
+func _is_separated_slot(candidate: Vector3, placed_positions: Array[Vector3]) -> bool:
+	for placed: Vector3 in placed_positions:
+		if candidate.distance_to(placed) < 1.4:
+			return false
+	return true
 
 
 func _update_region_activation() -> void:

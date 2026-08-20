@@ -50,6 +50,11 @@ var _last_result_until := 0.0
 var _inspect_tween: Tween
 var _ready_for_combat := false
 var gameplay_input_enabled := true
+var _fire_action_down := false
+var _active_fire_source := &"none"
+var _input_edge_serial := 0
+var _last_input_receipt: Dictionary = {}
+var _input_history: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -67,18 +72,27 @@ func _ready() -> void:
 func _finish_ready() -> void:
 	await get_tree().process_frame
 	_ready_for_combat = true
+	_fire_action_down = Input.is_action_pressed(&"fire")
 	_sync_hud()
 	weapon_state_changed.emit(_mcp_state())
+
+
+func _input(event: InputEvent) -> void:
+	# Gameplay fire is consumed before GUI and unhandled-input routing. Polling in
+	# _process mirrors the same latch so analog actions and injected InputMap
+	# actions cannot be starved, while this raw path preserves an immediate edge.
+	if not _ready_for_combat or not gameplay_input_enabled:
+		return
+	if event.is_action_pressed(&"fire"):
+		_consume_fire_edge(true, _input_source_for(event))
+	elif event.is_action_released(&"fire"):
+		_consume_fire_edge(false, _input_source_for(event))
 
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not _ready_for_combat or not gameplay_input_enabled:
 		return
-	if event.is_action_pressed(&"fire"):
-		_begin_fire()
-	elif event.is_action_released(&"fire"):
-		_end_fire()
-	elif event.is_action_pressed(&"ads"):
+	if event.is_action_pressed(&"ads"):
 		_set_ads(true)
 	elif event.is_action_released(&"ads"):
 		_set_ads(false)
@@ -102,6 +116,7 @@ func _process(_delta: float) -> void:
 	if not gameplay_input_enabled:
 		_sync_hud()
 		return
+	_poll_fire_action()
 	var now := _now()
 	if _trigger_held and _current_weapon()["fire_mode"] == FIRE_MODE_AUTO and now >= _next_shot_time:
 		_try_submit_shot()
@@ -122,37 +137,71 @@ func _process(_delta: float) -> void:
 	_sync_hud()
 
 
-func _begin_fire() -> void:
+func _poll_fire_action() -> void:
+	var pressed := Input.is_action_pressed(&"fire")
+	if pressed != _fire_action_down:
+		_consume_fire_edge(pressed, _polled_fire_source())
+
+
+func _consume_fire_edge(pressed: bool, source: StringName) -> void:
+	if pressed == _fire_action_down:
+		return
+	_fire_action_down = pressed
+	if pressed:
+		_begin_fire(source)
+	else:
+		_end_fire(source)
+
+
+func _begin_fire(source := &"action_poll") -> void:
+	var magazine_before := int(_current_weapon()["magazine"])
 	if not _can_fire():
+		_record_input_edge(source, &"press", false, _fire_rejection_reason(), "", magazine_before, magazine_before)
 		return
 	_trigger_held = true
-	_try_submit_shot()
+	_active_fire_source = source
+	var receipt := _try_submit_shot()
 	_next_shot_time = _now() + _fire_interval()
 	if _current_weapon()["fire_mode"] == FIRE_MODE_SEMI:
 		_trigger_held = false
+	var magazine_after := int(_current_weapon()["magazine"])
+	_record_input_edge(
+		source,
+		&"press",
+		not receipt.is_empty(),
+		"accepted" if not receipt.is_empty() else "dry_fire",
+		String(receipt.get("shot_id", "")),
+		magazine_before,
+		magazine_after,
+	)
 
 
-func _end_fire() -> void:
+func _end_fire(source := &"action_poll", cancellation_reason := "release") -> void:
+	var was_held := _trigger_held
 	_trigger_held = false
 	if feedback.has_method(&"end_fire"):
 		feedback.call(&"end_fire")
+	if cancellation_reason == "release":
+		var magazine := int(_current_weapon()["magazine"])
+		_record_input_edge(source, &"release", was_held or _fire_action_down == false, "released", "", magazine, magazine)
+	_active_fire_source = &"none"
 
 
 func _can_fire() -> bool:
 	return _pending_equipped_id.is_empty() and _action_state in READY_STATES
 
 
-func _try_submit_shot() -> void:
+func _try_submit_shot() -> Dictionary:
 	if not _can_fire():
-		return
+		return {}
 	var weapon := _current_weapon()
 	if int(weapon["magazine"]) <= 0:
 		_present_dry_fire()
-		return
+		return {}
 	_shot_serial += 1
 	var shot_id := "%s-%06d" % [String(_equipped_id), _shot_serial]
 	if _shot_commits.has(shot_id):
-		return
+		return {}
 	_shot_commits[shot_id] = true
 	weapon["magazine"] = int(weapon["magazine"]) - 1
 	_weapons[_equipped_id] = weapon
@@ -169,6 +218,7 @@ func _try_submit_shot() -> void:
 	_present_shot_result(receipt)
 	shot_resolved.emit(receipt.duplicate(true))
 	weapon_state_changed.emit(_mcp_state())
+	return receipt
 
 
 func _resolve_ballistics(shot_id: String, weapon: Dictionary) -> Dictionary:
@@ -229,6 +279,7 @@ func _resolve_ballistics(shot_id: String, weapon: Dictionary) -> Dictionary:
 		"damage_commit": damage_committed,
 		"ammo_commit": 1,
 		"presentation_commit": 1,
+		"input_source": _active_fire_source,
 	}
 
 
@@ -246,7 +297,7 @@ func _muzzle_origin() -> Vector3:
 
 
 func _present_dry_fire() -> void:
-	_end_fire()
+	_cancel_held_fire("dry_fire")
 	_action_state = &"dry_fire"
 	_action_until = _now() + 0.22
 	_recovery_until = _action_until
@@ -358,7 +409,7 @@ func _finish_inspect() -> void:
 
 
 func _cancel_action(next_state: StringName) -> void:
-	_end_fire()
+	_cancel_held_fire(String(next_state))
 	_reload_kind = &"none"
 	if _inspect_tween != null and _inspect_tween.is_valid():
 		_inspect_tween.kill()
@@ -413,9 +464,15 @@ func _current_weapon() -> Dictionary:
 func set_gameplay_input_enabled(enabled: bool) -> void:
 	gameplay_input_enabled = enabled
 	if not enabled:
-		_trigger_held = false
+		_cancel_held_fire("gameplay_disabled")
 		_ads_held = false
 		_cancel_action(&"idle")
+	elif _action_state == &"idle":
+		_action_state = &"hip"
+		viewmodel.call(&"set_aiming", false, true)
+	# Latch the physical level on every handoff. A trigger held across a page,
+	# pause, death, or restore must be released before it can create a new edge.
+	_fire_action_down = Input.is_action_pressed(&"fire")
 
 
 func equip_loadout(weapon_id: StringName) -> bool:
@@ -642,6 +699,68 @@ func _now() -> float:
 	return Time.get_ticks_msec() / 1000.0
 
 
+func _input_source_for(event: InputEvent) -> StringName:
+	if event is InputEventMouseButton:
+		return &"mouse_left"
+	if event is InputEventJoypadMotion:
+		return &"gamepad_trigger"
+	if event is InputEventJoypadButton:
+		return &"gamepad_button"
+	return &"mapped_action"
+
+
+func _polled_fire_source() -> StringName:
+	return &"gamepad_trigger" if Input.get_action_strength(&"fire") > 0.3 and not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) else &"mouse_left"
+
+
+func _fire_rejection_reason() -> String:
+	if not gameplay_input_enabled:
+		return "gameplay_disabled"
+	if not _pending_equipped_id.is_empty():
+		return "weapon_switch"
+	return "action_%s" % String(_action_state)
+
+
+func _cancel_held_fire(reason: String) -> void:
+	if not _trigger_held and _active_fire_source == &"none":
+		return
+	var magazine := int(_current_weapon()["magazine"])
+	_record_input_edge(_active_fire_source, &"cancel", false, "cancelled", "", magazine, magazine, reason)
+	_trigger_held = false
+	_active_fire_source = &"none"
+	if feedback.has_method(&"end_fire"):
+		feedback.call(&"end_fire")
+
+
+func _record_input_edge(
+	source: StringName,
+	edge: StringName,
+	accepted: bool,
+	reason: String,
+	shot_id: String,
+	magazine_before: int,
+	magazine_after: int,
+	cancellation_reason := "",
+) -> void:
+	_input_edge_serial += 1
+	_last_input_receipt = {
+		"edge_id": "fire-input-%06d" % _input_edge_serial,
+		"source": source,
+		"edge": edge,
+		"shell_gameplay_enabled": gameplay_input_enabled,
+		"accepted": accepted,
+		"reason": reason,
+		"shot_id": shot_id,
+		"magazine_before": magazine_before,
+		"magazine_after": magazine_after,
+		"cancellation_reason": cancellation_reason,
+		"timestamp_seconds": _now(),
+	}
+	_input_history.append(_last_input_receipt.duplicate(true))
+	while _input_history.size() > 32:
+		_input_history.pop_front()
+
+
 func _mcp_state() -> Dictionary:
 	var weapon := _current_weapon()
 	var audit := _visible_rig_audit()
@@ -658,6 +777,10 @@ func _mcp_state() -> Dictionary:
 		"ak74m_state": _weapons[&"ak74m"],
 		"saiga12_state": _weapons[&"saiga12"],
 		"trigger_held": _trigger_held,
+		"fire_action_down": _fire_action_down,
+		"active_fire_source": _active_fire_source,
+		"last_input_receipt": _last_input_receipt,
+		"input_history": _input_history,
 		"shot_count": _shot_serial,
 		"unique_commit_count": _shot_commits.size(),
 		"last_shot": _last_shot,

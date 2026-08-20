@@ -19,6 +19,7 @@ var _presentation_actor: EnemyHumanoidActor
 var _cleanup_remaining := 0.0
 var _event_sequence := 0
 var _last_enemy_event: Dictionary = {}
+var _mission_target: Node3D
 
 
 func _ready() -> void:
@@ -44,7 +45,7 @@ func _physics_process(delta: float) -> void:
 			cleanup_hidden = true
 
 
-func configure_roster_entry(entry: Dictionary, _target_node: Node3D) -> void:
+func configure_roster_entry(entry: Dictionary, target_node: Node3D) -> void:
 	stable_id = StringName(entry["id"])
 	region_id = StringName(entry["region"])
 	tactical_role = StringName(entry["role"])
@@ -54,6 +55,13 @@ func configure_roster_entry(entry: Dictionary, _target_node: Node3D) -> void:
 	tactical_random_seed = 17041 + roster_index * 131
 	difficulty = int(entry.get("difficulty", Difficulty.MEDIUM))
 	target_group = &"player"
+	_mission_target = target_node
+	# Preserve a readable squad contact window instead of allowing every actor
+	# activated in the same region to resolve its first shot on the same tick.
+	# The stable roster index makes the telegraph deterministic across restarts.
+	reaction_delay += float(roster_index % 5) * 0.35
+	attack_interval *= 1.25
+	attack_damage *= 0.375
 	if tactical_role in [&"defender", &"sentry"]:
 		attack_range = 30.0
 		walk_distance = 16.0
@@ -71,6 +79,7 @@ func set_mission_active(active: bool, sequence := 0) -> void:
 	if active:
 		activation_sequence = sequence
 		_ensure_presentation()
+		acquire_candidate_if_visible(_mission_target)
 	_apply_activation_state()
 	_commit_enemy_event(&"activated" if active else &"deactivated", {
 		"activation_sequence": activation_sequence,
@@ -141,6 +150,12 @@ func authoritative_snapshot() -> Dictionary:
 		"velocity": velocity,
 		"action": combat.get("state", "idle"),
 		"target": combat.get("target", ""),
+		"mission_target": String(_mission_target.get_path()) if _mission_target != null and _mission_target.is_inside_tree() else "",
+		"target_visible": combat.get("target_visible", false),
+		"fire_block_reason": combat.get("fire_block_reason", "unknown"),
+		"route_target": combat.get("targetless_route_target", global_position),
+		"targetless_action": combat.get("targetless_action", &"none"),
+		"targetless_watchdog_remaining": combat.get("targetless_watchdog_remaining", 0.0),
 		"navigation_velocity": combat.get("navigation_safe_velocity", Vector3.ZERO),
 		"avoidance_enabled": _navigation_agent != null and _navigation_agent.avoidance_enabled,
 		"ammo": combat.get("rounds_remaining", 0),

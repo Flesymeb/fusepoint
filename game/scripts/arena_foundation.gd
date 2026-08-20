@@ -143,10 +143,15 @@ func _bind_product_anchors() -> bool:
 	var projected := {}
 	for id in hints:
 		projected[id] = NavigationServer3D.map_get_closest_point(nav_map, hints[id])
-	var edges := {
+	var raw_edges := {
 		"spawn_to_a": NavigationServer3D.map_get_path(nav_map, projected["spawn"], projected["alpha"], true),
 		"a_to_b": NavigationServer3D.map_get_path(nav_map, projected["alpha"], projected["bravo"], true),
 		"b_to_c": NavigationServer3D.map_get_path(nav_map, projected["bravo"], projected["charlie"], true),
+	}
+	var edges := {
+		"spawn_to_a": _build_capsule_clear_route(raw_edges["spawn_to_a"], player, nav_map),
+		"a_to_b": _build_capsule_clear_route(raw_edges["a_to_b"], player, nav_map),
+		"b_to_c": _build_capsule_clear_route(raw_edges["b_to_c"], player, nav_map),
 	}
 	route_corner_chains = {
 		&"spawn_to_a": edges["spawn_to_a"],
@@ -199,31 +204,72 @@ func _first_meaningful_corner(path: PackedVector3Array, origin: Vector3) -> Vect
 	return path[path.size() - 1] if not path.is_empty() else origin
 
 
-func _validate_route_clearance(player: CharacterBody3D) -> Dictionary:
-	var report := {}
+func _build_capsule_clear_route(path: PackedVector3Array, player: CharacterBody3D, nav_map: RID) -> PackedVector3Array:
+	if path.size() < 2:
+		return path
+	var repaired := PackedVector3Array([path[0]])
+	for index in range(1, path.size()):
+		var from := repaired[repaired.size() - 1]
+		var destination := path[index]
+		if _route_segment_safe_fraction(from, destination, player) >= 0.985:
+			repaired.append(destination)
+			continue
+		var direction := destination - from
+		direction.y = 0.0
+		if direction.length_squared() <= 0.001:
+			repaired.append(destination)
+			continue
+		var side := Vector3(-direction.z, 0.0, direction.x).normalized()
+		var midpoint := from.lerp(destination, 0.5)
+		var best_detour := Vector3.INF
+		var best_length := INF
+		for distance: float in [0.8, 1.2, 1.6, 2.0, 2.6]:
+			for sign_value: float in [-1.0, 1.0]:
+				var raw_detour: Vector3 = midpoint + side * distance * sign_value
+				var detour: Vector3 = NavigationServer3D.map_get_closest_point(nav_map, raw_detour)
+				if detour.distance_to(raw_detour) > 1.0:
+					continue
+				if _route_segment_safe_fraction(from, detour, player) < 0.985:
+					continue
+				if _route_segment_safe_fraction(detour, destination, player) < 0.985:
+					continue
+				var length: float = from.distance_to(detour) + detour.distance_to(destination)
+				if length < best_length:
+					best_length = length
+					best_detour = detour
+		if best_detour != Vector3.INF:
+			repaired.append(best_detour)
+		repaired.append(destination)
+	return repaired
+
+
+func _route_segment_safe_fraction(from: Vector3, to: Vector3, player: CharacterBody3D) -> float:
 	var capsule := CapsuleShape3D.new()
-	# Keep the cast just clear of the supporting street surface while preserving
-	# the authored player's practical radius and standing clearance.
 	capsule.radius = 0.39
 	capsule.height = 1.72
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = capsule
+	query.transform = Transform3D(Basis.IDENTITY, from + Vector3.UP * 0.9)
+	query.motion = to - from
+	query.margin = 0.01
+	query.collision_mask = player.collision_mask if player != null else 1
+	query.collide_with_areas = false
+	query.collide_with_bodies = true
+	if player != null:
+		query.exclude = [player.get_rid()]
+	var cast := get_world_3d().direct_space_state.cast_motion(query)
+	return float(cast[0]) if cast.size() >= 1 else 0.0
+
+
+func _validate_route_clearance(player: CharacterBody3D) -> Dictionary:
+	var report := {}
 	for leg_id in route_corner_chains:
 		var path: PackedVector3Array = route_corner_chains[leg_id]
 		var blocked_segments: Array[Dictionary] = []
 		for index in range(1, path.size()):
 			var from := path[index - 1] + Vector3.UP * 0.9
 			var to := path[index] + Vector3.UP * 0.9
-			var query := PhysicsShapeQueryParameters3D.new()
-			query.shape = capsule
-			query.transform = Transform3D(Basis.IDENTITY, from)
-			query.motion = to - from
-			query.margin = 0.01
-			query.collision_mask = player.collision_mask if player != null else 1
-			query.collide_with_areas = false
-			query.collide_with_bodies = true
-			if player != null:
-				query.exclude = [player.get_rid()]
-			var cast := get_world_3d().direct_space_state.cast_motion(query)
-			var safe_fraction := float(cast[0]) if cast.size() >= 1 else 0.0
+			var safe_fraction := _route_segment_safe_fraction(path[index - 1], path[index], player)
 			if safe_fraction < 0.985:
 				blocked_segments.append({
 					"segment": index - 1,
