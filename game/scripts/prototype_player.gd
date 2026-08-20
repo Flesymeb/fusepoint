@@ -20,6 +20,7 @@ signal spawn_reset
 @export_group("Camera")
 @export var mouse_sensitivity := 0.0022
 @export_range(30.0, 89.0, 1.0) var pitch_limit_degrees := 82.0
+@export var stance_camera_speed := 3.2
 
 @onready var collision_shape: CollisionShape3D = $CollisionShape3D
 @onready var head: Node3D = $Head
@@ -82,6 +83,7 @@ func _physics_process(delta: float) -> void:
 
 	var was_on_floor := is_on_floor()
 	_update_stance()
+	_update_camera_height(delta)
 
 	var input_vector := Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 	var desired_direction := transform.basis * Vector3(input_vector.x, 0.0, input_vector.y)
@@ -124,7 +126,7 @@ func _update_stance() -> void:
 	if Input.is_action_pressed("crouch"):
 		if _stance != "crouched":
 			_set_stance(true)
-		_stand_clearance = false
+		_stand_clearance = _can_stand()
 		return
 
 	_stand_clearance = _can_stand()
@@ -138,12 +140,20 @@ func _set_stance(crouched: bool) -> void:
 		_stance = "crouched"
 		capsule.height = crouching_height
 		collision_shape.position.y = -(standing_height - crouching_height) * 0.5
-		head.position.y = crouching_eye_height
 	else:
 		_stance = "standing"
 		capsule.height = standing_height
 		collision_shape.position.y = 0.0
-		head.position.y = standing_eye_height
+
+
+func _update_camera_height(delta: float) -> void:
+	var target_height := crouching_eye_height if _stance == "crouched" else standing_eye_height
+	head.position.y = move_toward(head.position.y, target_height, stance_camera_speed * delta)
+
+
+func _camera_height_above_feet() -> float:
+	var capsule := collision_shape.shape as CapsuleShape3D
+	return head.position.y - collision_shape.position.y + capsule.height * 0.5
 
 
 func _can_stand() -> bool:
@@ -184,6 +194,8 @@ func _update_authoritative_state(was_on_floor: bool, input_vector: Vector2, spri
 		_locomotion_mode = "idle"
 	elif sprinting:
 		_locomotion_mode = "sprint"
+	elif absf(input_vector.x) > absf(input_vector.y):
+		_locomotion_mode = "strafe"
 	else:
 		_locomotion_mode = "walk"
 
@@ -210,6 +222,7 @@ func _reset_to_spawn() -> void:
 	_current_target_speed = 0.0
 	_stand_clearance = true
 	_set_stance(false)
+	head.position.y = standing_eye_height
 	_capture_mouse()
 	spawn_reset.emit()
 
@@ -224,7 +237,8 @@ func _mcp_state() -> Dictionary:
 		"on_floor": is_on_floor(),
 		"camera_current": camera.current,
 		"camera_forward": -camera.global_transform.basis.z,
-		"camera_height": head.position.y,
+		"camera_height": _camera_height_above_feet(),
+		"camera_fov": camera.fov,
 		"collision_height": (collision_shape.shape as CapsuleShape3D).height,
 		"spawn_position": _spawn_transform.origin,
 		"pitch_limit_degrees": pitch_limit_degrees,

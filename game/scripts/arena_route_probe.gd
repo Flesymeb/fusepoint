@@ -76,11 +76,17 @@ func _physics_process(delta: float) -> void:
 
 func _append_sample(player: CharacterBody3D, horizontal_speed: float) -> void:
 	var alpha := get_node_or_null(alpha_path) as Area3D
+	var player_state: Dictionary = player.call("_mcp_state")
 	route_samples.append({
 		"effective_seconds": snappedf(effective_traversal_seconds, 0.01),
 		"position": player.global_position,
 		"grounded": player.is_on_floor(),
 		"horizontal_speed": snappedf(horizontal_speed, 0.01),
+		"locomotion_mode": player_state.get("locomotion_mode", "unknown"),
+		"stance": player_state.get("stance", "unknown"),
+		"jump_phase": player_state.get("jump_phase", "unknown"),
+		"camera_height": player_state.get("camera_height", -1.0),
+		"camera_fov": player_state.get("camera_fov", -1.0),
 		"distance_to_alpha": player.global_position.distance_to(alpha.global_position) if alpha != null else -1.0,
 	})
 	while route_samples.size() > MAX_SAMPLES:
