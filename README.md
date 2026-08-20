@@ -45,9 +45,9 @@ Tester owns formal closure; Developer may only fix or flag issues.
 | Field | Value |
 | --- | --- |
 | Status | PLANNED |
-| Focus | phase / locomotion_blockout |
-| Objective | Close the Alpha objective-trace gap by binding the existing placeholder volume to a minimal authoritative enter/leave state owner whose diagnostics agree with ordinary player movement, while preserving the verified locomotion controller, bounded blockout room, restart behavior, and clean boot without importing later-phase map, combat, HUD, or production assets. |
-| Strategy | `bind_authoritative_alpha_volume` |
+| Focus | phase / arena_foundation |
+| Objective | Replace the placeholder room with exactly one intact authored daylight FPS environment, grounded through one product-owned wrapper at credible human scale, and prove a safe 30–45 second collision-backed spawn-to-Alpha traversal. Rebind Alpha on the authored walkable surface with authoritative enter/leave telemetry while preserving the verified player controller and clean boot. |
+| Strategy | `intact_environment_wrapper_with_alpha_rebind` |
 | Tasks | 1 |
 
 ### Developer
