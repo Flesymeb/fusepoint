@@ -1,5 +1,7 @@
 extends CharacterBody3D
 
+signal spawn_reset
+
 @export_group("Ground locomotion")
 @export var walk_speed := 4.5
 @export var sprint_speed := 7.2
@@ -209,6 +211,7 @@ func _reset_to_spawn() -> void:
 	_stand_clearance = true
 	_set_stance(false)
 	_capture_mouse()
+	spawn_reset.emit()
 
 
 func _mcp_state() -> Dictionary:
@@ -220,6 +223,7 @@ func _mcp_state() -> Dictionary:
 		"mouse_captured": _mouse_captured,
 		"on_floor": is_on_floor(),
 		"camera_current": camera.current,
+		"camera_forward": -camera.global_transform.basis.z,
 		"camera_height": head.position.y,
 		"collision_height": (collision_shape.shape as CapsuleShape3D).height,
 		"spawn_position": _spawn_transform.origin,
