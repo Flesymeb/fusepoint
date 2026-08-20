@@ -1,0 +1,44 @@
+# Godot generated state
+.godot/
+.import/
+*.import
+*.uid
+*.tmp
+*.log
+
+# GameLoop runtime evidence and generated media
+artifacts/
+build/
+dist/
+evidence/
+recordings/
+runs/
+*.avi
+*.mkv
+*.mov
+*.mp4
+
+# Reusable generated game assets remain in the host asset pool. Keep compact
+# manifests, receipts, scenes, scripts, and configuration in the game repo.
+game/assets/**/*.glb
+game/assets/**/*.gltf
+game/assets/**/*.bin
+game/assets/**/*.fbx
+game/assets/**/*.obj
+game/assets/**/*.mtl
+game/assets/**/*.png
+game/assets/**/*.jpg
+game/assets/**/*.jpeg
+game/assets/**/*.webp
+game/assets/**/*.tga
+game/assets/**/*.exr
+game/assets/**/*.hdr
+game/assets/**/*.wav
+game/assets/**/*.ogg
+game/assets/**/*.mp3
+game/assets/**/*.flac
+
+# Python/editor caches
+__pycache__/
+*.pyc
+.DS_Store
