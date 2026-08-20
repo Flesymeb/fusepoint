@@ -49,6 +49,7 @@ var _impact_history: Array[Dictionary] = []
 var _last_result_until := 0.0
 var _inspect_tween: Tween
 var _ready_for_combat := false
+var gameplay_input_enabled := true
 
 
 func _ready() -> void:
@@ -71,7 +72,7 @@ func _finish_ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not _ready_for_combat:
+	if not _ready_for_combat or not gameplay_input_enabled:
 		return
 	if event.is_action_pressed(&"fire"):
 		_begin_fire()
@@ -97,6 +98,9 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _process(_delta: float) -> void:
 	if not _ready_for_combat:
+		return
+	if not gameplay_input_enabled:
+		_sync_hud()
 		return
 	var now := _now()
 	if _trigger_held and _current_weapon()["fire_mode"] == FIRE_MODE_AUTO and now >= _next_shot_time:
@@ -406,6 +410,21 @@ func _current_weapon() -> Dictionary:
 	return _weapons[_equipped_id]
 
 
+func set_gameplay_input_enabled(enabled: bool) -> void:
+	gameplay_input_enabled = enabled
+	if not enabled:
+		_trigger_held = false
+		_ads_held = false
+		_cancel_action(&"idle")
+
+
+func equip_loadout(weapon_id: StringName) -> bool:
+	if not _weapons.has(weapon_id):
+		return false
+	_equip_weapon(weapon_id)
+	return true
+
+
 func _sync_movement_feedback() -> void:
 	if _action_state in [&"reload", &"switch", &"inspect", &"fire"]:
 		return
@@ -656,4 +675,5 @@ func _mcp_state() -> Dictionary:
 		"viewmodel_switching": viewmodel.get("switching"),
 		"visible_rig": audit,
 		"ready_for_combat": _ready_for_combat,
+		"gameplay_input_enabled": gameplay_input_enabled,
 	}

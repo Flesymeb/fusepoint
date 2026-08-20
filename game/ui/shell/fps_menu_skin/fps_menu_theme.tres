@@ -1,0 +1,137 @@
+[gd_resource type="Theme" load_steps=13 format=3]
+
+[ext_resource type="FontFile" path="res://ui/shell/fps_menu_skin/fonts/BarlowCondensed-Medium.ttf" id="1_medium"]
+[ext_resource type="FontFile" path="res://ui/shell/fps_menu_skin/fonts/BarlowCondensed-SemiBold.ttf" id="2_semibold"]
+
+[sub_resource type="StyleBoxEmpty" id="Style_empty"]
+content_margin_left = 16.0
+content_margin_top = 8.0
+content_margin_right = 12.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="Style_button_active"]
+content_margin_left = 16.0
+content_margin_top = 8.0
+content_margin_right = 12.0
+content_margin_bottom = 8.0
+bg_color = Color(0.02, 0.07, 0.08, 0.3)
+border_width_left = 3
+border_color = Color(0.94, 0.76, 0.28, 0.95)
+
+[sub_resource type="StyleBoxFlat" id="Style_button_pressed"]
+content_margin_left = 16.0
+content_margin_top = 8.0
+content_margin_right = 12.0
+content_margin_bottom = 8.0
+bg_color = Color(0.12, 0.22, 0.22, 0.5)
+border_width_left = 3
+border_color = Color(0.94, 0.76, 0.28, 1)
+
+[sub_resource type="StyleBoxFlat" id="Style_field"]
+content_margin_left = 10.0
+content_margin_top = 6.0
+content_margin_right = 10.0
+content_margin_bottom = 6.0
+bg_color = Color(0.01, 0.035, 0.045, 0.3)
+border_width_bottom = 1
+border_color = Color(0.54, 0.72, 0.72, 0.48)
+
+[sub_resource type="StyleBoxEmpty" id="Style_panel_clear"]
+
+[sub_resource type="StyleBoxFlat" id="Style_dialog"]
+content_margin_left = 22.0
+content_margin_top = 18.0
+content_margin_right = 22.0
+content_margin_bottom = 18.0
+bg_color = Color(0.008, 0.025, 0.032, 0.9)
+border_width_left = 2
+border_color = Color(0.94, 0.76, 0.28, 0.9)
+
+[sub_resource type="StyleBoxFlat" id="Style_tab_selected"]
+content_margin_left = 16.0
+content_margin_top = 7.0
+content_margin_right = 16.0
+content_margin_bottom = 7.0
+bg_color = Color(0.02, 0.06, 0.07, 0.22)
+border_width_bottom = 2
+border_color = Color(0.94, 0.76, 0.28, 0.95)
+
+[sub_resource type="StyleBoxFlat" id="Style_progress_background"]
+bg_color = Color(0.01, 0.025, 0.03, 0.34)
+corner_radius_top_left = 2
+corner_radius_top_right = 2
+corner_radius_bottom_right = 2
+corner_radius_bottom_left = 2
+
+[sub_resource type="StyleBoxFlat" id="Style_progress_fill"]
+bg_color = Color(0.94, 0.76, 0.28, 0.95)
+corner_radius_top_left = 2
+corner_radius_top_right = 2
+corner_radius_bottom_right = 2
+corner_radius_bottom_left = 2
+
+[sub_resource type="StyleBoxLine" id="Style_separator"]
+color = Color(0.58, 0.75, 0.74, 0.34)
+thickness = 1
+
+[resource]
+default_font = ExtResource("1_medium")
+default_font_size = 16
+Button/colors/font_color = Color(0.82, 0.87, 0.87, 0.9)
+Button/colors/font_disabled_color = Color(0.58, 0.62, 0.62, 0.45)
+Button/colors/font_focus_color = Color(1, 1, 1, 1)
+Button/colors/font_hover_color = Color(1, 1, 1, 1)
+Button/colors/font_pressed_color = Color(1, 1, 1, 1)
+Button/font_sizes/font_size = 18
+Button/fonts/font = ExtResource("1_medium")
+Button/styles/disabled = SubResource("Style_empty")
+Button/styles/focus = SubResource("Style_button_active")
+Button/styles/hover = SubResource("Style_button_active")
+Button/styles/normal = SubResource("Style_empty")
+Button/styles/pressed = SubResource("Style_button_pressed")
+CheckButton/colors/font_color = Color(0.82, 0.87, 0.87, 0.9)
+CheckButton/font_sizes/font_size = 16
+CheckButton/fonts/font = ExtResource("1_medium")
+HSeparator/styles/separator = SubResource("Style_separator")
+Label/colors/font_color = Color(0.9, 0.94, 0.94, 0.94)
+Label/colors/font_outline_color = Color(0, 0, 0, 0.72)
+Label/constants/outline_size = 3
+Label/fonts/font = ExtResource("1_medium")
+LineEdit/colors/font_color = Color(0.92, 0.96, 0.96, 0.96)
+LineEdit/fonts/font = ExtResource("1_medium")
+LineEdit/styles/normal = SubResource("Style_field")
+LineEdit/styles/read_only = SubResource("Style_field")
+OptionButton/colors/font_color = Color(0.88, 0.93, 0.93, 0.94)
+OptionButton/colors/font_focus_color = Color(1, 1, 1, 1)
+OptionButton/colors/font_hover_color = Color(1, 1, 1, 1)
+OptionButton/font_sizes/font_size = 16
+OptionButton/fonts/font = ExtResource("1_medium")
+OptionButton/styles/focus = SubResource("Style_field")
+OptionButton/styles/hover = SubResource("Style_field")
+OptionButton/styles/normal = SubResource("Style_field")
+OptionButton/styles/pressed = SubResource("Style_field")
+Panel/styles/panel = SubResource("Style_panel_clear")
+PanelContainer/styles/panel = SubResource("Style_panel_clear")
+PopupMenu/colors/font_color = Color(0.88, 0.93, 0.93, 0.94)
+PopupMenu/fonts/font = ExtResource("1_medium")
+PopupMenu/styles/panel = SubResource("Style_dialog")
+ProgressBar/colors/font_color = Color(1, 1, 1, 0)
+ProgressBar/font_sizes/font_size = 1
+ProgressBar/styles/background = SubResource("Style_progress_background")
+ProgressBar/styles/fill = SubResource("Style_progress_fill")
+RichTextLabel/colors/default_color = Color(0.82, 0.87, 0.87, 0.9)
+RichTextLabel/fonts/normal_font = ExtResource("1_medium")
+TabBar/colors/font_selected_color = Color(1, 1, 1, 1)
+TabBar/colors/font_unselected_color = Color(0.67, 0.73, 0.73, 0.8)
+TabBar/font_sizes/font_size = 15
+TabBar/fonts/font = ExtResource("1_medium")
+TabBar/styles/tab_selected = SubResource("Style_tab_selected")
+TabBar/styles/tab_unselected = SubResource("Style_empty")
+TabContainer/colors/font_selected_color = Color(1, 1, 1, 1)
+TabContainer/colors/font_unselected_color = Color(0.67, 0.73, 0.73, 0.8)
+TabContainer/font_sizes/font_size = 15
+TabContainer/fonts/font = ExtResource("1_medium")
+TabContainer/styles/panel = SubResource("Style_panel_clear")
+TabContainer/styles/tab_selected = SubResource("Style_tab_selected")
+TabContainer/styles/tab_unselected = SubResource("Style_empty")
+Window/styles/embedded_border = SubResource("Style_dialog")

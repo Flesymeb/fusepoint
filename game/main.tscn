@@ -1,4 +1,4 @@
-[gd_scene load_steps=15 format=3]
+[gd_scene load_steps=17 format=3]
 
 [ext_resource type="PackedScene" path="res://scenes/arena_foundation.tscn" id="1_arena"]
 [ext_resource type="Script" path="res://scripts/prototype_player.gd" id="2_player"]
@@ -7,6 +7,8 @@
 [ext_resource type="Script" path="res://scripts/controlled_target.gd" id="5_target"]
 [ext_resource type="Script" path="res://scripts/mission_controller.gd" id="6_mission"]
 [ext_resource type="Script" path="res://scripts/enemy_roster.gd" id="7_roster"]
+[ext_resource type="PackedScene" path="res://scenes/tactical_hud.tscn" id="8_hud"]
+[ext_resource type="PackedScene" path="res://scenes/product_shell.tscn" id="9_shell"]
 
 [sub_resource type="CapsuleShape3D" id="Shape_player"]
 radius = 0.4
@@ -82,101 +84,6 @@ hud_action_path = NodePath("../CombatHUD/Root/WeaponPanel/VBox/StateRow/Action")
 hud_result_path = NodePath("../CombatHUD/Root/Result")
 hud_reticle_path = NodePath("../CombatHUD/Root/Reticle")
 
-[node name="CombatHUD" type="CanvasLayer" parent="PrototypePlayer/Head/Camera3D"]
-
-[node name="Root" type="Control" parent="PrototypePlayer/Head/Camera3D/CombatHUD"]
-layout_mode = 3
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-mouse_filter = 2
-
-[node name="WeaponPanel" type="PanelContainer" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root"]
-layout_mode = 0
-offset_left = 1032.0
-offset_top = 598.0
-offset_right = 1260.0
-offset_bottom = 700.0
-theme_override_styles/panel = SubResource("Style_hud")
-
-[node name="VBox" type="VBoxContainer" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel"]
-layout_mode = 2
-theme_override_constants/separation = 0
-
-[node name="Weapon" type="Label" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel/VBox"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.78, 0.9, 0.96, 1)
-theme_override_font_sizes/font_size = 17
-text = "AK-74M"
-horizontal_alignment = 1
-vertical_alignment = 0
-
-[node name="Ammo" type="Label" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel/VBox"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.96, 0.98, 1, 1)
-theme_override_font_sizes/font_size = 32
-text = "30  /  120"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="StateRow" type="HBoxContainer" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel/VBox"]
-layout_mode = 2
-
-[node name="Mode" type="Label" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel/VBox/StateRow"]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.98, 0.69, 0.18, 1)
-theme_override_font_sizes/font_size = 14
-text = "AUTO"
-horizontal_alignment = 0
-vertical_alignment = 2
-
-[node name="Action" type="Label" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel/VBox/StateRow"]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.4, 0.66, 0.77, 1)
-theme_override_font_sizes/font_size = 13
-text = "HIP"
-horizontal_alignment = 2
-vertical_alignment = 2
-
-[node name="Reticle" type="Control" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root"]
-layout_mode = 0
-offset_left = 627.0
-offset_top = 347.0
-offset_right = 653.0
-offset_bottom = 373.0
-mouse_filter = 2
-
-[node name="Horizontal" type="ColorRect" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/Reticle"]
-layout_mode = 0
-offset_left = 3.0
-offset_top = 12.0
-offset_right = 23.0
-offset_bottom = 14.0
-color = Color(0.9, 0.96, 1, 0.88)
-mouse_filter = 2
-
-[node name="Vertical" type="ColorRect" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/Reticle"]
-layout_mode = 0
-offset_left = 12.0
-offset_top = 3.0
-offset_right = 14.0
-offset_bottom = 23.0
-color = Color(0.9, 0.96, 1, 0.88)
-mouse_filter = 2
-
-[node name="Result" type="Label" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root"]
-layout_mode = 0
-offset_left = 574.0
-offset_top = 386.0
-offset_right = 706.0
-offset_bottom = 416.0
-theme_override_font_sizes/font_size = 15
-horizontal_alignment = 1
-
 [node name="BallisticsCalibrationPlate" type="StaticBody3D" parent="." groups=["controlled_target", "mcp_watch"]]
 position = Vector3(0, 1.48, -9.2)
 script = ExtResource("5_target")
@@ -218,83 +125,6 @@ alpha_path = NodePath("../ArenaFoundation/Alpha")
 bravo_path = NodePath("../ArenaFoundation/Bravo")
 charlie_path = NodePath("../ArenaFoundation/Charlie")
 
-[node name="MissionHUD" type="CanvasLayer" parent="."]
+[node name="TacticalHUD" parent="." instance=ExtResource("8_hud")]
 
-[node name="Root" type="Control" parent="MissionHUD"]
-layout_mode = 3
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-mouse_filter = 2
-
-[node name="TopPanel" type="PanelContainer" parent="MissionHUD/Root"]
-layout_mode = 0
-offset_left = 446.0
-offset_top = 20.0
-offset_right = 834.0
-offset_bottom = 142.0
-theme_override_styles/panel = SubResource("Style_hud")
-
-[node name="VBox" type="VBoxContainer" parent="MissionHUD/Root/TopPanel"]
-layout_mode = 2
-theme_override_constants/separation = 1
-
-[node name="TimerRow" type="HBoxContainer" parent="MissionHUD/Root/TopPanel/VBox"]
-layout_mode = 2
-
-[node name="Keys" type="Label" parent="MissionHUD/Root/TopPanel/VBox/TimerRow"]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.34, 0.88, 1, 1)
-theme_override_font_sizes/font_size = 16
-text = "KEYS  0 / 2"
-vertical_alignment = 1
-
-[node name="Timer" type="Label" parent="MissionHUD/Root/TopPanel/VBox/TimerRow"]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.82, 0.94, 1, 1)
-theme_override_font_sizes/font_size = 28
-text = "05:00"
-horizontal_alignment = 2
-
-[node name="Objective" type="Label" parent="MissionHUD/Root/TopPanel/VBox"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.94, 0.98, 1, 1)
-theme_override_font_sizes/font_size = 19
-text = "A  //  RETAKE FOUNDRY GATE"
-horizontal_alignment = 1
-
-[node name="Progress" type="Label" parent="MissionHUD/Root/TopPanel/VBox"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.42, 0.82, 0.94, 1)
-theme_override_font_sizes/font_size = 14
-text = "A HOSTILE   B HOSTILE   C ARMED"
-horizontal_alignment = 1
-
-[node name="Prompt" type="Label" parent="MissionHUD/Root"]
-layout_mode = 0
-offset_left = 390.0
-offset_top = 500.0
-offset_right = 890.0
-offset_bottom = 536.0
-theme_override_colors/font_color = Color(1, 0.72, 0.25, 1)
-theme_override_colors/font_outline_color = Color(0.01, 0.02, 0.03, 0.94)
-theme_override_constants/outline_size = 6
-theme_override_font_sizes/font_size = 18
-horizontal_alignment = 1
-
-[node name="Event" type="Label" parent="MissionHUD/Root"]
-layout_mode = 0
-offset_left = 390.0
-offset_top = 154.0
-offset_right = 890.0
-offset_bottom = 186.0
-theme_override_colors/font_color = Color(0.28, 0.9, 1, 1)
-theme_override_colors/font_outline_color = Color(0.01, 0.02, 0.03, 0.94)
-theme_override_constants/outline_size = 5
-theme_override_font_sizes/font_size = 15
-text = "AEGIS  //  DEPLOYMENT STARTED"
-horizontal_alignment = 1
+[node name="ProductShell" parent="." instance=ExtResource("9_shell")]

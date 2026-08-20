@@ -24,7 +24,7 @@ const HISTORY_LIMIT := 512
 @export var hud_prompt_path: NodePath
 @export var hud_event_path: NodePath
 
-var mission_state := &"active_gameplay"
+var mission_state := &"predeployment"
 var remaining_time := 300.0
 var capture_points: Dictionary = {}
 var route_locks := {&"spawn_to_a": false, &"a_to_b": true, &"b_to_c": true}
@@ -42,6 +42,7 @@ var terminal_commit_count := 0
 var event_sequence := 0
 var event_history: Array[Dictionary] = []
 var last_event: Dictionary = {}
+var deployment_commit_count := 0
 
 var _active_capture := &""
 var _active_bomb_stage := false
@@ -63,14 +64,52 @@ var _last_announced_event: Dictionary = {}
 
 
 func _ready() -> void:
+	_initialize_mission_state()
+	if player.has_signal(&"authoritative_damage_received"):
+		player.connect(&"authoritative_damage_received", _on_player_damaged)
+	_sync_presentation()
+
+
+func _initialize_mission_state() -> void:
+	mission_state = &"predeployment"
 	remaining_time = mission_duration_seconds
 	capture_points = {
 		&"alpha": _fresh_point(&"alpha", &"topology_key"),
 		&"bravo": _fresh_point(&"bravo", &"isolation_key"),
 	}
-	if player.has_signal(&"authoritative_damage_received"):
-		player.connect(&"authoritative_damage_received", _on_player_damaged)
+	route_locks = {&"spawn_to_a": false, &"a_to_b": true, &"b_to_c": true}
+	committed_keys.clear()
+	overlaps = {&"alpha": false, &"bravo": false, &"charlie": false}
+	bomb_state = &"armed"
+	bomb_stage_index = 0
+	bomb_stage_progress = 0.0
+	bomb_completed = [false, false, false]
+	checkpoint_version = 0
+	checkpoint_snapshot.clear()
+	checkpoint_commit_count = 0
+	checkpoint_restore_count = 0
+	terminal_commit_count = 0
+	_active_capture = &""
+	_active_bomb_stage = false
+	_timer_tick_bucket = -1
+
+
+func begin_deployment() -> bool:
+	if mission_state != &"predeployment" or deployment_commit_count > 0:
+		return false
+	deployment_commit_count = 1
+	mission_state = &"active_gameplay"
 	_record_event(&"deployment_started", {"remaining_time": remaining_time})
+	return true
+
+
+func reset_for_replay() -> void:
+	deployment_commit_count = 0
+	event_sequence = 0
+	event_history.clear()
+	last_event.clear()
+	_initialize_mission_state()
+	player.call(&"prepare_new_mission")
 	_sync_presentation()
 
 
@@ -374,6 +413,7 @@ func objective_state_for(objective_id: StringName) -> Dictionary:
 			"progress": point.get("progress", 0.0),
 			"legal": _point_is_legal(objective_id),
 			"overlap": overlaps.get(objective_id, false),
+			"contest_enemy_count": point.get("contest_enemy_count", 0),
 		}
 	return {
 		"objective_id": &"charlie",
@@ -494,4 +534,5 @@ func _mcp_state() -> Dictionary:
 		"enemy_roster_ready": enemy_roster != null and enemy_roster.get("roster_initialized") == true,
 		"enemy_roster_count": (enemy_roster.get("enemies") as Dictionary).size() if enemy_roster != null else 0,
 		"history_limit": HISTORY_LIMIT,
+		"deployment_commit_count": deployment_commit_count,
 	}

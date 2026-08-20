@@ -1,0 +1,41 @@
+[gd_scene load_steps=5 format=3 uid="uid://cqqhxkpndl13p"]
+
+[ext_resource type="PackedScene" uid="uid://cd0jbh4metflb" path="res://addons/maaacks_menus_template/base/nodes/loading_screen/loading_screen.tscn" id="1_a8kcw"]
+[ext_resource type="Script" uid="uid://cexv8bjq3qecg" path="res://scenes/loading_screen/loading_screen.gd" id="2_53rj4"]
+[ext_resource type="Theme" path="res://addons/fps_menu_skin/fps_menu_theme.tres" id="3_theme"]
+[ext_resource type="Texture2D" path="res://addons/fps_menu_skin/backgrounds/industrial_dawn.png" id="4_background"]
+
+[node name="LoadingScreen" unique_id=179842335 instance=ExtResource("1_a8kcw")]
+script = ExtResource("2_53rj4")
+
+[node name="Control" parent="." parent_id_path=PackedInt32Array(788661482) index="0" unique_id=1999015458]
+theme = ExtResource("3_theme")
+
+[node name="BackPanel" parent="Control" parent_id_path=PackedInt32Array(1999015458) index="0" unique_id=604252196]
+visible = false
+
+[node name="BackgroundTextureRect" parent="Control" parent_id_path=PackedInt32Array(1999015458) index="2" unique_id=630614432]
+texture = ExtResource("4_background")
+modulate = Color(0.64, 0.69, 0.71, 1)
+
+[node name="VBoxContainer" parent="Control" parent_id_path=PackedInt32Array(1999015458) index="3" unique_id=10456653]
+anchor_left = 0.0
+anchor_top = 1.0
+anchor_right = 0.0
+anchor_bottom = 1.0
+offset_left = 54.0
+offset_top = -116.0
+offset_right = 414.0
+offset_bottom = -48.0
+theme_override_constants/separation = 14
+
+[node name="ProgressLabel" parent="Control/VBoxContainer" parent_id_path=PackedInt32Array(10456653) index="0" unique_id=1503629466]
+theme_override_colors/font_color = Color(0.9, 0.94, 0.94, 0.9)
+theme_override_font_sizes/font_size = 15
+text = "PREPARING OPERATION"
+horizontal_alignment = 0
+
+[node name="ProgressBar" parent="Control/VBoxContainer" parent_id_path=PackedInt32Array(10456653) index="1" unique_id=1483901811]
+custom_minimum_size = Vector2(360, 4)
+size_flags_vertical = 4
+show_percentage = false

@@ -1,0 +1,135 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://ui/hud/combat/match_score_hud.gd" id="1_score"]
+[ext_resource type="FontFile" path="res://ui/hud/combat/fonts/BarlowCondensed-Medium.ttf" id="2_medium"]
+[ext_resource type="FontFile" path="res://ui/hud/combat/fonts/BarlowCondensed-SemiBold.ttf" id="3_semibold"]
+
+[node name="FPSMatchScoreHUD" type="Control"]
+custom_minimum_size = Vector2(404, 51)
+layout_mode = 3
+anchors_preset = 10
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -202.0
+offset_top = 22.0
+offset_right = 202.0
+offset_bottom = 73.0
+grow_horizontal = 2
+mouse_filter = 2
+script = ExtResource("1_score")
+
+[node name="Column" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = -2
+
+[node name="Mode" type="Label" parent="Column"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 16)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.76, 0.81, 0.82, 0.82)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.78)
+theme_override_constants/outline_size = 3
+theme_override_fonts/font = ExtResource("2_medium")
+theme_override_font_sizes/font_size = 11
+text = "DOMINATION"
+horizontal_alignment = 1
+
+[node name="ScoreRow" type="HBoxContainer" parent="Column"]
+custom_minimum_size = Vector2(404, 35)
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="LeftTeam" type="Label" parent="Column/ScoreRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(68, 28)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.72, 0.84, 0.93, 0.9)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.82)
+theme_override_constants/outline_size = 4
+theme_override_fonts/font = ExtResource("2_medium")
+theme_override_font_sizes/font_size = 14
+text = "CROWN"
+horizontal_alignment = 2
+vertical_alignment = 1
+
+[node name="LeftScore" type="Label" parent="Column/ScoreRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(44, 34)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94, 0.98, 1, 0.98)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.86)
+theme_override_constants/outline_size = 4
+theme_override_fonts/font = ExtResource("3_semibold")
+theme_override_font_sizes/font_size = 23
+text = "095"
+horizontal_alignment = 2
+vertical_alignment = 1
+
+[node name="DividerLeft" type="Label" parent="Column/ScoreRow"]
+custom_minimum_size = Vector2(7, 28)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.92, 0.72, 0.24, 0.74)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.7)
+theme_override_constants/outline_size = 3
+theme_override_fonts/font = ExtResource("3_semibold")
+theme_override_font_sizes/font_size = 13
+text = "•"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Timer" type="Label" parent="Column/ScoreRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(58, 32)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.96, 0.84, 0.46, 0.96)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.86)
+theme_override_constants/outline_size = 4
+theme_override_fonts/font = ExtResource("3_semibold")
+theme_override_font_sizes/font_size = 19
+text = "07:42"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="DividerRight" type="Label" parent="Column/ScoreRow"]
+custom_minimum_size = Vector2(7, 28)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.92, 0.72, 0.24, 0.74)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.7)
+theme_override_constants/outline_size = 3
+theme_override_fonts/font = ExtResource("3_semibold")
+theme_override_font_sizes/font_size = 13
+text = "•"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="RightScore" type="Label" parent="Column/ScoreRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(44, 34)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94, 0.98, 1, 0.98)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.86)
+theme_override_constants/outline_size = 4
+theme_override_fonts/font = ExtResource("3_semibold")
+theme_override_font_sizes/font_size = 23
+text = "082"
+horizontal_alignment = 0
+vertical_alignment = 1
+
+[node name="RightTeam" type="Label" parent="Column/ScoreRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(68, 28)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94, 0.64, 0.36, 0.9)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.82)
+theme_override_constants/outline_size = 4
+theme_override_fonts/font = ExtResource("2_medium")
+theme_override_font_sizes/font_size = 14
+text = "FORGE"
+horizontal_alignment = 0
+vertical_alignment = 1

@@ -1,0 +1,141 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://ui/hud/combat/weapon_ammo_hud.gd" id="1_script"]
+[ext_resource type="FontFile" path="res://ui/hud/combat/fonts/BarlowCondensed-Medium.ttf" id="2_medium"]
+[ext_resource type="FontFile" path="res://ui/hud/combat/fonts/BarlowCondensed-SemiBold.ttf" id="3_semibold"]
+
+[sub_resource type="StyleBoxFlat" id="Style_reload_background"]
+bg_color = Color(0, 0, 0, 0.18)
+corner_radius_top_left = 1
+corner_radius_top_right = 1
+corner_radius_bottom_right = 1
+corner_radius_bottom_left = 1
+
+[sub_resource type="StyleBoxFlat" id="Style_reload_fill"]
+bg_color = Color(0.94, 0.76, 0.28, 0.9)
+corner_radius_top_left = 1
+corner_radius_top_right = 1
+corner_radius_bottom_right = 1
+corner_radius_bottom_left = 1
+
+[node name="WeaponAmmoHUD" type="Control"]
+custom_minimum_size = Vector2(320, 108)
+layout_mode = 3
+anchors_preset = 8
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -352.0
+offset_top = -140.0
+offset_right = -32.0
+offset_bottom = -32.0
+grow_horizontal = 0
+grow_vertical = 0
+mouse_filter = 2
+script = ExtResource("1_script")
+
+[node name="Layout" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 1
+alignment = 2
+
+[node name="Header" type="HBoxContainer" parent="Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 2
+
+[node name="WeaponIcon" type="TextureRect" parent="Layout/Header"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(52, 24)
+layout_mode = 2
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="WeaponName" type="Label" parent="Layout/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_fonts/font = ExtResource("2_medium")
+theme_override_colors/font_color = Color(0.96, 0.98, 0.98, 0.96)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.78)
+theme_override_constants/outline_size = 4
+theme_override_font_sizes/font_size = 17
+text = "AK-74M"
+
+[node name="Divider" type="Label" parent="Layout/Header"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("2_medium")
+theme_override_colors/font_color = Color(1, 1, 1, 0.42)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.65)
+theme_override_constants/outline_size = 3
+theme_override_font_sizes/font_size = 15
+text = "•"
+
+[node name="FireMode" type="Label" parent="Layout/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_fonts/font = ExtResource("2_medium")
+theme_override_colors/font_color = Color(0.94, 0.76, 0.28, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.78)
+theme_override_constants/outline_size = 4
+theme_override_font_sizes/font_size = 15
+text = "AUTO"
+
+[node name="Ammo" type="HBoxContainer" parent="Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 2
+
+[node name="Magazine" type="Label" parent="Layout/Ammo"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_fonts/font = ExtResource("3_semibold")
+theme_override_colors/font_color = Color(0.94, 0.76, 0.28, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.84)
+theme_override_constants/outline_size = 6
+theme_override_font_sizes/font_size = 52
+text = "30"
+
+[node name="Reserve" type="Label" parent="Layout/Ammo"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_fonts/font = ExtResource("2_medium")
+theme_override_colors/font_color = Color(0.96, 0.98, 0.98, 0.9)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.8)
+theme_override_constants/outline_size = 5
+theme_override_font_sizes/font_size = 24
+text = "/ 120"
+vertical_alignment = 2
+
+[node name="ReloadRow" type="HBoxContainer" parent="Layout"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 2
+
+[node name="ReloadLabel" type="Label" parent="Layout/ReloadRow"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("2_medium")
+theme_override_colors/font_color = Color(0.96, 0.98, 0.98, 0.78)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.7)
+theme_override_constants/outline_size = 3
+theme_override_font_sizes/font_size = 11
+text = "RELOADING"
+
+[node name="ReloadProgress" type="ProgressBar" parent="Layout/ReloadRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(128, 3)
+layout_mode = 2
+size_flags_vertical = 4
+theme_override_styles/background = SubResource("Style_reload_background")
+theme_override_styles/fill = SubResource("Style_reload_fill")
+value = 58.0
+show_percentage = false

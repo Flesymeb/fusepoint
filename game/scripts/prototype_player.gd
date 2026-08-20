@@ -2,6 +2,7 @@ extends CharacterBody3D
 
 signal spawn_reset
 signal authoritative_damage_received(amount: float, damage_event_id: String)
+signal player_died(event: Dictionary)
 
 @export_group("Ground locomotion")
 @export var walk_speed := 4.5
@@ -46,6 +47,7 @@ var _standing_clearance_shape := CapsuleShape3D.new()
 var health := 100.0
 var _damage_serial := 0
 var _damage_commits: Dictionary = {}
+var gameplay_input_enabled := true
 
 
 func _ready() -> void:
@@ -60,6 +62,8 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if not gameplay_input_enabled:
+		return
 	if event.is_action_pressed("ui_cancel"):
 		_release_mouse()
 		get_viewport().set_input_as_handled()
@@ -85,6 +89,9 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if not gameplay_input_enabled:
+		velocity = Vector3.ZERO
+		return
 	if Input.is_action_just_pressed("restart"):
 		var mission_controller := get_tree().get_first_node_in_group(&"mission_controller")
 		if mission_controller == null or mission_controller.call(&"request_checkpoint_restore") != true:
@@ -276,6 +283,8 @@ func apply_authoritative_damage(amount: float, damage_event_id := "") -> bool:
 	_damage_commits[event_id] = true
 	health = maxf(0.0, health - amount)
 	authoritative_damage_received.emit(amount, event_id)
+	if health <= 0.0:
+		player_died.emit({"event_id": event_id, "health": health, "position": global_position})
 	return true
 
 
@@ -293,10 +302,28 @@ func apply_damage(amount: float, event: Dictionary = {}) -> Dictionary:
 	return report
 
 
-func bind_deployment_to_walkable(walkable_position: Vector3) -> void:
+func bind_deployment_to_walkable(walkable_position: Vector3, look_target := Vector3.INF) -> void:
 	global_position = walkable_position
+	if look_target != Vector3.INF:
+		var flat_target := Vector3(look_target.x, global_position.y, look_target.z)
+		if global_position.distance_to(flat_target) > 0.1:
+			look_at(flat_target, Vector3.UP)
 	_spawn_transform = global_transform
+	_spawn_head_rotation = head.rotation
 	velocity = Vector3.ZERO
+
+
+func set_gameplay_input_enabled(enabled: bool) -> void:
+	gameplay_input_enabled = enabled
+	velocity = Vector3.ZERO
+	if enabled:
+		_capture_mouse()
+	else:
+		_release_mouse()
+
+
+func prepare_new_mission() -> void:
+	_reset_to_spawn()
 
 
 func _mcp_state() -> Dictionary:
@@ -325,4 +352,5 @@ func _mcp_state() -> Dictionary:
 		"health": health,
 		"max_health": max_health,
 		"damage_commit_count": _damage_commits.size(),
+		"gameplay_input_enabled": gameplay_input_enabled,
 	}

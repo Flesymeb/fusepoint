@@ -1,0 +1,8 @@
+[gd_resource type="Resource" script_class="IconType" format=3 uid="uid://d0ng1gm47rtl3"]
+
+[ext_resource type="Script" uid="uid://b0yj3yg1cgoxq" path="res://ui/hud/minimap/IconType.gd" id="1_k41on"]
+[resource]
+script = ExtResource("1_k41on")
+type = "item"
+color = Color(0.4, 0.78039217, 0.4745098, 1)
+metadata/_custom_type_script = "uid://b0yj3yg1cgoxq"

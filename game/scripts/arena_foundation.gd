@@ -20,6 +20,8 @@ var navigation_ready := false
 var navigation_vertex_count := 0
 var navigation_polygon_count := 0
 var topology_binding_report: Dictionary = {}
+var route_corner_chains: Dictionary = {}
+var route_clearance: Dictionary = {}
 
 
 func _ready() -> void:
@@ -146,6 +148,11 @@ func _bind_product_anchors() -> bool:
 		"a_to_b": NavigationServer3D.map_get_path(nav_map, projected["alpha"], projected["bravo"], true),
 		"b_to_c": NavigationServer3D.map_get_path(nav_map, projected["bravo"], projected["charlie"], true),
 	}
+	route_corner_chains = {
+		&"spawn_to_a": edges["spawn_to_a"],
+		&"a_to_b": edges["a_to_b"],
+		&"b_to_c": edges["b_to_c"],
+	}
 	var connected: bool = (
 		edges["spawn_to_a"].size() >= 2
 		and edges["a_to_b"].size() >= 2
@@ -157,8 +164,10 @@ func _bind_product_anchors() -> bool:
 		$Alpha.global_position = projected["alpha"] + Vector3.UP * 1.2
 		$Bravo.global_position = projected["bravo"] + Vector3.UP * 1.2
 		$Charlie.global_position = projected["charlie"] + Vector3.UP * 1.2
+		route_clearance = _validate_route_clearance(player)
 		if player != null and player.has_method(&"bind_deployment_to_walkable"):
-			player.call(&"bind_deployment_to_walkable", projected["spawn"] + Vector3.UP * 0.9)
+			var first_corner := _first_meaningful_corner(edges["spawn_to_a"], projected["spawn"])
+			player.call(&"bind_deployment_to_walkable", projected["spawn"] + Vector3.UP * 0.9, first_corner + Vector3.UP * 0.9)
 	topology_binding_report = {
 		"datum": "authored_standoff_navigation_map",
 		"hints": hints,
@@ -174,11 +183,64 @@ func _bind_product_anchors() -> bool:
 			"a_to_b": edges["a_to_b"].size(),
 			"b_to_c": edges["b_to_c"].size(),
 		},
+		"ordered_corners": route_corner_chains.duplicate(true),
+		"capsule_clearance": route_clearance.duplicate(true),
 		"all_edges_connected": connected,
 		"anchors_applied": connected,
 	}
 	walkable_topology_bound.emit(topology_binding_report.duplicate(true))
 	return connected
+
+
+func _first_meaningful_corner(path: PackedVector3Array, origin: Vector3) -> Vector3:
+	for corner in path:
+		if Vector2(corner.x - origin.x, corner.z - origin.z).length() > 1.25:
+			return corner
+	return path[path.size() - 1] if not path.is_empty() else origin
+
+
+func _validate_route_clearance(player: CharacterBody3D) -> Dictionary:
+	var report := {}
+	var capsule := CapsuleShape3D.new()
+	# Keep the cast just clear of the supporting street surface while preserving
+	# the authored player's practical radius and standing clearance.
+	capsule.radius = 0.39
+	capsule.height = 1.72
+	for leg_id in route_corner_chains:
+		var path: PackedVector3Array = route_corner_chains[leg_id]
+		var blocked_segments: Array[Dictionary] = []
+		for index in range(1, path.size()):
+			var from := path[index - 1] + Vector3.UP * 0.9
+			var to := path[index] + Vector3.UP * 0.9
+			var query := PhysicsShapeQueryParameters3D.new()
+			query.shape = capsule
+			query.transform = Transform3D(Basis.IDENTITY, from)
+			query.motion = to - from
+			query.margin = 0.01
+			query.collision_mask = player.collision_mask if player != null else 1
+			query.collide_with_areas = false
+			query.collide_with_bodies = true
+			if player != null:
+				query.exclude = [player.get_rid()]
+			var cast := get_world_3d().direct_space_state.cast_motion(query)
+			var safe_fraction := float(cast[0]) if cast.size() >= 1 else 0.0
+			if safe_fraction < 0.985:
+				blocked_segments.append({
+					"segment": index - 1,
+					"from": from,
+					"to": to,
+					"safe_fraction": safe_fraction,
+				})
+		report[leg_id] = {
+			"clear": blocked_segments.is_empty(),
+			"segment_count": maxi(path.size() - 1, 0),
+			"blocked_segments": blocked_segments,
+		}
+	return report
+
+
+func get_route_chain(leg_id: StringName) -> PackedVector3Array:
+	return route_corner_chains.get(leg_id, PackedVector3Array())
 
 
 func _mcp_state() -> Dictionary:
@@ -202,4 +264,6 @@ func _mcp_state() -> Dictionary:
 		"navigation_polygon_count": navigation_polygon_count,
 		"ground_datum_y": 0.0,
 		"topology_binding": topology_binding_report,
+		"route_corner_chains": route_corner_chains,
+		"route_clearance": route_clearance,
 	}

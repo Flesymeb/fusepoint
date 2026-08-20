@@ -1,0 +1,26 @@
+[gd_scene load_steps=5 format=3 uid="uid://cc37235kj4384"]
+
+[ext_resource type="Script" path="res://addons/fps_menu_skin/fps_menu_audio_feedback.gd" id="1_feedback"]
+[ext_resource type="AudioStream" path="res://addons/fps_menu_skin/audio/ui_focus.wav" id="2_focus"]
+[ext_resource type="AudioStream" path="res://addons/fps_menu_skin/audio/ui_confirm.wav" id="3_confirm"]
+[ext_resource type="AudioStream" path="res://addons/fps_menu_skin/audio/ui_back.wav" id="4_back"]
+
+[node name="ProjectUISoundController" type="Node" unique_id=1525696179]
+script = ExtResource("1_feedback")
+button_hovered = ExtResource("2_focus")
+button_focused = ExtResource("2_focus")
+button_pressed = ExtResource("3_confirm")
+tab_hovered = ExtResource("2_focus")
+tab_changed = ExtResource("2_focus")
+tab_selected = ExtResource("3_confirm")
+slider_hovered = ExtResource("2_focus")
+slider_focused = ExtResource("2_focus")
+slider_drag_ended = ExtResource("3_confirm")
+line_focused = ExtResource("2_focus")
+line_text_submitted = ExtResource("3_confirm")
+item_list_selected = ExtResource("2_focus")
+item_list_activated = ExtResource("3_confirm")
+tree_item_selected = ExtResource("2_focus")
+tree_item_activated = ExtResource("3_confirm")
+tree_button_clicked = ExtResource("3_confirm")
+back_pressed = ExtResource("4_back")

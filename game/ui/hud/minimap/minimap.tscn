@@ -1,0 +1,16 @@
+[gd_scene format=3 uid="uid://0y2fr8egp1t2"]
+
+[ext_resource type="Script" uid="uid://b4np8r3haam6t" path="res://ui/hud/minimap/minimap.gd" id="1_cxhxf"]
+[node name="Minimap" type="Control" unique_id=964171723]
+custom_minimum_size = Vector2(128, 128)
+layout_mode = 3
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -160.0
+offset_top = 32.0
+offset_right = -32.0
+offset_bottom = 160.0
+grow_horizontal = 0
+pivot_offset = Vector2(64, 64)
+script = ExtResource("1_cxhxf")

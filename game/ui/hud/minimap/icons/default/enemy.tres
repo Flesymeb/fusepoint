@@ -1,0 +1,8 @@
+[gd_resource type="Resource" script_class="IconType" format=3 uid="uid://b23in2xumgedx"]
+
+[ext_resource type="Script" uid="uid://b0yj3yg1cgoxq" path="res://ui/hud/minimap/IconType.gd" id="1_b5tgh"]
+[resource]
+script = ExtResource("1_b5tgh")
+type = "enemy"
+color = Color(0.9098039, 0.24705882, 0.41568628, 1)
+metadata/_custom_type_script = "uid://b0yj3yg1cgoxq"
