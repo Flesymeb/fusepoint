@@ -1,0 +1,25 @@
+[gd_resource type="Resource" script_class="FPSViewmodelProfile" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/fps_viewmodel_profile.gd" id="1_profile"]
+[ext_resource type="PackedScene" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/assets/scene.gltf" id="2_model"]
+
+[resource]
+script = ExtResource("1_profile")
+weapon_id = &"ak74m"
+display_name = "AK-74M"
+model_scene = ExtResource("2_model")
+source_rotation_degrees = Vector3(0, 180, 0)
+hip_position = Vector3(0.10, -0.23, 0.015)
+aim_position = Vector3(-0.035, -0.135, 0.03)
+hip_scale = Vector3(0.36, 0.36, 0.36)
+aim_scale = Vector3(0.36, 0.36, 0.36)
+aim_near = 0.10
+aim_transition_seconds = 0.16
+idle_animation = &"Rig|AK_Idle"
+draw_animation = &"Rig|AK_Draw"
+walk_animation = &"Rig|AK_Walk"
+run_animation = &"Rig|AK_Run"
+fire_animation = &"Rig|AK_Shot"
+reload_animation = &"Rig|AK_Reload"
+reload_variant_animation = &"Rig|AK_Reload_var2"
+empty_reload_animation = &"Rig|AK_Reload_full"

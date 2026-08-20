@@ -1,0 +1,17 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/fps_viewmodel_profile.gd" id="1_profile_script"]
+[ext_resource type="Script" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/fps_ak74_viewmodel.gd" id="2_switcher_script"]
+[ext_resource type="Resource" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/profiles/ak74_profile.tres" id="3_ak_profile"]
+[ext_resource type="Resource" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/profiles/saiga_profile.tres" id="4_saiga_profile"]
+[ext_resource type="PackedScene" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/fps_viewmodel_feedback.tscn" id="5_feedback_scene"]
+
+[node name="FPSViewmodelSwitcher" type="Node3D"]
+script = ExtResource("2_switcher_script")
+weapon_profiles = Array[ExtResource("1_profile_script")]([ExtResource("3_ak_profile"), ExtResource("4_saiga_profile")])
+
+[node name="SourceAxisAdapter" type="Node3D" parent="."]
+
+[node name="ModelMount" type="Node3D" parent="SourceAxisAdapter"]
+
+[node name="FPSViewmodelFeedback" parent="." instance=ExtResource("5_feedback_scene")]

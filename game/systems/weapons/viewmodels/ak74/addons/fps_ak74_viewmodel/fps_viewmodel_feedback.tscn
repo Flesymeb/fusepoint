@@ -1,0 +1,56 @@
+[gd_scene load_steps=11 format=3]
+
+[ext_resource type="Script" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/fps_viewmodel_feedback.gd" id="1_feedback"]
+[ext_resource type="Texture2D" path="res://systems/weapons/viewmodels/ak74/effects/muzzle_flash.png" id="2_flash"]
+[ext_resource type="AudioStream" path="res://systems/weapons/viewmodels/ak74/audio/sfx_fire_single.wav" id="3_fire"]
+[ext_resource type="AudioStream" path="res://systems/weapons/viewmodels/ak74/audio/sfx_fire_auto.mp3" id="4_auto"]
+[ext_resource type="AudioStream" path="res://systems/weapons/viewmodels/ak74/audio/sfx_reload_foley.mp3" id="5_reload"]
+[ext_resource type="AudioStream" path="res://systems/weapons/viewmodels/ak74/audio/sfx_weapon_switch.wav" id="6_switch"]
+[ext_resource type="AudioStream" path="res://systems/weapons/viewmodels/ak74/audio/sfx_aim_toggle.wav" id="7_aim"]
+[ext_resource type="AudioStream" path="res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_walk.mp3" id="8_walk"]
+[ext_resource type="AudioStream" path="res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_run.wav" id="9_run"]
+
+[node name="FPSViewmodelFeedback" type="Node3D"]
+script = ExtResource("1_feedback")
+fire_mode = 1
+viewmodel_path = NodePath("..")
+
+[node name="MuzzleFlash" type="Sprite3D" parent="."]
+texture = ExtResource("2_flash")
+billboard = 1
+pixel_size = 0.004
+position = Vector3(0.24, -0.16, -0.55)
+scale = Vector3(0.18, 0.18, 0.18)
+visible = false
+
+[node name="FireAudio" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("3_fire")
+volume_db = -4.0
+
+[node name="AutoFireAudio" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("4_auto")
+volume_db = -6.0
+
+[node name="ReloadAudio" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("5_reload")
+volume_db = -10.0
+
+[node name="SwitchAudio" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("6_switch")
+volume_db = -10.0
+
+[node name="AimAudio" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("7_aim")
+volume_db = -12.0
+
+[node name="InspectAudio" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("5_reload")
+volume_db = -14.0
+
+[node name="WalkAudio" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("8_walk")
+volume_db = -16.0
+
+[node name="RunAudio" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("9_run")
+volume_db = -10.0

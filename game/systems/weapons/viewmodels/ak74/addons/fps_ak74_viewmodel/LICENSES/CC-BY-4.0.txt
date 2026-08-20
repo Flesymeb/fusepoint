@@ -1,0 +1,9 @@
+The bundled AK-74M, hands, rig, textures, and authored animations are licensed
+under Creative Commons Attribution 4.0 International (CC BY 4.0):
+
+https://creativecommons.org/licenses/by/4.0/
+https://creativecommons.org/licenses/by/4.0/legalcode
+
+Attribution must be retained. See SOURCE_ATTRIBUTION.txt for the work title,
+creator, and canonical source URL. GameLoop-authored adapter scripts, scenes,
+and documentation in this component are released under the repository license.

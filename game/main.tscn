@@ -1,11 +1,51 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="PackedScene" path="res://scenes/arena_foundation.tscn" id="1_arena"]
 [ext_resource type="Script" path="res://scripts/prototype_player.gd" id="2_player"]
+[ext_resource type="PackedScene" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/fps_ak74_viewmodel.tscn" id="3_viewmodel"]
+[ext_resource type="PackedScene" path="res://scenes/weapon_controller.tscn" id="4_weapon_controller"]
+[ext_resource type="Script" path="res://scripts/controlled_target.gd" id="5_target"]
 
 [sub_resource type="CapsuleShape3D" id="Shape_player"]
 radius = 0.4
 height = 1.8
+
+[sub_resource type="StyleBoxFlat" id="Style_hud"]
+bg_color = Color(0.015, 0.025, 0.035, 0.78)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.2, 0.48, 0.62, 0.72)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
+[sub_resource type="BoxMesh" id="Mesh_target_plate"]
+size = Vector3(0.92, 1.62, 0.12)
+
+[sub_resource type="StandardMaterial3D" id="Material_target_plate"]
+albedo_color = Color(0.12, 0.145, 0.16, 1)
+metallic = 0.72
+roughness = 0.32
+
+[sub_resource type="CylinderMesh" id="Mesh_target_center"]
+top_radius = 0.24
+bottom_radius = 0.24
+height = 0.045
+radial_segments = 32
+
+[sub_resource type="StandardMaterial3D" id="Material_target_center"]
+albedo_color = Color(0.88, 0.49, 0.08, 1)
+metallic = 0.35
+roughness = 0.28
+emission_enabled = true
+emission = Color(0.24, 0.075, 0.005, 1)
+emission_energy_multiplier = 0.7
+
+[sub_resource type="BoxShape3D" id="Shape_target"]
+size = Vector3(0.92, 1.62, 0.12)
 
 [node name="FusepointBootstrap" type="Node3D"]
 
@@ -24,3 +64,130 @@ position = Vector3(0, 0.62, 0)
 [node name="Camera3D" type="Camera3D" parent="PrototypePlayer/Head"]
 current = true
 fov = 76.0
+near = 0.01
+
+[node name="FPSViewmodelSwitcher" parent="PrototypePlayer/Head/Camera3D" instance=ExtResource("3_viewmodel") groups=["mcp_watch", "viewmodels"]]
+handle_right_mouse = false
+handle_mouse_wheel = false
+
+[node name="WeaponController" parent="PrototypePlayer/Head/Camera3D" instance=ExtResource("4_weapon_controller")]
+camera_path = NodePath("..")
+viewmodel_path = NodePath("../FPSViewmodelSwitcher")
+hud_weapon_path = NodePath("../CombatHUD/Root/WeaponPanel/VBox/Weapon")
+hud_ammo_path = NodePath("../CombatHUD/Root/WeaponPanel/VBox/Ammo")
+hud_mode_path = NodePath("../CombatHUD/Root/WeaponPanel/VBox/StateRow/Mode")
+hud_action_path = NodePath("../CombatHUD/Root/WeaponPanel/VBox/StateRow/Action")
+hud_result_path = NodePath("../CombatHUD/Root/Result")
+hud_reticle_path = NodePath("../CombatHUD/Root/Reticle")
+
+[node name="CombatHUD" type="CanvasLayer" parent="PrototypePlayer/Head/Camera3D"]
+
+[node name="Root" type="Control" parent="PrototypePlayer/Head/Camera3D/CombatHUD"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="WeaponPanel" type="PanelContainer" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root"]
+layout_mode = 0
+offset_left = 1032.0
+offset_top = 598.0
+offset_right = 1260.0
+offset_bottom = 700.0
+theme_override_styles/panel = SubResource("Style_hud")
+
+[node name="VBox" type="VBoxContainer" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel"]
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="Weapon" type="Label" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.78, 0.9, 0.96, 1)
+theme_override_font_sizes/font_size = 17
+text = "AK-74M"
+horizontal_alignment = 1
+vertical_alignment = 0
+
+[node name="Ammo" type="Label" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.96, 0.98, 1, 1)
+theme_override_font_sizes/font_size = 32
+text = "30  /  120"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="StateRow" type="HBoxContainer" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel/VBox"]
+layout_mode = 2
+
+[node name="Mode" type="Label" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel/VBox/StateRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.98, 0.69, 0.18, 1)
+theme_override_font_sizes/font_size = 14
+text = "AUTO"
+horizontal_alignment = 0
+vertical_alignment = 2
+
+[node name="Action" type="Label" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/WeaponPanel/VBox/StateRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.4, 0.66, 0.77, 1)
+theme_override_font_sizes/font_size = 13
+text = "HIP"
+horizontal_alignment = 2
+vertical_alignment = 2
+
+[node name="Reticle" type="Control" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root"]
+layout_mode = 0
+offset_left = 627.0
+offset_top = 347.0
+offset_right = 653.0
+offset_bottom = 373.0
+mouse_filter = 2
+
+[node name="Horizontal" type="ColorRect" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/Reticle"]
+layout_mode = 0
+offset_left = 3.0
+offset_top = 12.0
+offset_right = 23.0
+offset_bottom = 14.0
+color = Color(0.9, 0.96, 1, 0.88)
+mouse_filter = 2
+
+[node name="Vertical" type="ColorRect" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root/Reticle"]
+layout_mode = 0
+offset_left = 12.0
+offset_top = 3.0
+offset_right = 14.0
+offset_bottom = 23.0
+color = Color(0.9, 0.96, 1, 0.88)
+mouse_filter = 2
+
+[node name="Result" type="Label" parent="PrototypePlayer/Head/Camera3D/CombatHUD/Root"]
+layout_mode = 0
+offset_left = 574.0
+offset_top = 386.0
+offset_right = 706.0
+offset_bottom = 416.0
+theme_override_font_sizes/font_size = 15
+horizontal_alignment = 1
+
+[node name="BallisticsCalibrationPlate" type="StaticBody3D" parent="." groups=["controlled_target", "mcp_watch"]]
+position = Vector3(0, 1.48, -9.2)
+script = ExtResource("5_target")
+
+[node name="Plate" type="MeshInstance3D" parent="BallisticsCalibrationPlate"]
+mesh = SubResource("Mesh_target_plate")
+material_override = SubResource("Material_target_plate")
+
+[node name="Center" type="MeshInstance3D" parent="BallisticsCalibrationPlate"]
+position = Vector3(0, 0.1, 0.085)
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("Mesh_target_center")
+material_override = SubResource("Material_target_center")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="BallisticsCalibrationPlate"]
+shape = SubResource("Shape_target")

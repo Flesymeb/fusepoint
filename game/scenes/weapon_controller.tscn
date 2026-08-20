@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/weapon_controller.gd" id="1_controller"]
+
+[node name="WeaponController" type="Node" groups=["mcp_watch", "weapon_controllers"]]
+script = ExtResource("1_controller")
