@@ -1,4 +1,4 @@
-[gd_scene load_steps=31 format=3]
+[gd_scene load_steps=38 format=3]
 
 [ext_resource type="Script" path="res://scripts/prototype_player.gd" id="1_player"]
 
@@ -97,6 +97,31 @@ size = Vector3(2.8, 1.05, 1.05)
 
 [sub_resource type="BoxShape3D" id="Shape_barrier"]
 size = Vector3(2.8, 1.05, 1.05)
+
+[sub_resource type="BoxMesh" id="Mesh_route_cover"]
+material = SubResource("Material_dark")
+size = Vector3(4.6, 1.2, 0.9)
+
+[sub_resource type="BoxShape3D" id="Shape_route_cover"]
+size = Vector3(4.6, 1.2, 0.9)
+
+[sub_resource type="BoxMesh" id="Mesh_clearance_canopy"]
+material = SubResource("Material_amber")
+size = Vector3(2.4, 0.3, 2.4)
+
+[sub_resource type="BoxShape3D" id="Shape_clearance_canopy"]
+size = Vector3(2.4, 0.3, 2.4)
+
+[sub_resource type="BoxMesh" id="Mesh_alpha_pad"]
+material = SubResource("Material_cyan")
+size = Vector3(4.6, 0.04, 2.2)
+
+[sub_resource type="BoxShape3D" id="Shape_alpha_volume"]
+size = Vector3(4.6, 2.0, 2.2)
+
+[sub_resource type="BoxMesh" id="Mesh_alpha_post"]
+material = SubResource("Material_cyan")
+size = Vector3(0.22, 2.2, 0.22)
 
 [sub_resource type="BoxMesh" id="Mesh_barrier_stripe"]
 material = SubResource("Material_amber")
@@ -229,6 +254,57 @@ mesh = SubResource("Mesh_barrier_stripe")
 
 [node name="Collision" type="CollisionShape3D" parent="Room/Barrier"]
 shape = SubResource("Shape_barrier")
+
+[node name="RouteCover" type="StaticBody3D" parent="Room"]
+position = Vector3(0, 0.6, 1.8)
+
+[node name="Mesh" type="MeshInstance3D" parent="Room/RouteCover"]
+mesh = SubResource("Mesh_route_cover")
+
+[node name="Stripe" type="MeshInstance3D" parent="Room/RouteCover"]
+position = Vector3(0, 0.22, 0)
+scale = Vector3(1.65, 1, 0.86)
+mesh = SubResource("Mesh_barrier_stripe")
+
+[node name="Collision" type="CollisionShape3D" parent="Room/RouteCover"]
+shape = SubResource("Shape_route_cover")
+
+[node name="ClearanceCanopy" type="StaticBody3D" parent="Room"]
+position = Vector3(3.6, 1.4, 0.2)
+
+[node name="Mesh" type="MeshInstance3D" parent="Room/ClearanceCanopy"]
+mesh = SubResource("Mesh_clearance_canopy")
+
+[node name="Collision" type="CollisionShape3D" parent="Room/ClearanceCanopy"]
+shape = SubResource("Shape_clearance_canopy")
+
+[node name="AlphaPlaceholder" type="Area3D" parent="Room"]
+position = Vector3(0, 1, -6.35)
+collision_layer = 0
+collision_mask = 1
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Room/AlphaPlaceholder"]
+shape = SubResource("Shape_alpha_volume")
+
+[node name="FloorPad" type="MeshInstance3D" parent="Room/AlphaPlaceholder"]
+position = Vector3(0, -0.98, 0)
+mesh = SubResource("Mesh_alpha_pad")
+
+[node name="LeftPost" type="MeshInstance3D" parent="Room/AlphaPlaceholder"]
+position = Vector3(-2.15, 0.1, 0)
+mesh = SubResource("Mesh_alpha_post")
+
+[node name="RightPost" type="MeshInstance3D" parent="Room/AlphaPlaceholder"]
+position = Vector3(2.15, 0.1, 0)
+mesh = SubResource("Mesh_alpha_post")
+
+[node name="AlphaLabel" type="Label3D" parent="Room/AlphaPlaceholder"]
+position = Vector3(0, 1.35, 0)
+modulate = Color(0.15, 0.88, 1, 1)
+outline_modulate = Color(0.015, 0.05, 0.07, 1)
+text = "ALPHA // INTERACTION"
+font_size = 48
+outline_size = 8
 
 [node name="PrototypePlayer" type="CharacterBody3D" parent="." groups=["mcp_watch"]]
 position = Vector3(0, 0.9, 5.4)
