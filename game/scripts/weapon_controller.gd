@@ -44,6 +44,8 @@ var _shot_serial := 0
 var _shot_commits: Dictionary = {}
 var _shot_history: Array[Dictionary] = []
 var _last_shot: Dictionary = {}
+var _impact_commits: Dictionary = {}
+var _impact_history: Array[Dictionary] = []
 var _last_result_until := 0.0
 var _inspect_tween: Tween
 var _ready_for_combat := false
@@ -151,6 +153,7 @@ func _try_submit_shot() -> void:
 	weapon["magazine"] = int(weapon["magazine"]) - 1
 	_weapons[_equipped_id] = weapon
 	var receipt := _resolve_ballistics(shot_id, weapon)
+	_dispatch_impact_receipt(receipt)
 	_last_shot = receipt
 	_shot_history.append(receipt.duplicate(true))
 	if _shot_history.size() > 24:
@@ -207,7 +210,6 @@ func _resolve_ballistics(shot_id: String, weapon: Dictionary) -> Dictionary:
 			))
 		else:
 			result = &"blocked"
-		_spawn_impact(hit_position, hit_normal, result)
 	return {
 		"shot_id": shot_id,
 		"weapon_id": _equipped_id,
@@ -218,6 +220,7 @@ func _resolve_ballistics(shot_id: String, weapon: Dictionary) -> Dictionary:
 		"result": result,
 		"collider_path": collider_path,
 		"hit_position": hit_position,
+		"hit_normal": hit_normal,
 		"damage": float(weapon["damage"]) if damage_committed else 0.0,
 		"damage_commit": damage_committed,
 		"ammo_commit": 1,
@@ -370,6 +373,9 @@ func _on_spawn_reset() -> void:
 	_shot_commits.clear()
 	_shot_history.clear()
 	_last_shot.clear()
+	_impact_commits.clear()
+	_impact_history.clear()
+	_clear_live_impacts()
 	viewmodel.call(&"equip_weapon_id", _equipped_id, true)
 	for node: Node in get_tree().get_nodes_in_group(&"controlled_target"):
 		if node.has_method(&"reset_target"):
@@ -445,23 +451,138 @@ func _present_shot_result(receipt: Dictionary) -> void:
 	_last_result_until = _now() + 0.34
 
 
-func _spawn_impact(position: Vector3, normal: Vector3, result: StringName) -> void:
+func deliver_impact_receipt(receipt: Dictionary) -> bool:
+	return _dispatch_impact_receipt(receipt)
+
+
+func _dispatch_impact_receipt(receipt: Dictionary) -> bool:
+	var shot_id := String(receipt.get("shot_id", ""))
+	var result := StringName(receipt.get("result", &"miss"))
+	if shot_id.is_empty() or result == &"miss" or _impact_commits.has(shot_id):
+		return false
+	if result not in [&"hit", &"blocked"]:
+		return false
+	var position: Vector3 = receipt.get("hit_position", Vector3.ZERO)
+	var normal: Vector3 = receipt.get("hit_normal", Vector3.UP)
+	if normal.is_zero_approx():
+		normal = Vector3.UP
+	var lifetime := 0.34 if result == &"hit" else 0.48
+	var variant := &"target_spark" if result == &"hit" else &"surface_chip"
+	_impact_commits[shot_id] = true
+	var event := {
+		"shot_id": shot_id,
+		"result": result,
+		"position": position,
+		"normal": normal,
+		"variant": variant,
+		"spawn_count": 1,
+		"committed_at_seconds": _now(),
+		"lifetime_seconds": lifetime,
+		"expires_at_seconds": _now() + lifetime,
+	}
+	_impact_history.append(event)
+	while _impact_history.size() > 24:
+		_impact_history.pop_front()
+	_spawn_impact(event)
+	return true
+
+
+func _spawn_impact(event: Dictionary) -> void:
+	var result := StringName(event["result"])
+	var root := Node3D.new()
+	root.name = "ShotImpact_%s" % String(event["shot_id"]).replace("-", "_")
+	root.add_to_group(&"shot_impacts")
 	var marker := MeshInstance3D.new()
-	marker.name = "ShotImpact_%06d" % _shot_serial
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.025 if result == &"hit" else 0.018
-	sphere.height = sphere.radius * 2.0
+	marker.name = "TargetSpark" if result == &"hit" else "SurfaceChip"
 	var material := StandardMaterial3D.new()
-	material.albedo_color = Color(1.0, 0.55, 0.12) if result == &"hit" else Color(0.75, 0.82, 0.9)
+	material.albedo_color = Color(1.0, 0.92, 0.55) if result == &"hit" else Color(0.46, 0.88, 1.0)
 	material.emission_enabled = true
 	material.emission = material.albedo_color
-	material.emission_energy_multiplier = 2.2
-	sphere.material = material
-	marker.mesh = sphere
-	get_tree().current_scene.add_child(marker)
-	marker.global_position = position + normal * 0.018
-	var timer := get_tree().create_timer(0.22)
-	timer.timeout.connect(marker.queue_free)
+	material.emission_energy_multiplier = 4.2 if result == &"hit" else 1.8
+	material.roughness = 0.5 if result == &"hit" else 0.9
+	if result == &"hit":
+		var sphere := SphereMesh.new()
+		sphere.radius = 0.075
+		sphere.height = 0.15
+		sphere.radial_segments = 12
+		sphere.rings = 6
+		sphere.material = material
+		marker.mesh = sphere
+	else:
+		var chip := CylinderMesh.new()
+		chip.top_radius = 0.095
+		chip.bottom_radius = 0.064
+		chip.height = 0.008
+		chip.radial_segments = 10
+		chip.material = material
+		marker.mesh = chip
+	root.add_child(marker)
+	get_tree().current_scene.add_child(root)
+	var normal: Vector3 = event["normal"]
+	root.global_position = event["position"] + normal * 0.012
+	root.global_basis = _basis_from_up(normal)
+	var lifetime := float(event["lifetime_seconds"])
+	var tween := root.create_tween()
+	if result == &"hit":
+		root.scale = Vector3.ONE * 0.35
+		tween.tween_property(root, "scale", Vector3.ONE * 1.35, lifetime * 0.24).set_trans(Tween.TRANS_QUAD)
+		tween.tween_property(root, "scale", Vector3.ONE * 0.08, lifetime * 0.76).set_trans(Tween.TRANS_EXPO)
+	else:
+		root.scale = Vector3(0.45, 0.2, 0.45)
+		tween.tween_property(root, "scale", Vector3(1.0, 0.35, 1.0), lifetime * 0.32).set_trans(Tween.TRANS_QUAD)
+		tween.tween_interval(lifetime * 0.5)
+		tween.tween_property(root, "scale", Vector3(0.72, 0.08, 0.72), lifetime * 0.18)
+	tween.finished.connect(root.queue_free)
+
+
+func _basis_from_up(normal: Vector3) -> Basis:
+	var up := normal.normalized()
+	var tangent := Vector3.FORWARD.cross(up)
+	if tangent.is_zero_approx():
+		tangent = Vector3.RIGHT
+	tangent = tangent.normalized()
+	return Basis(tangent, up, up.cross(tangent).normalized()).orthonormalized()
+
+
+func _clear_live_impacts() -> void:
+	for node: Node in get_tree().get_nodes_in_group(&"shot_impacts"):
+		node.queue_free()
+
+
+func snapshot_weapon_state() -> Dictionary:
+	return {
+		"weapons": _weapons.duplicate(true),
+		"equipped_id": _equipped_id,
+		"shot_serial": _shot_serial,
+		"shot_commits": _shot_commits.duplicate(true),
+		"shot_history": _shot_history.duplicate(true),
+		"last_shot": _last_shot.duplicate(true),
+		"impact_commits": _impact_commits.duplicate(true),
+		"impact_history": _impact_history.duplicate(true),
+	}
+
+
+func restore_weapon_state(snapshot: Dictionary) -> void:
+	var serial_before := _shot_serial
+	var shot_commits_before := _shot_commits.duplicate(true)
+	var shot_history_before := _shot_history.duplicate(true)
+	var last_shot_before := _last_shot.duplicate(true)
+	var impact_commits_before := _impact_commits.duplicate(true)
+	var impact_history_before := _impact_history.duplicate(true)
+	_cancel_action(&"hip")
+	_weapons = snapshot.get("weapons", _fresh_weapon_data()).duplicate(true)
+	_equipped_id = StringName(snapshot.get("equipped_id", &"ak74m"))
+	_pending_equipped_id = &""
+	_ads_held = false
+	_shot_serial = maxi(serial_before, int(snapshot.get("shot_serial", 0)))
+	_shot_commits = shot_commits_before
+	_shot_history.assign(shot_history_before)
+	_last_shot = last_shot_before
+	_impact_commits = impact_commits_before
+	_impact_history.assign(impact_history_before)
+	_clear_live_impacts()
+	viewmodel.call(&"equip_weapon_id", _equipped_id, true)
+	weapon_state_changed.emit(_mcp_state())
 
 
 func _visible_rig_audit() -> Dictionary:
@@ -522,6 +643,8 @@ func _mcp_state() -> Dictionary:
 		"unique_commit_count": _shot_commits.size(),
 		"last_shot": _last_shot,
 		"shot_history": _shot_history,
+		"impact_unique_commit_count": _impact_commits.size(),
+		"impact_history": _impact_history,
 		"camera_origin": camera.global_position,
 		"camera_forward": -camera.global_transform.basis.z,
 		"muzzle_origin": _muzzle_origin(),

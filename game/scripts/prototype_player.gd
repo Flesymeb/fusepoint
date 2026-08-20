@@ -1,6 +1,7 @@
 extends CharacterBody3D
 
 signal spawn_reset
+signal authoritative_damage_received(amount: float, damage_event_id: String)
 
 @export_group("Ground locomotion")
 @export var walk_speed := 4.5
@@ -22,6 +23,9 @@ signal spawn_reset
 @export_range(30.0, 89.0, 1.0) var pitch_limit_degrees := 82.0
 @export var stance_camera_speed := 3.2
 
+@export_group("Mission survivability")
+@export var max_health := 100.0
+
 @onready var collision_shape: CollisionShape3D = $CollisionShape3D
 @onready var head: Node3D = $Head
 @onready var camera: Camera3D = $Head/Camera3D
@@ -39,11 +43,15 @@ var _landing_time_left := 0.0
 var _stand_clearance := true
 var _jump_started := false
 var _standing_clearance_shape := CapsuleShape3D.new()
+var health := 100.0
+var _damage_serial := 0
+var _damage_commits: Dictionary = {}
 
 
 func _ready() -> void:
 	_spawn_transform = global_transform
 	_spawn_head_rotation = head.rotation
+	health = max_health
 	_standing_clearance_shape.radius = 0.4
 	_standing_clearance_shape.height = standing_height
 	floor_snap_length = 0.25
@@ -78,7 +86,9 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _physics_process(delta: float) -> void:
 	if Input.is_action_just_pressed("restart"):
-		_reset_to_spawn()
+		var mission_controller := get_tree().get_first_node_in_group(&"mission_controller")
+		if mission_controller == null or not bool(mission_controller.call(&"request_checkpoint_restore")):
+			_reset_to_spawn()
 		return
 
 	var was_on_floor := is_on_floor()
@@ -221,10 +231,52 @@ func _reset_to_spawn() -> void:
 	_locomotion_mode = "idle"
 	_current_target_speed = 0.0
 	_stand_clearance = true
+	health = max_health
+	_damage_commits.clear()
 	_set_stance(false)
 	head.position.y = standing_eye_height
 	_capture_mouse()
 	spawn_reset.emit()
+
+
+func reset_to_deployment_without_mission_reset() -> void:
+	_restore_movement_state(_spawn_transform, max_health)
+
+
+func restore_checkpoint_state(checkpoint_transform: Transform3D, checkpoint_health: float) -> void:
+	_restore_movement_state(checkpoint_transform, checkpoint_health)
+
+
+func _restore_movement_state(target_transform: Transform3D, target_health: float) -> void:
+	global_transform = target_transform
+	head.rotation = _spawn_head_rotation
+	_pitch = _spawn_head_rotation.x
+	velocity = Vector3.ZERO
+	_landing_time_left = 0.0
+	_jump_started = false
+	_jump_phase = "grounded"
+	_locomotion_mode = "idle"
+	_current_target_speed = 0.0
+	_stand_clearance = true
+	_set_stance(false)
+	head.position.y = standing_eye_height
+	health = clampf(target_health, 1.0, max_health)
+	_capture_mouse()
+
+
+func apply_authoritative_damage(amount: float, damage_event_id := "") -> bool:
+	if amount <= 0.0 or health <= 0.0:
+		return false
+	_damage_serial += 1
+	var event_id := damage_event_id
+	if event_id.is_empty():
+		event_id = "player-damage-%06d" % _damage_serial
+	if _damage_commits.has(event_id):
+		return false
+	_damage_commits[event_id] = true
+	health = maxf(0.0, health - amount)
+	authoritative_damage_received.emit(amount, event_id)
+	return true
 
 
 func _mcp_state() -> Dictionary:
@@ -250,4 +302,7 @@ func _mcp_state() -> Dictionary:
 		"jump_available": is_on_floor() and _stance == "standing",
 		"landing_active": _landing_time_left > 0.0,
 		"stand_clearance": _stand_clearance,
+		"health": health,
+		"max_health": max_health,
+		"damage_commit_count": _damage_commits.size(),
 	}

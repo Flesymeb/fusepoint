@@ -1,9 +1,10 @@
-[gd_scene load_steps=12 format=3]
+[gd_scene load_steps=21 format=3]
 
 [ext_resource type="PackedScene" path="res://systems/world/3d_fps_map/standoff_2/chicken_gun_standoff_2_arena.glb" id="1_map"]
 [ext_resource type="Script" path="res://scripts/arena_foundation.gd" id="2_foundation"]
 [ext_resource type="Script" path="res://scripts/placeholder_objective.gd" id="3_objective"]
 [ext_resource type="Script" path="res://scripts/arena_route_probe.gd" id="4_route"]
+[ext_resource type="Script" path="res://scripts/bomb_objective.gd" id="5_bomb"]
 
 [sub_resource type="ProceduralSkyMaterial" id="SkyMaterial_daylight"]
 sky_top_color = Color(0.12, 0.32, 0.58, 1)
@@ -38,7 +39,7 @@ filter_ledge_spans = true
 filter_walkable_low_height_spans = true
 
 [sub_resource type="BoxShape3D" id="Shape_alpha"]
-size = Vector3(5, 2.4, 5)
+size = Vector3(8, 2.4, 8)
 
 [sub_resource type="StandardMaterial3D" id="Material_alpha"]
 transparency = 1
@@ -53,6 +54,57 @@ material = SubResource("Material_alpha")
 top_radius = 2.3
 bottom_radius = 2.3
 height = 0.035
+radial_segments = 48
+
+[sub_resource type="BoxShape3D" id="Shape_bravo"]
+size = Vector3(8, 2.4, 8)
+
+[sub_resource type="StandardMaterial3D" id="Material_bravo"]
+transparency = 1
+albedo_color = Color(0.04, 0.72, 0.86, 0.22)
+emission_enabled = true
+emission = Color(0.01, 0.36, 0.5, 1)
+emission_energy_multiplier = 0.45
+roughness = 0.42
+
+[sub_resource type="CylinderMesh" id="Mesh_bravo_marker"]
+material = SubResource("Material_bravo")
+top_radius = 3.8
+bottom_radius = 3.8
+height = 0.035
+radial_segments = 48
+
+[sub_resource type="CylinderShape3D" id="Shape_charlie"]
+radius = 3.5
+height = 2.4
+
+[sub_resource type="StandardMaterial3D" id="Material_bomb"]
+albedo_color = Color(0.12, 0.16, 0.18, 1)
+metallic = 0.65
+roughness = 0.32
+emission_enabled = true
+emission = Color(0.45, 0.045, 0.01, 1)
+emission_energy_multiplier = 1.7
+
+[sub_resource type="CylinderMesh" id="Mesh_bomb"]
+material = SubResource("Material_bomb")
+top_radius = 0.36
+bottom_radius = 0.44
+height = 0.72
+radial_segments = 16
+
+[sub_resource type="StandardMaterial3D" id="Material_charlie_ring"]
+transparency = 1
+albedo_color = Color(0.92, 0.18, 0.06, 0.18)
+emission_enabled = true
+emission = Color(0.5, 0.035, 0.005, 1)
+emission_energy_multiplier = 0.7
+
+[sub_resource type="CylinderMesh" id="Mesh_charlie_ring"]
+material = SubResource("Material_charlie_ring")
+top_radius = 3.35
+bottom_radius = 3.35
+height = 0.028
 radial_segments = 48
 
 [node name="ArenaFoundation" type="Node3D" groups=["mcp_watch"]]
@@ -86,7 +138,9 @@ collision_mask = 1
 monitoring = true
 monitorable = true
 script = ExtResource("3_objective")
+objective_id = &"alpha"
 player_path = NodePath("../../PrototypePlayer")
+mission_controller_path = NodePath("../../MissionController")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="Alpha"]
 shape = SubResource("Shape_alpha")
@@ -95,7 +149,7 @@ shape = SubResource("Shape_alpha")
 position = Vector3(0, -1.16, 0)
 mesh = SubResource("Mesh_alpha_marker")
 
-[node name="AlphaLabel" type="Label3D" parent="Alpha"]
+[node name="ObjectiveLabel" type="Label3D" parent="Alpha"]
 position = Vector3(0, 1.65, 0)
 modulate = Color(0.12, 0.88, 1, 1)
 outline_modulate = Color(0.015, 0.04, 0.05, 1)
@@ -105,8 +159,69 @@ outline_size = 7
 billboard = 1
 pixel_size = 0.012
 
+[node name="Bravo" type="Area3D" parent="." groups=["mcp_watch"]]
+position = Vector3(-12, 1.2, 18)
+collision_layer = 0
+collision_mask = 1
+monitoring = true
+monitorable = true
+script = ExtResource("3_objective")
+objective_id = &"bravo"
+player_path = NodePath("../../PrototypePlayer")
+mission_controller_path = NodePath("../../MissionController")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Bravo"]
+shape = SubResource("Shape_bravo")
+
+[node name="SurfaceMarker" type="MeshInstance3D" parent="Bravo"]
+position = Vector3(0, -1.16, 0)
+mesh = SubResource("Mesh_bravo_marker")
+
+[node name="ObjectiveLabel" type="Label3D" parent="Bravo"]
+position = Vector3(0, 1.65, 0)
+modulate = Color(1, 0.28, 0.16, 1)
+outline_modulate = Color(0.015, 0.04, 0.05, 1)
+text = "B  //  LOCKED"
+font_size = 42
+outline_size = 7
+billboard = 1
+pixel_size = 0.012
+
+[node name="Charlie" type="Area3D" parent="." groups=["mcp_watch"]]
+position = Vector3(10, 1.2, 29)
+collision_layer = 0
+collision_mask = 1
+monitoring = true
+monitorable = true
+script = ExtResource("5_bomb")
+player_path = NodePath("../../PrototypePlayer")
+mission_controller_path = NodePath("../../MissionController")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Charlie"]
+shape = SubResource("Shape_charlie")
+
+[node name="InteractionRing" type="MeshInstance3D" parent="Charlie"]
+position = Vector3(0, -1.16, 0)
+mesh = SubResource("Mesh_charlie_ring")
+
+[node name="BombCore" type="MeshInstance3D" parent="Charlie"]
+position = Vector3(0, -0.82, 0)
+mesh = SubResource("Mesh_bomb")
+
+[node name="ObjectiveLabel" type="Label3D" parent="Charlie"]
+position = Vector3(0, 1.65, 0)
+modulate = Color(1, 0.24, 0.14, 1)
+outline_modulate = Color(0.015, 0.04, 0.05, 1)
+text = "C  //  LOCKED"
+font_size = 42
+outline_size = 7
+billboard = 1
+pixel_size = 0.012
+
 [node name="RouteProbe" type="Node" parent="." groups=["mcp_watch"]]
 script = ExtResource("4_route")
 player_path = NodePath("../../PrototypePlayer")
 alpha_path = NodePath("../Alpha")
+bravo_path = NodePath("../Bravo")
+charlie_path = NodePath("../Charlie")
 arena_path = NodePath("..")

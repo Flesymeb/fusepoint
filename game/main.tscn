@@ -5,6 +5,7 @@
 [ext_resource type="PackedScene" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/fps_ak74_viewmodel.tscn" id="3_viewmodel"]
 [ext_resource type="PackedScene" path="res://scenes/weapon_controller.tscn" id="4_weapon_controller"]
 [ext_resource type="Script" path="res://scripts/controlled_target.gd" id="5_target"]
+[ext_resource type="Script" path="res://scripts/mission_controller.gd" id="6_mission"]
 
 [sub_resource type="CapsuleShape3D" id="Shape_player"]
 radius = 0.4
@@ -191,3 +192,98 @@ material_override = SubResource("Material_target_center")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="BallisticsCalibrationPlate"]
 shape = SubResource("Shape_target")
+
+[node name="MissionController" type="Node" parent="." groups=["mcp_watch", "mission_controller"]]
+script = ExtResource("6_mission")
+player_path = NodePath("../PrototypePlayer")
+weapon_controller_path = NodePath("../PrototypePlayer/Head/Camera3D/WeaponController")
+alpha_path = NodePath("../ArenaFoundation/Alpha")
+bravo_path = NodePath("../ArenaFoundation/Bravo")
+charlie_path = NodePath("../ArenaFoundation/Charlie")
+hud_timer_path = NodePath("../MissionHUD/Root/TopPanel/VBox/TimerRow/Timer")
+hud_objective_path = NodePath("../MissionHUD/Root/TopPanel/VBox/Objective")
+hud_keys_path = NodePath("../MissionHUD/Root/TopPanel/VBox/TimerRow/Keys")
+hud_progress_path = NodePath("../MissionHUD/Root/TopPanel/VBox/Progress")
+hud_prompt_path = NodePath("../MissionHUD/Root/Prompt")
+hud_event_path = NodePath("../MissionHUD/Root/Event")
+
+[node name="MissionHUD" type="CanvasLayer" parent="."]
+
+[node name="Root" type="Control" parent="MissionHUD"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="TopPanel" type="PanelContainer" parent="MissionHUD/Root"]
+layout_mode = 0
+offset_left = 446.0
+offset_top = 20.0
+offset_right = 834.0
+offset_bottom = 142.0
+theme_override_styles/panel = SubResource("Style_hud")
+
+[node name="VBox" type="VBoxContainer" parent="MissionHUD/Root/TopPanel"]
+layout_mode = 2
+theme_override_constants/separation = 1
+
+[node name="TimerRow" type="HBoxContainer" parent="MissionHUD/Root/TopPanel/VBox"]
+layout_mode = 2
+
+[node name="Keys" type="Label" parent="MissionHUD/Root/TopPanel/VBox/TimerRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.34, 0.88, 1, 1)
+theme_override_font_sizes/font_size = 16
+text = "KEYS  0 / 2"
+vertical_alignment = 1
+
+[node name="Timer" type="Label" parent="MissionHUD/Root/TopPanel/VBox/TimerRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.82, 0.94, 1, 1)
+theme_override_font_sizes/font_size = 28
+text = "05:00"
+horizontal_alignment = 2
+
+[node name="Objective" type="Label" parent="MissionHUD/Root/TopPanel/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94, 0.98, 1, 1)
+theme_override_font_sizes/font_size = 19
+text = "A  //  RETAKE FOUNDRY GATE"
+horizontal_alignment = 1
+
+[node name="Progress" type="Label" parent="MissionHUD/Root/TopPanel/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.42, 0.82, 0.94, 1)
+theme_override_font_sizes/font_size = 14
+text = "A HOSTILE   B HOSTILE   C ARMED"
+horizontal_alignment = 1
+
+[node name="Prompt" type="Label" parent="MissionHUD/Root"]
+layout_mode = 0
+offset_left = 390.0
+offset_top = 500.0
+offset_right = 890.0
+offset_bottom = 536.0
+theme_override_colors/font_color = Color(1, 0.72, 0.25, 1)
+theme_override_colors/font_outline_color = Color(0.01, 0.02, 0.03, 0.94)
+theme_override_constants/outline_size = 6
+theme_override_font_sizes/font_size = 18
+horizontal_alignment = 1
+
+[node name="Event" type="Label" parent="MissionHUD/Root"]
+layout_mode = 0
+offset_left = 390.0
+offset_top = 154.0
+offset_right = 890.0
+offset_bottom = 186.0
+theme_override_colors/font_color = Color(0.28, 0.9, 1, 1)
+theme_override_colors/font_outline_color = Color(0.01, 0.02, 0.03, 0.94)
+theme_override_constants/outline_size = 5
+theme_override_font_sizes/font_size = 15
+text = "AEGIS  //  DEPLOYMENT STARTED"
+horizontal_alignment = 1

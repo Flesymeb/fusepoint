@@ -1,6 +1,6 @@
 extends Node
 
-const ROUTE_ID := "standoff_spawn_to_alpha"
+const ROUTE_ID := "standoff_authoritative_a_b_c"
 const EXPECTED_MIN_SECONDS := 30.0
 const EXPECTED_MAX_SECONDS := 45.0
 const MAX_SAMPLES := 24
@@ -10,10 +10,20 @@ const ROUTE_DECISIONS := [
 	{"id": "west_perimeter_lane", "position": Vector3(-19.4, 0.9, -18.7)},
 	{"id": "central_cover_return", "position": Vector3(5.4, 0.9, -8.2)},
 	{"id": "alpha_approach", "position": Vector3(-5.0, 0.9, -23.2)},
+	{"id": "alpha_to_bravo_main", "position": Vector3(-5.0, 0.9, 2.0)},
+	{"id": "alpha_to_bravo_flank", "position": Vector3(-17.0, 0.9, -5.0)},
+	{"id": "bravo_fallback", "position": Vector3(-12.0, 0.9, 10.0)},
+	{"id": "bravo_approach", "position": Vector3(-12.0, 0.9, 18.0)},
+	{"id": "bravo_to_charlie_main", "position": Vector3(0.0, 0.9, 21.0)},
+	{"id": "bravo_to_charlie_flank", "position": Vector3(-2.0, 0.9, 30.0)},
+	{"id": "charlie_fallback", "position": Vector3(5.0, 0.9, 23.0)},
+	{"id": "charlie_approach", "position": Vector3(10.0, 0.9, 29.0)},
 ]
 
 @export var player_path: NodePath
 @export var alpha_path: NodePath
+@export var bravo_path: NodePath
+@export var charlie_path: NodePath
 @export var arena_path: NodePath
 
 var effective_traversal_seconds := 0.0
@@ -76,6 +86,8 @@ func _physics_process(delta: float) -> void:
 
 func _append_sample(player: CharacterBody3D, horizontal_speed: float) -> void:
 	var alpha := get_node_or_null(alpha_path) as Area3D
+	var bravo := get_node_or_null(bravo_path) as Area3D
+	var charlie := get_node_or_null(charlie_path) as Area3D
 	var player_state: Dictionary = player.call("_mcp_state")
 	route_samples.append({
 		"effective_seconds": snappedf(effective_traversal_seconds, 0.01),
@@ -107,17 +119,31 @@ func _nearest_route_decision(player_position: Vector3) -> Dictionary:
 func _mcp_state() -> Dictionary:
 	var player := get_node_or_null(player_path) as CharacterBody3D
 	var alpha := get_node_or_null(alpha_path) as Area3D
+	var bravo := get_node_or_null(bravo_path) as Area3D
+	var charlie := get_node_or_null(charlie_path) as Area3D
 	var arena := get_node_or_null(arena_path)
 	if player == null or alpha == null:
 		return {"route_id": ROUTE_ID, "ready": false}
 	var distance_to_alpha := player.global_position.distance_to(alpha.global_position)
-	var objective_inside := bool(alpha.get("objective_state") == "inside")
+	var objective_inside := alpha.overlaps_body(player)
 	var within_budget := effective_traversal_seconds >= EXPECTED_MIN_SECONDS and effective_traversal_seconds <= EXPECTED_MAX_SECONDS
 	return {
 		"route_id": ROUTE_ID,
 		"ready": arena != null and bool(arena.get("collision_ready")),
 		"fixed_spawn": _fixed_spawn,
 		"alpha_position": alpha.global_position,
+		"bravo_position": bravo.global_position if bravo != null else Vector3.ZERO,
+		"charlie_position": charlie.global_position if charlie != null else Vector3.ZERO,
+		"objective_separation": {
+			"a_to_b": alpha.global_position.distance_to(bravo.global_position) if bravo != null else -1.0,
+			"b_to_c": bravo.global_position.distance_to(charlie.global_position) if bravo != null and charlie != null else -1.0,
+			"a_to_c": alpha.global_position.distance_to(charlie.global_position) if charlie != null else -1.0,
+		},
+		"route_edges": {
+			"spawn_to_a": ["main", "flank", "fallback"],
+			"a_to_b": ["main", "flank", "fallback"],
+			"b_to_c": ["main", "flank", "fallback"],
+		},
 		"player_position": player.global_position,
 		"distance_to_alpha": snappedf(distance_to_alpha, 0.01),
 		"effective_traversal_seconds": snappedf(effective_traversal_seconds, 0.01),
