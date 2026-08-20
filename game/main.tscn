@@ -1,0 +1,247 @@
+[gd_scene load_steps=31 format=3]
+
+[ext_resource type="Script" path="res://scripts/prototype_player.gd" id="1_player"]
+
+[sub_resource type="Environment" id="Environment_room"]
+background_mode = 1
+background_color = Color(0.025, 0.04, 0.055, 1)
+ambient_light_source = 3
+ambient_light_color = Color(0.72, 0.8, 0.88, 1)
+ambient_light_energy = 0.55
+tonemap_mode = 2
+
+[sub_resource type="StandardMaterial3D" id="Material_floor"]
+albedo_color = Color(0.16, 0.19, 0.21, 1)
+metallic = 0.08
+roughness = 0.78
+
+[sub_resource type="StandardMaterial3D" id="Material_wall"]
+albedo_color = Color(0.27, 0.3, 0.31, 1)
+metallic = 0.04
+roughness = 0.86
+
+[sub_resource type="StandardMaterial3D" id="Material_dark"]
+albedo_color = Color(0.08, 0.1, 0.115, 1)
+metallic = 0.12
+roughness = 0.72
+
+[sub_resource type="StandardMaterial3D" id="Material_cyan"]
+albedo_color = Color(0.05, 0.43, 0.5, 1)
+emission_enabled = true
+emission = Color(0.02, 0.32, 0.4, 1)
+emission_energy_multiplier = 0.75
+roughness = 0.55
+
+[sub_resource type="StandardMaterial3D" id="Material_amber"]
+albedo_color = Color(0.72, 0.31, 0.055, 1)
+emission_enabled = true
+emission = Color(0.55, 0.16, 0.015, 1)
+emission_energy_multiplier = 0.55
+roughness = 0.62
+
+[sub_resource type="BoxMesh" id="Mesh_floor"]
+material = SubResource("Material_floor")
+size = Vector3(20, 0.5, 16)
+
+[sub_resource type="BoxShape3D" id="Shape_floor"]
+size = Vector3(20, 0.5, 16)
+
+[sub_resource type="BoxMesh" id="Mesh_side_wall"]
+material = SubResource("Material_wall")
+size = Vector3(0.5, 4.75, 16)
+
+[sub_resource type="BoxShape3D" id="Shape_side_wall"]
+size = Vector3(0.5, 4.75, 16)
+
+[sub_resource type="BoxMesh" id="Mesh_end_wall"]
+material = SubResource("Material_wall")
+size = Vector3(20, 4.75, 0.5)
+
+[sub_resource type="BoxShape3D" id="Shape_end_wall"]
+size = Vector3(20, 4.75, 0.5)
+
+[sub_resource type="BoxMesh" id="Mesh_ceiling"]
+material = SubResource("Material_dark")
+size = Vector3(20, 0.3, 16)
+
+[sub_resource type="BoxShape3D" id="Shape_ceiling"]
+size = Vector3(20, 0.3, 16)
+
+[sub_resource type="BoxMesh" id="Mesh_door"]
+material = SubResource("Material_amber")
+size = Vector3(4.2, 2.7, 0.16)
+
+[sub_resource type="BoxMesh" id="Mesh_door_frame_vertical"]
+material = SubResource("Material_dark")
+size = Vector3(0.35, 3.25, 0.34)
+
+[sub_resource type="BoxMesh" id="Mesh_door_frame_top"]
+material = SubResource("Material_dark")
+size = Vector3(4.9, 0.35, 0.34)
+
+[sub_resource type="BoxMesh" id="Mesh_floor_line"]
+material = SubResource("Material_cyan")
+size = Vector3(0.16, 0.025, 9.5)
+
+[sub_resource type="BoxMesh" id="Mesh_floor_line_amber"]
+material = SubResource("Material_amber")
+size = Vector3(0.16, 0.025, 5.5)
+
+[sub_resource type="BoxMesh" id="Mesh_pillar"]
+material = SubResource("Material_cyan")
+size = Vector3(0.65, 3.2, 0.65)
+
+[sub_resource type="BoxMesh" id="Mesh_barrier"]
+material = SubResource("Material_dark")
+size = Vector3(2.8, 1.05, 1.05)
+
+[sub_resource type="BoxShape3D" id="Shape_barrier"]
+size = Vector3(2.8, 1.05, 1.05)
+
+[sub_resource type="BoxMesh" id="Mesh_barrier_stripe"]
+material = SubResource("Material_amber")
+size = Vector3(2.85, 0.16, 1.08)
+
+[sub_resource type="CapsuleShape3D" id="Shape_player"]
+radius = 0.4
+height = 1.8
+
+[node name="FusepointBootstrap" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_room")
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-48, -32, 0)
+light_color = Color(0.82, 0.9, 1, 1)
+light_energy = 0.95
+shadow_enabled = false
+
+[node name="RoomFill" type="OmniLight3D" parent="."]
+position = Vector3(0, 3.25, 1.5)
+light_color = Color(0.74, 0.84, 1, 1)
+light_energy = 2.2
+omni_range = 16.0
+shadow_enabled = false
+
+[node name="GoalGlow" type="OmniLight3D" parent="."]
+position = Vector3(0, 2.0, -6.6)
+light_color = Color(1, 0.37, 0.08, 1)
+light_energy = 1.7
+omni_range = 7.5
+shadow_enabled = false
+
+[node name="Room" type="Node3D" parent="."]
+
+[node name="Floor" type="StaticBody3D" parent="Room"]
+position = Vector3(0, -0.25, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Room/Floor"]
+mesh = SubResource("Mesh_floor")
+
+[node name="Collision" type="CollisionShape3D" parent="Room/Floor"]
+shape = SubResource("Shape_floor")
+
+[node name="LeftWall" type="StaticBody3D" parent="Room"]
+position = Vector3(-10.25, 2.375, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Room/LeftWall"]
+mesh = SubResource("Mesh_side_wall")
+
+[node name="Collision" type="CollisionShape3D" parent="Room/LeftWall"]
+shape = SubResource("Shape_side_wall")
+
+[node name="RightWall" type="StaticBody3D" parent="Room"]
+position = Vector3(10.25, 2.375, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Room/RightWall"]
+mesh = SubResource("Mesh_side_wall")
+
+[node name="Collision" type="CollisionShape3D" parent="Room/RightWall"]
+shape = SubResource("Shape_side_wall")
+
+[node name="FrontWall" type="StaticBody3D" parent="Room"]
+position = Vector3(0, 2.375, -8.25)
+
+[node name="Mesh" type="MeshInstance3D" parent="Room/FrontWall"]
+mesh = SubResource("Mesh_end_wall")
+
+[node name="Collision" type="CollisionShape3D" parent="Room/FrontWall"]
+shape = SubResource("Shape_end_wall")
+
+[node name="BackWall" type="StaticBody3D" parent="Room"]
+position = Vector3(0, 2.375, 8.25)
+
+[node name="Mesh" type="MeshInstance3D" parent="Room/BackWall"]
+mesh = SubResource("Mesh_end_wall")
+
+[node name="Collision" type="CollisionShape3D" parent="Room/BackWall"]
+shape = SubResource("Shape_end_wall")
+
+[node name="Ceiling" type="StaticBody3D" parent="Room"]
+position = Vector3(0, 4.9, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Room/Ceiling"]
+mesh = SubResource("Mesh_ceiling")
+
+[node name="Collision" type="CollisionShape3D" parent="Room/Ceiling"]
+shape = SubResource("Shape_ceiling")
+
+[node name="OrientationCues" type="Node3D" parent="Room"]
+
+[node name="GoalPanel" type="MeshInstance3D" parent="Room/OrientationCues"]
+position = Vector3(0, 1.42, -7.95)
+mesh = SubResource("Mesh_door")
+
+[node name="GoalFrameLeft" type="MeshInstance3D" parent="Room/OrientationCues"]
+position = Vector3(-2.3, 1.63, -7.82)
+mesh = SubResource("Mesh_door_frame_vertical")
+
+[node name="GoalFrameRight" type="MeshInstance3D" parent="Room/OrientationCues"]
+position = Vector3(2.3, 1.63, -7.82)
+mesh = SubResource("Mesh_door_frame_vertical")
+
+[node name="GoalFrameTop" type="MeshInstance3D" parent="Room/OrientationCues"]
+position = Vector3(0, 3.08, -7.82)
+mesh = SubResource("Mesh_door_frame_top")
+
+[node name="CyanGuide" type="MeshInstance3D" parent="Room/OrientationCues"]
+position = Vector3(-3.2, 0.015, 2.0)
+mesh = SubResource("Mesh_floor_line")
+
+[node name="AmberGuide" type="MeshInstance3D" parent="Room/OrientationCues"]
+position = Vector3(3.2, 0.015, -2.0)
+mesh = SubResource("Mesh_floor_line_amber")
+
+[node name="CyanPillar" type="MeshInstance3D" parent="Room/OrientationCues"]
+position = Vector3(-7.5, 1.6, -4.7)
+mesh = SubResource("Mesh_pillar")
+
+[node name="Barrier" type="StaticBody3D" parent="Room"]
+position = Vector3(4.25, 0.525, -1.4)
+
+[node name="Mesh" type="MeshInstance3D" parent="Room/Barrier"]
+mesh = SubResource("Mesh_barrier")
+
+[node name="Stripe" type="MeshInstance3D" parent="Room/Barrier"]
+position = Vector3(0, 0.16, 0)
+mesh = SubResource("Mesh_barrier_stripe")
+
+[node name="Collision" type="CollisionShape3D" parent="Room/Barrier"]
+shape = SubResource("Shape_barrier")
+
+[node name="PrototypePlayer" type="CharacterBody3D" parent="." groups=["mcp_watch"]]
+position = Vector3(0, 0.9, 5.4)
+script = ExtResource("1_player")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PrototypePlayer"]
+shape = SubResource("Shape_player")
+
+[node name="Head" type="Node3D" parent="PrototypePlayer"]
+position = Vector3(0, 0.62, 0)
+
+[node name="Camera3D" type="Camera3D" parent="PrototypePlayer/Head"]
+current = true
+fov = 75.0
+near = 0.05
+far = 60.0
