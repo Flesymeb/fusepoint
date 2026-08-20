@@ -4,22 +4,6 @@ const ROUTE_ID := "standoff_authoritative_a_b_c"
 const EXPECTED_MIN_SECONDS := 30.0
 const EXPECTED_MAX_SECONDS := 45.0
 const MAX_SAMPLES := 24
-const ROUTE_DECISIONS := [
-	{"id": "spawn_courtyard", "position": Vector3(0.0, 0.9, 0.0)},
-	{"id": "north_courtyard_turn", "position": Vector3(0.5, 0.9, 21.8)},
-	{"id": "west_perimeter_lane", "position": Vector3(-19.4, 0.9, -18.7)},
-	{"id": "central_cover_return", "position": Vector3(5.4, 0.9, -8.2)},
-	{"id": "alpha_approach", "position": Vector3(-5.0, 0.9, -23.2)},
-	{"id": "alpha_to_bravo_main", "position": Vector3(-5.0, 0.9, 2.0)},
-	{"id": "alpha_to_bravo_flank", "position": Vector3(-17.0, 0.9, -5.0)},
-	{"id": "bravo_fallback", "position": Vector3(-12.0, 0.9, 10.0)},
-	{"id": "bravo_approach", "position": Vector3(-12.0, 0.9, 18.0)},
-	{"id": "bravo_to_charlie_main", "position": Vector3(0.0, 0.9, 21.0)},
-	{"id": "bravo_to_charlie_flank", "position": Vector3(-2.0, 0.9, 30.0)},
-	{"id": "charlie_fallback", "position": Vector3(5.0, 0.9, 23.0)},
-	{"id": "charlie_approach", "position": Vector3(10.0, 0.9, 29.0)},
-]
-
 @export var player_path: NodePath
 @export var alpha_path: NodePath
 @export var bravo_path: NodePath
@@ -106,14 +90,53 @@ func _append_sample(player: CharacterBody3D, horizontal_speed: float) -> void:
 
 
 func _nearest_route_decision(player_position: Vector3) -> Dictionary:
-	var nearest: Dictionary = ROUTE_DECISIONS[0]
+	var decisions := _route_decisions()
+	var nearest: Dictionary = decisions[0]
 	var nearest_distance := INF
-	for decision in ROUTE_DECISIONS:
+	for decision in decisions:
 		var distance: float = player_position.distance_to(decision["position"])
 		if distance < nearest_distance:
 			nearest = decision
 			nearest_distance = distance
 	return {"id": nearest["id"], "distance": snappedf(nearest_distance, 0.01)}
+
+
+func _route_decisions() -> Array[Dictionary]:
+	var alpha := get_node_or_null(alpha_path) as Node3D
+	var bravo := get_node_or_null(bravo_path) as Node3D
+	var charlie := get_node_or_null(charlie_path) as Node3D
+	var a := alpha.global_position - Vector3.UP * 0.3
+	var b := bravo.global_position - Vector3.UP * 0.3
+	var c := charlie.global_position - Vector3.UP * 0.3
+	return [
+		{"id":"spawn_courtyard","position":_fixed_spawn},
+		{"id":"alpha_main","position":_project_to_nav(_fixed_spawn.lerp(a, 0.55))},
+		{"id":"alpha_flank","position":_project_to_nav(_fixed_spawn.lerp(a, 0.55) + Vector3(6,0,0))},
+		{"id":"alpha_fallback","position":_project_to_nav(a.lerp(_fixed_spawn, 0.25))},
+		{"id":"alpha_overlap","position":a},
+		{"id":"bravo_main","position":_project_to_nav(a.lerp(b, 0.55))},
+		{"id":"bravo_flank","position":_project_to_nav(a.lerp(b, 0.55) + Vector3(-7,0,0))},
+		{"id":"bravo_fallback","position":_project_to_nav(b.lerp(a, 0.25))},
+		{"id":"bravo_overlap","position":b},
+		{"id":"charlie_main","position":_project_to_nav(b.lerp(c, 0.55))},
+		{"id":"charlie_flank","position":_project_to_nav(b.lerp(c, 0.55) + Vector3(0,0,7))},
+		{"id":"charlie_fallback","position":_project_to_nav(c.lerp(b, 0.25))},
+		{"id":"charlie_overlap","position":c},
+	]
+
+
+func _project_to_nav(point: Vector3) -> Vector3:
+	var arena := get_node_or_null(arena_path) as Node3D
+	return NavigationServer3D.map_get_closest_point(arena.get_world_3d().navigation_map, point)
+
+
+func _path_report(from: Vector3, to: Vector3) -> Dictionary:
+	var arena := get_node_or_null(arena_path) as Node3D
+	var path := NavigationServer3D.map_get_path(arena.get_world_3d().navigation_map, _project_to_nav(from), _project_to_nav(to), true)
+	var length := 0.0
+	for index in range(1, path.size()):
+		length += path[index - 1].distance_to(path[index])
+	return {"connected": path.size() >= 2, "point_count": path.size(), "length": snappedf(length, 0.01)}
 
 
 func _mcp_state() -> Dictionary:
@@ -129,7 +152,7 @@ func _mcp_state() -> Dictionary:
 	var within_budget := effective_traversal_seconds >= EXPECTED_MIN_SECONDS and effective_traversal_seconds <= EXPECTED_MAX_SECONDS
 	return {
 		"route_id": ROUTE_ID,
-		"ready": arena != null and bool(arena.get("collision_ready")),
+		"ready": arena != null and arena.get("collision_ready") == true,
 		"fixed_spawn": _fixed_spawn,
 		"alpha_position": alpha.global_position,
 		"bravo_position": bravo.global_position if bravo != null else Vector3.ZERO,
@@ -140,9 +163,9 @@ func _mcp_state() -> Dictionary:
 			"a_to_c": alpha.global_position.distance_to(charlie.global_position) if charlie != null else -1.0,
 		},
 		"route_edges": {
-			"spawn_to_a": ["main", "flank", "fallback"],
-			"a_to_b": ["main", "flank", "fallback"],
-			"b_to_c": ["main", "flank", "fallback"],
+			"spawn_to_a": {"routes":["main","flank","fallback"],"navigation":_path_report(_fixed_spawn, alpha.global_position)},
+			"a_to_b": {"routes":["main","flank","fallback"],"navigation":_path_report(alpha.global_position, bravo.global_position)},
+			"b_to_c": {"routes":["main","flank","fallback"],"navigation":_path_report(bravo.global_position, charlie.global_position)},
 		},
 		"player_position": player.global_position,
 		"distance_to_alpha": snappedf(distance_to_alpha, 0.01),

@@ -87,7 +87,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _physics_process(delta: float) -> void:
 	if Input.is_action_just_pressed("restart"):
 		var mission_controller := get_tree().get_first_node_in_group(&"mission_controller")
-		if mission_controller == null or not bool(mission_controller.call(&"request_checkpoint_restore")):
+		if mission_controller == null or mission_controller.call(&"request_checkpoint_restore") != true:
 			_reset_to_spawn()
 		return
 
@@ -277,6 +277,26 @@ func apply_authoritative_damage(amount: float, damage_event_id := "") -> bool:
 	health = maxf(0.0, health - amount)
 	authoritative_damage_received.emit(amount, event_id)
 	return true
+
+
+func apply_damage(amount: float, event: Dictionary = {}) -> Dictionary:
+	var report := event.duplicate(true)
+	var shot_id := String(report.get("shot_id", ""))
+	var applied := apply_authoritative_damage(amount, shot_id)
+	report["amount"] = amount
+	report["health_after"] = health
+	report["max_health"] = max_health
+	report["applied"] = applied
+	report["hit"] = applied
+	report["killed"] = health <= 0.0
+	report["reason"] = "applied" if applied else "duplicate_or_dead"
+	return report
+
+
+func bind_deployment_to_walkable(walkable_position: Vector3) -> void:
+	global_position = walkable_position
+	_spawn_transform = global_transform
+	velocity = Vector3.ZERO
 
 
 func _mcp_state() -> Dictionary:

@@ -16,6 +16,7 @@ const HISTORY_LIMIT := 512
 @export var alpha_path: NodePath
 @export var bravo_path: NodePath
 @export var charlie_path: NodePath
+@export var enemy_roster_path: NodePath
 @export var hud_timer_path: NodePath
 @export var hud_objective_path: NodePath
 @export var hud_keys_path: NodePath
@@ -58,6 +59,7 @@ var _last_announced_event: Dictionary = {}
 @onready var hud_progress: Label = get_node_or_null(hud_progress_path) as Label
 @onready var hud_prompt: Label = get_node_or_null(hud_prompt_path) as Label
 @onready var hud_event: Label = get_node_or_null(hud_event_path) as Label
+@onready var enemy_roster: Node = get_node_or_null(enemy_roster_path)
 
 
 func _ready() -> void:
@@ -103,7 +105,7 @@ func _commit_timer(delta: float) -> void:
 func report_objective_overlap(objective_id: StringName, inside: bool, body: Node3D) -> void:
 	if not overlaps.has(objective_id) or body != player or not body.is_in_group(&"player"):
 		return
-	if bool(overlaps[objective_id]) == inside:
+	if (overlaps[objective_id] == true) == inside:
 		return
 	overlaps[objective_id] = inside
 	_record_event(&"objective_enter" if inside else &"objective_leave", {
@@ -119,13 +121,24 @@ func report_objective_overlap(objective_id: StringName, inside: bool, body: Node
 
 func _tick_capture(delta: float) -> void:
 	for point_id in POINT_IDS:
-		if not bool(overlaps[point_id]) or StringName(capture_points[point_id]["state"]) == &"secured_aegis":
+		if overlaps[point_id] != true or StringName(capture_points[point_id]["state"]) == &"secured_aegis":
 			continue
 		if not _point_is_legal(point_id):
 			continue
 		var point: Dictionary = capture_points[point_id]
+		var contesting := _enemy_occupancy(point_id)
+		if contesting > 0:
+			if StringName(point["state"]) != &"contested_rift":
+				point["state"] = &"contested_rift"
+				_record_event(&"capture_contested", {"objective_id": point_id, "enemy_count": contesting})
+			_active_capture = point_id
+			point["progress"] = maxf(0.0, float(point["progress"]) - delta / capture_duration_seconds * 0.5)
+			point["contest_enemy_count"] = contesting
+			capture_points[point_id] = point
+			continue
 		if StringName(point["state"]) != &"capturing_aegis":
 			point["state"] = &"capturing_aegis"
+			point["contest_enemy_count"] = 0
 			_active_capture = point_id
 			_record_event(&"capture_started", {"objective_id": point_id, "progress": point["progress"]})
 		point["progress"] = minf(1.0, float(point["progress"]) + delta / capture_duration_seconds)
@@ -139,12 +152,12 @@ func _tick_capture(delta: float) -> void:
 
 
 func _point_is_legal(point_id: StringName) -> bool:
-	return point_id == &"alpha" or not bool(route_locks[&"a_to_b"])
+	return point_id == &"alpha" or route_locks[&"a_to_b"] != true
 
 
 func _interrupt_capture(point_id: StringName, reason: StringName) -> void:
 	var point: Dictionary = capture_points[point_id]
-	if StringName(point["state"]) != &"capturing_aegis":
+	if StringName(point["state"]) not in [&"capturing_aegis", &"contested_rift"]:
 		return
 	point["state"] = &"held_rift"
 	capture_points[point_id] = point
@@ -152,6 +165,18 @@ func _interrupt_capture(point_id: StringName, reason: StringName) -> void:
 	_record_event(&"capture_interrupted", {
 		"objective_id": point_id, "reason": reason, "progress": point["progress"],
 	})
+
+
+func _enemy_occupancy(point_id: StringName) -> int:
+	if enemy_roster == null or not enemy_roster.has_method(&"contest_count"):
+		return 0
+	var objective := get_node(alpha_path if point_id == &"alpha" else bravo_path) as Node3D
+	return int(enemy_roster.call(&"contest_count", point_id, objective.global_position, 4.5))
+
+
+func report_enemy_event(event: Dictionary) -> void:
+	var kind := StringName(event.get("kind", &"enemy_event"))
+	_record_event(StringName("enemy_%s" % kind), event, false)
 
 
 func _complete_capture(point_id: StringName) -> void:
@@ -170,7 +195,7 @@ func _complete_capture(point_id: StringName) -> void:
 		committed_keys.append(key_id)
 		_record_event(&"key_committed", {"objective_id": point_id, "key_id": key_id, "key_count": committed_keys.size()})
 	var route_id := &"a_to_b" if point_id == &"alpha" else &"b_to_c"
-	if bool(route_locks[route_id]):
+	if route_locks[route_id] == true:
 		route_locks[route_id] = false
 		_record_event(&"route_unlocked", {"route_id": route_id, "objective_id": point_id})
 	if point_id == &"bravo":
@@ -179,9 +204,9 @@ func _complete_capture(point_id: StringName) -> void:
 
 
 func _try_begin_bomb_stage() -> void:
-	if mission_state != &"active_gameplay" or not bool(overlaps[&"charlie"]):
+	if mission_state != &"active_gameplay" or overlaps[&"charlie"] != true:
 		return
-	if bool(route_locks[&"b_to_c"]):
+	if route_locks[&"b_to_c"] == true:
 		_record_event(&"defusal_locked", {"reason": &"keys_required", "key_count": committed_keys.size()})
 		return
 	if _active_bomb_stage or bomb_stage_index >= BOMB_STAGE_IDS.size():
@@ -196,7 +221,7 @@ func _try_begin_bomb_stage() -> void:
 func _tick_bomb(delta: float) -> void:
 	if not _active_bomb_stage:
 		return
-	if not bool(overlaps[&"charlie"]):
+	if overlaps[&"charlie"] != true:
 		_interrupt_bomb(&"left_radius")
 		return
 	if not Input.is_action_pressed(&"interact"):
@@ -298,6 +323,8 @@ func request_checkpoint_restore() -> bool:
 	overlaps = {&"alpha": false, &"bravo": false, &"charlie": false}
 	player.call(&"restore_checkpoint_state", snapshot["player_transform"], float(snapshot["player_health"]))
 	weapon_controller.call(&"restore_weapon_state", snapshot["weapon_state"])
+	if enemy_roster != null and enemy_roster.has_method(&"restore_all"):
+		enemy_roster.call(&"restore_all", snapshot.get("enemy_roster", {}))
 	checkpoint_restore_count += 1
 	_record_event(&"checkpoint_restored", {
 		"version": checkpoint_version,
@@ -322,6 +349,7 @@ func _build_snapshot() -> Dictionary:
 		"player_transform": player.global_transform,
 		"player_health": float(player.get("health")),
 		"weapon_state": weapon_controller.call(&"snapshot_weapon_state"),
+		"enemy_roster": enemy_roster.call(&"snapshot_all") if enemy_roster != null and enemy_roster.has_method(&"snapshot_all") else {},
 	}
 
 
@@ -333,6 +361,7 @@ func _fresh_point(point_id: StringName, key_id: StringName) -> Dictionary:
 		"progress": 0.0,
 		"key_id": key_id,
 		"completion_commit_count": 0,
+		"contest_enemy_count": 0,
 	}
 
 
@@ -351,7 +380,7 @@ func objective_state_for(objective_id: StringName) -> Dictionary:
 		"state": bomb_state,
 		"stage_id": BOMB_STAGE_IDS[bomb_stage_index] if bomb_stage_index < BOMB_STAGE_IDS.size() else &"complete",
 		"progress": bomb_stage_progress,
-		"legal": not bool(route_locks[&"b_to_c"]),
+		"legal": route_locks[&"b_to_c"] != true,
 		"overlap": overlaps[&"charlie"],
 	}
 
@@ -417,10 +446,10 @@ func _current_progress_text() -> String:
 
 
 func _current_prompt_text() -> String:
-	if bool(overlaps[&"bravo"]) and bool(route_locks[&"a_to_b"]):
+	if overlaps[&"bravo"] == true and route_locks[&"a_to_b"] == true:
 		return "BRAVO LOCKED  //  SECURE ALPHA FIRST"
-	if bool(overlaps[&"charlie"]):
-		if bool(route_locks[&"b_to_c"]):
+	if overlaps[&"charlie"] == true:
+		if route_locks[&"b_to_c"] == true:
 			return "CHARLIE LOCKED  //  TWO KEYS REQUIRED"
 		if _active_bomb_stage:
 			return "HOLD [E]  //  RELEASE OR DAMAGE INTERRUPTS"
@@ -462,5 +491,7 @@ func _mcp_state() -> Dictionary:
 		"event_sequence": event_sequence,
 		"last_event": last_event,
 		"event_history": event_history,
+		"enemy_roster_ready": enemy_roster != null and enemy_roster.get("roster_initialized") == true,
+		"enemy_roster_count": (enemy_roster.get("enemies") as Dictionary).size() if enemy_roster != null else 0,
 		"history_limit": HISTORY_LIMIT,
 	}

@@ -21,7 +21,7 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	var state := mission_controller.call(&"objective_state_for", &"charlie") as Dictionary
-	var legal := bool(state.get("legal", false))
+	var legal: bool = state.get("legal", false) == true
 	var stage := String(state.get("stage_id", &"locked")).replace("_", " ").to_upper()
 	label.text = "C  //  %s" % (stage if legal else "LOCKED")
 	label.modulate = Color(0.22, 0.92, 1.0) if legal else Color(1.0, 0.24, 0.14)

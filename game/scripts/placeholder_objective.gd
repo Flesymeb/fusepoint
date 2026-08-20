@@ -24,10 +24,10 @@ func _process(_delta: float) -> void:
 	var state := mission_controller.call(&"objective_state_for", objective_id) as Dictionary
 	if label != null:
 		label.text = "%s  //  %s" % [String(objective_id).left(1).to_upper(), _display_state(state)]
-		label.modulate = Color(0.12, 0.88, 1.0) if bool(state.get("legal", false)) else Color(1.0, 0.32, 0.18)
+		label.modulate = Color(0.12, 0.88, 1.0) if state.get("legal", false) == true else Color(1.0, 0.32, 0.18)
 	if _marker_material != null:
-		_marker_material.albedo_color = Color(0.04, 0.72, 0.86, 0.26) if bool(state.get("legal", false)) else Color(0.92, 0.12, 0.04, 0.24)
-		_marker_material.emission = Color(0.01, 0.36, 0.5) if bool(state.get("legal", false)) else Color(0.5, 0.025, 0.005)
+		_marker_material.albedo_color = Color(0.04, 0.72, 0.86, 0.26) if state.get("legal", false) == true else Color(0.92, 0.12, 0.04, 0.24)
+		_marker_material.emission = Color(0.01, 0.36, 0.5) if state.get("legal", false) == true else Color(0.5, 0.025, 0.005)
 
 
 func _on_body_entered(body: Node3D) -> void:
@@ -39,7 +39,7 @@ func _on_body_exited(body: Node3D) -> void:
 
 
 func _display_state(state: Dictionary) -> String:
-	if not bool(state.get("legal", false)):
+	if state.get("legal", false) != true:
 		return "LOCKED"
 	match StringName(state.get("state", &"held_rift")):
 		&"secured_aegis": return "SECURED"

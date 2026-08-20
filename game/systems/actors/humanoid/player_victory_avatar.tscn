@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource path="res://systems/actors/humanoid/enemy_humanoid_actor.gd" type="Script" id="1_actor"]
+
+[node name="PlayerVictoryAvatar" type="Node3D"]
+script = ExtResource("1_actor")
+initial_skin = "soldier_b"
+initial_state = 0
+equip_weapon = false

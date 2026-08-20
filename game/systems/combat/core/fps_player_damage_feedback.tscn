@@ -1,0 +1,52 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://systems/combat/core/fps_player_damage_feedback.gd" id="1_feedback"]
+[ext_resource type="Texture2D" path="res://systems/combat/core/assets/pain_hud.png" id="2_pain"]
+
+[node name="FPSPlayerDamageFeedback" type="CanvasLayer"]
+layer = 90
+script = ExtResource("1_feedback")
+
+[node name="PainOverlay" type="TextureRect" parent="."]
+unique_name_in_owner = true
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+texture = ExtResource("2_pain")
+expand_mode = 1
+stretch_mode = 6
+
+[node name="DeathWash" type="ColorRect" parent="."]
+unique_name_in_owner = true
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.026, 0.004, 0.006, 1)
+
+[node name="DeathMessage" type="Label" parent="."]
+unique_name_in_owner = true
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -260.0
+offset_top = -26.0
+offset_right = 260.0
+offset_bottom = 26.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_colors/font_color = Color(0.96, 0.77, 0.74, 0.96)
+theme_override_colors/font_outline_color = Color(0.01, 0.004, 0.004, 0.9)
+theme_override_constants/outline_size = 8
+theme_override_font_sizes/font_size = 28
+text = "KILLED IN ACTION"
+horizontal_alignment = 1
+vertical_alignment = 1

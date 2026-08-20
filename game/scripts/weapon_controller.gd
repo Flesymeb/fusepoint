@@ -205,9 +205,9 @@ func _resolve_ballistics(shot_id: String, weapon: Dictionary) -> Dictionary:
 		collider_path = String(collider.get_path()) if collider != null else ""
 		if collider != null and collider.has_method(&"apply_weapon_damage"):
 			result = &"hit"
-			damage_committed = bool(collider.call(
+			damage_committed = collider.call(
 				&"apply_weapon_damage", float(weapon["damage"]), shot_id, muzzle_origin
-			))
+			) == true
 		else:
 			result = &"blocked"
 	return {
@@ -314,7 +314,7 @@ func _equip_weapon(weapon_id: StringName) -> void:
 	_pending_equipped_id = weapon_id
 	_action_state = &"switch"
 	_action_until = _now() + 0.45
-	if not bool(viewmodel.call(&"equip_weapon_id", weapon_id, false)):
+	if viewmodel.call(&"equip_weapon_id", weapon_id, false) != true:
 		_pending_equipped_id = &""
 		_action_state = &"hip"
 	weapon_state_changed.emit(_mcp_state())
@@ -335,7 +335,7 @@ func _begin_inspect() -> void:
 	_action_state = &"inspect"
 	_action_until = _now() + 1.35
 	viewmodel.call(&"set_aiming", false, true)
-	if bool(viewmodel.call(&"play_clip", &"inspect")):
+	if viewmodel.call(&"play_clip", &"inspect") == true:
 		feedback.call(&"trigger_inspect")
 		return
 	_inspect_tween = create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)

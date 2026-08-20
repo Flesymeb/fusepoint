@@ -1,4 +1,4 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=15 format=3]
 
 [ext_resource type="PackedScene" path="res://scenes/arena_foundation.tscn" id="1_arena"]
 [ext_resource type="Script" path="res://scripts/prototype_player.gd" id="2_player"]
@@ -6,6 +6,7 @@
 [ext_resource type="PackedScene" path="res://scenes/weapon_controller.tscn" id="4_weapon_controller"]
 [ext_resource type="Script" path="res://scripts/controlled_target.gd" id="5_target"]
 [ext_resource type="Script" path="res://scripts/mission_controller.gd" id="6_mission"]
+[ext_resource type="Script" path="res://scripts/enemy_roster.gd" id="7_roster"]
 
 [sub_resource type="CapsuleShape3D" id="Shape_player"]
 radius = 0.4
@@ -52,7 +53,7 @@ size = Vector3(0.92, 1.62, 0.12)
 
 [node name="ArenaFoundation" parent="." instance=ExtResource("1_arena")]
 
-[node name="PrototypePlayer" type="CharacterBody3D" parent="." groups=["mcp_watch", "player"]]
+[node name="PrototypePlayer" type="CharacterBody3D" parent="." groups=["fps_player", "mcp_watch", "player"]]
 position = Vector3(0, 0.9, 0)
 script = ExtResource("2_player")
 
@@ -200,12 +201,22 @@ weapon_controller_path = NodePath("../PrototypePlayer/Head/Camera3D/WeaponContro
 alpha_path = NodePath("../ArenaFoundation/Alpha")
 bravo_path = NodePath("../ArenaFoundation/Bravo")
 charlie_path = NodePath("../ArenaFoundation/Charlie")
+enemy_roster_path = NodePath("../EnemyRoster")
 hud_timer_path = NodePath("../MissionHUD/Root/TopPanel/VBox/TimerRow/Timer")
 hud_objective_path = NodePath("../MissionHUD/Root/TopPanel/VBox/Objective")
 hud_keys_path = NodePath("../MissionHUD/Root/TopPanel/VBox/TimerRow/Keys")
 hud_progress_path = NodePath("../MissionHUD/Root/TopPanel/VBox/Progress")
 hud_prompt_path = NodePath("../MissionHUD/Root/Prompt")
 hud_event_path = NodePath("../MissionHUD/Root/Event")
+
+[node name="EnemyRoster" type="Node3D" parent="." groups=["enemy_roster", "mcp_watch"]]
+script = ExtResource("7_roster")
+player_path = NodePath("../PrototypePlayer")
+mission_controller_path = NodePath("../MissionController")
+navigation_region_path = NodePath("../ArenaFoundation/NavigationRegion3D")
+alpha_path = NodePath("../ArenaFoundation/Alpha")
+bravo_path = NodePath("../ArenaFoundation/Bravo")
+charlie_path = NodePath("../ArenaFoundation/Charlie")
 
 [node name="MissionHUD" type="CanvasLayer" parent="."]
 

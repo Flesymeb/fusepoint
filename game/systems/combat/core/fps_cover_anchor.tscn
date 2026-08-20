@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://systems/combat/core/fps_cover_anchor.gd" id="1_cover"]
+
+[node name="FPSCoverAnchor" type="Marker3D" groups=["fps_enemy_cover"]]
+script = ExtResource("1_cover")

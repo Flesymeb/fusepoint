@@ -1,5 +1,7 @@
 extends Node3D
 
+signal walkable_topology_bound(report: Dictionary)
+
 const EXPECTED_SOURCE_SHA256 := "6298ee68eb4df52d4fe8bdd332a1813492de600f595c214ef934f35fd3ee3e1a"
 const EXPECTED_WORLD_EXTENTS := Vector3(217.404864, 24.222379, 232.932841)
 
@@ -17,6 +19,7 @@ var navigation_bake_started := false
 var navigation_ready := false
 var navigation_vertex_count := 0
 var navigation_polygon_count := 0
+var topology_binding_report: Dictionary = {}
 
 
 func _ready() -> void:
@@ -111,9 +114,71 @@ func _on_navigation_bake_finished() -> void:
 	var navigation_mesh := navigation_region.navigation_mesh
 	navigation_vertex_count = navigation_mesh.get_vertices().size()
 	navigation_polygon_count = navigation_mesh.get_polygon_count()
-	navigation_ready = navigation_polygon_count > 0
-	if not navigation_ready:
+	if navigation_polygon_count <= 0:
 		push_warning("Arena navigation bake completed without walkable polygons.")
+		return
+	# Region baking finishes before the default navigation map necessarily owns
+	# the new iteration. Give NavigationServer3D two physics syncs, then bind all
+	# product anchors against the same live map in one transaction.
+	for _sync_frame in 90:
+		await get_tree().physics_frame
+		NavigationServer3D.map_force_update(navigation_region.get_navigation_map())
+		if _bind_product_anchors():
+			break
+	navigation_ready = true
+
+
+func _bind_product_anchors() -> bool:
+	var nav_map := navigation_region.get_navigation_map()
+	NavigationServer3D.map_force_update(nav_map)
+	var player := get_tree().get_first_node_in_group(&"player") as CharacterBody3D
+	var hints := {
+		"spawn": Vector3(0.0, 0.9, 0.0),
+		"alpha": $Alpha.global_position - Vector3.UP * 1.2,
+		"bravo": $Bravo.global_position - Vector3.UP * 1.2,
+		"charlie": $Charlie.global_position - Vector3.UP * 1.2,
+	}
+	var projected := {}
+	for id in hints:
+		projected[id] = NavigationServer3D.map_get_closest_point(nav_map, hints[id])
+	var edges := {
+		"spawn_to_a": NavigationServer3D.map_get_path(nav_map, projected["spawn"], projected["alpha"], true),
+		"a_to_b": NavigationServer3D.map_get_path(nav_map, projected["alpha"], projected["bravo"], true),
+		"b_to_c": NavigationServer3D.map_get_path(nav_map, projected["bravo"], projected["charlie"], true),
+	}
+	var connected: bool = (
+		edges["spawn_to_a"].size() >= 2
+		and edges["a_to_b"].size() >= 2
+		and edges["b_to_c"].size() >= 2
+		and projected["alpha"].distance_to(projected["bravo"]) > 10.0
+		and projected["bravo"].distance_to(projected["charlie"]) > 10.0
+	)
+	if connected:
+		$Alpha.global_position = projected["alpha"] + Vector3.UP * 1.2
+		$Bravo.global_position = projected["bravo"] + Vector3.UP * 1.2
+		$Charlie.global_position = projected["charlie"] + Vector3.UP * 1.2
+		if player != null and player.has_method(&"bind_deployment_to_walkable"):
+			player.call(&"bind_deployment_to_walkable", projected["spawn"] + Vector3.UP * 0.9)
+	topology_binding_report = {
+		"datum": "authored_standoff_navigation_map",
+		"hints": hints,
+		"projected": projected,
+		"projection_distance": {
+			"spawn": hints["spawn"].distance_to(projected["spawn"]),
+			"alpha": hints["alpha"].distance_to(projected["alpha"]),
+			"bravo": hints["bravo"].distance_to(projected["bravo"]),
+			"charlie": hints["charlie"].distance_to(projected["charlie"]),
+		},
+		"edge_point_counts": {
+			"spawn_to_a": edges["spawn_to_a"].size(),
+			"a_to_b": edges["a_to_b"].size(),
+			"b_to_c": edges["b_to_c"].size(),
+		},
+		"all_edges_connected": connected,
+		"anchors_applied": connected,
+	}
+	walkable_topology_bound.emit(topology_binding_report.duplicate(true))
+	return connected
 
 
 func _mcp_state() -> Dictionary:
@@ -136,4 +201,5 @@ func _mcp_state() -> Dictionary:
 		"navigation_vertex_count": navigation_vertex_count,
 		"navigation_polygon_count": navigation_polygon_count,
 		"ground_datum_y": 0.0,
+		"topology_binding": topology_binding_report,
 	}

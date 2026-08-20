@@ -1,0 +1,53 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/enemy_agent.gd" id="1_agent"]
+[ext_resource type="Script" path="res://systems/combat/core/fps_health.gd" id="2_health"]
+
+[sub_resource type="CapsuleShape3D" id="Capsule_enemy"]
+radius = 0.4
+height = 1.8
+
+[node name="FusepointEnemyAgent" type="CharacterBody3D" groups=["fps_enemy"]]
+script = ExtResource("1_agent")
+vision_range = 34.0
+forget_range = 48.0
+attack_range = 22.0
+move_speed = 3.2
+reaction_delay = 0.65
+attack_damage = 8.0
+attack_interval = 1.05
+magazine_size = 12
+reload_seconds = 2.1
+personal_space_radius = 1.25
+engagement_slot_count = 18
+squad_alert_radius = 16.0
+direct_chase_without_navigation = false
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+position = Vector3(0, 0.9, 0)
+shape = SubResource("Capsule_enemy")
+
+[node name="Health" type="Node" parent="."]
+script = ExtResource("2_health")
+max_health = 100.0
+team = &"enemy"
+
+[node name="NavigationAgent3D" type="NavigationAgent3D" parent="."]
+radius = 0.4
+height = 1.8
+path_desired_distance = 0.45
+target_desired_distance = 7.0
+avoidance_enabled = true
+neighbor_distance = 5.0
+max_neighbors = 12
+
+[node name="Eye" type="Node3D" parent="."]
+position = Vector3(0, 1.48, 0)
+
+[node name="Muzzle" type="Node3D" parent="Eye"]
+position = Vector3(0.24, -0.16, -0.42)
+
+[node name="DeathAudio" type="AudioStreamPlayer3D" parent="."]
+unit_size = 7.0
+max_distance = 26.0
+volume_db = -7.0

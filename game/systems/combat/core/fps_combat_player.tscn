@@ -1,0 +1,78 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://systems/combat/core/fps_player_motor.gd" id="1_motor"]
+[ext_resource type="Script" path="res://systems/combat/core/fps_health.gd" id="2_health"]
+[ext_resource type="Script" path="res://systems/combat/core/fps_hitscan_weapon.gd" id="3_hitscan"]
+[ext_resource type="Script" path="res://systems/combat/core/fps_weapon_loadout.gd" id="4_loadout"]
+[ext_resource type="Script" path="res://systems/combat/core/fps_weapon_spec.gd" id="5_spec"]
+[ext_resource type="Script" path="res://systems/combat/core/fps_shot_feedback_3d.gd" id="6_feedback"]
+
+[sub_resource type="CapsuleShape3D" id="Capsule_player"]
+radius = 0.34
+height = 1.8
+
+[sub_resource type="Resource" id="Weapon_ak"]
+script = ExtResource("5_spec")
+weapon_id = &"ak74m"
+display_name = "AK-74M"
+damage = 30.0
+range_meters = 180.0
+rounds_per_minute = 650.0
+magazine_size = 30
+starting_reserve = 120
+reload_seconds = 1.9
+automatic = true
+hip_spread_degrees = 0.65
+aim_spread_degrees = 0.1
+
+[sub_resource type="Resource" id="Weapon_saiga12"]
+script = ExtResource("5_spec")
+weapon_id = &"saiga12"
+display_name = "Saiga-12"
+damage = 20.0
+range_meters = 110.0
+rounds_per_minute = 840.0
+magazine_size = 30
+starting_reserve = 150
+reload_seconds = 1.55
+automatic = true
+hip_spread_degrees = 1.0
+aim_spread_degrees = 0.18
+
+[node name="FPSCombatPlayer" type="CharacterBody3D" groups=["fps_player"]]
+script = ExtResource("1_motor")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+position = Vector3(0, 0.9, 0)
+shape = SubResource("Capsule_player")
+
+[node name="Health" type="Node" parent="."]
+script = ExtResource("2_health")
+team = &"player"
+
+[node name="Head" type="Node3D" parent="."]
+
+[node name="Camera3D" type="Camera3D" parent="Head"]
+position = Vector3(0, 1.62, 0)
+current = true
+fov = 72.0
+near = 0.02
+
+[node name="Muzzle" type="Node3D" parent="Head/Camera3D"]
+position = Vector3(0.22, -0.2, -0.48)
+
+[node name="HitscanWeapon" type="Node3D" parent="Head"]
+script = ExtResource("3_hitscan")
+camera_path = NodePath("../Camera3D")
+muzzle_path = NodePath("../Camera3D/Muzzle")
+owner_body_path = NodePath("../..")
+source_team = &"player"
+
+[node name="WeaponLoadout" type="Node" parent="."]
+script = ExtResource("4_loadout")
+weapon_specs = Array[ExtResource("5_spec")]([SubResource("Weapon_ak"), SubResource("Weapon_saiga12")])
+hitscan_weapon_path = NodePath("../Head/HitscanWeapon")
+
+[node name="ShotFeedback" type="Node3D" parent="."]
+script = ExtResource("6_feedback")
+hitscan_weapon_path = NodePath("../Head/HitscanWeapon")
