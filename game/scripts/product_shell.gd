@@ -468,7 +468,8 @@ func _commit_lifecycle_action(action: StringName) -> bool:
 		return false
 	_lifecycle_action_serial += 1
 	_last_lifecycle_action_receipt = {
-		"action_id": "shell-action-%06d" % _lifecycle_action_serial,
+		"action_id": "run-%06d:shell-action-%06d" % [int(mission.get("run_epoch")), _lifecycle_action_serial],
+		"run_epoch": int(mission.get("run_epoch")),
 		"action": action,
 		"source_state": app_state,
 		"target_state": rule.get("target", &""),
@@ -651,6 +652,7 @@ func _show_result(result: StringName) -> void:
 
 func _mcp_state() -> Dictionary:
 	return {
+		"run_epoch": int(mission.get("run_epoch")),
 		"app_state": app_state,
 		"pages_visible": pages.visible,
 		"selected_weapon": _selected_weapon,

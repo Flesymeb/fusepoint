@@ -19,6 +19,14 @@ const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
 @export var hud_reticle_path: NodePath
 @export_flags_3d_physics var ballistics_mask := 1
 @export_range(10.0, 500.0, 1.0) var max_range := 180.0
+@export_group("Product recoil adapter")
+@export_range(0.0, 0.08, 0.001) var recoil_back_distance := 0.015
+@export_range(0.0, 8.0, 0.1) var recoil_pitch_degrees := 2.1
+@export_range(0.0, 4.0, 0.1) var recoil_yaw_degrees := 0.5
+@export_range(0.0, 4.0, 0.1) var recoil_roll_degrees := 0.35
+@export_range(0.02, 0.2, 0.01) var recoil_out_seconds := 0.05
+@export_range(0.02, 0.2, 0.01) var recoil_return_seconds := 0.09
+@export_range(0.0, 0.15, 0.005) var recoil_hold_seconds := 0.02
 
 @onready var camera: Camera3D = get_node(camera_path) as Camera3D
 @onready var viewmodel: Node3D = get_node(viewmodel_path) as Node3D
@@ -80,6 +88,8 @@ var _product_recoil_phase := &"settled"
 var _product_recoil_shot_serial := 0
 var _product_recoil_peak_serial := 0
 var _product_recoil_recovery_complete := true
+var _run_epoch := 0
+var _last_run_epoch_receipt: Dictionary = {}
 
 
 func _ready() -> void:
@@ -87,6 +97,7 @@ func _ready() -> void:
 	_weapons = _fresh_weapon_data()
 	viewmodel.set("handle_right_mouse", false)
 	viewmodel.set("handle_mouse_wheel", false)
+	_configure_component_feedback_boundary()
 	if viewmodel.has_signal(&"weapon_changed"):
 		viewmodel.connect(&"weapon_changed", _on_viewmodel_weapon_changed)
 	if viewmodel.has_signal(&"aiming_changed"):
@@ -311,7 +322,7 @@ func _try_submit_shot() -> Dictionary:
 		_present_dry_fire()
 		return {}
 	_shot_serial += 1
-	var shot_id := "%s-%06d" % [String(_equipped_id), _shot_serial]
+	var shot_id := "run-%06d:player:%s:%06d" % [_run_epoch, String(_equipped_id), _shot_serial]
 	if _shot_commits.has(shot_id):
 		return {}
 	_shot_commits[shot_id] = true
@@ -380,6 +391,7 @@ func _resolve_ballistics(shot_id: String, weapon: Dictionary) -> Dictionary:
 			result = &"blocked"
 	return {
 		"shot_id": shot_id,
+		"run_epoch": _run_epoch,
 		"weapon_id": _equipped_id,
 		"timestamp_seconds": _now(),
 		"camera_origin": camera_origin,
@@ -570,6 +582,7 @@ func _on_spawn_reset() -> void:
 	_last_shot.clear()
 	_impact_commits.clear()
 	_impact_history.clear()
+	reset_shot_presentation(_run_epoch)
 	_clear_live_impacts()
 	viewmodel.call(&"equip_weapon_id", _equipped_id, true)
 	for node: Node in get_tree().get_nodes_in_group(&"controlled_target"):
@@ -593,6 +606,48 @@ func _fresh_weapon_data() -> Dictionary:
 	}
 
 
+func _configure_component_feedback_boundary() -> void:
+	# The registered component keeps ownership of clips, audio and muzzle flash.
+	# Its exported recoil channel is disabled through public properties so the
+	# product adapter is the sole writer of the model mount transform.
+	feedback.set("fire_recoil_back_distance", 0.0)
+	feedback.set("fire_recoil_pitch_degrees", 0.0)
+	feedback.set("fire_recoil_yaw_degrees", 0.0)
+	feedback.set("fire_recoil_roll_degrees", 0.0)
+
+
+func set_run_epoch(epoch: int, reset_transients := true) -> bool:
+	if epoch <= 0 or epoch < _run_epoch:
+		_last_run_epoch_receipt = {
+			"accepted": false,
+			"requested_epoch": epoch,
+			"previous_epoch": _run_epoch,
+			"failure_reason": &"non_monotonic_run_epoch",
+		}
+		return false
+	var previous_epoch := _run_epoch
+	_run_epoch = epoch
+	if epoch > previous_epoch:
+		_shot_serial = 0
+		_shot_commits.clear()
+	if reset_transients:
+		reset_transient_state_for_restore()
+	reset_shot_presentation(_run_epoch)
+	_last_run_epoch_receipt = {
+		"accepted": true,
+		"run_epoch": _run_epoch,
+		"previous_epoch": previous_epoch,
+		"fresh_namespace": _run_epoch > previous_epoch,
+		"transients_reset": reset_transients,
+	}
+	return true
+
+
+func reset_shot_presentation(epoch := -1) -> void:
+	var effective_epoch := _run_epoch if epoch < 0 else epoch
+	shot_feedback.begin_run_epoch(effective_epoch)
+
+
 func _fire_interval() -> float:
 	return 60.0 / float(_current_weapon()["rounds_per_minute"])
 
@@ -613,8 +668,6 @@ func _trigger_product_recoil(auto_fire: bool) -> void:
 	# Fusepoint owns cadence/lifecycle authority, so cancel the component-local
 	# tween before its first frame and coordinate recoil from one stable product
 	# baseline instead of promoting a displaced pose to the next shot origin.
-	if feedback.has_method(&"_stop_fire_recoil"):
-		feedback.call(&"_stop_fire_recoil")
 	if not _capture_product_recoil_baseline():
 		return
 	if _product_recoil_tween != null and _product_recoil_tween.is_valid():
@@ -626,12 +679,12 @@ func _trigger_product_recoil(auto_fire: bool) -> void:
 	var kick_position := _product_recoil_baseline_position + Vector3(
 		0.0,
 		0.0,
-		-float(feedback.get("fire_recoil_back_distance")) * kick_scale,
+		-recoil_back_distance * kick_scale,
 	)
 	var kick_rotation := _product_recoil_baseline_rotation_degrees + Vector3(
-		-float(feedback.get("fire_recoil_pitch_degrees")) * kick_scale,
-		(randf() * 2.0 - 1.0) * float(feedback.get("fire_recoil_yaw_degrees")) * kick_scale,
-		(randf() * 2.0 - 1.0) * float(feedback.get("fire_recoil_roll_degrees")) * kick_scale,
+		-recoil_pitch_degrees * kick_scale,
+		(randf() * 2.0 - 1.0) * recoil_yaw_degrees * kick_scale,
+		(randf() * 2.0 - 1.0) * recoil_roll_degrees * kick_scale,
 	)
 	_product_recoil_shot_serial += 1
 	_product_recoil_phase = &"impulse"
@@ -642,17 +695,17 @@ func _trigger_product_recoil(auto_fire: bool) -> void:
 		_apply_product_recoil_pose.bind(mount, start_position, start_rotation, kick_position, kick_rotation),
 		0.0,
 		1.0,
-		float(feedback.get("fire_recoil_out_seconds")),
+		recoil_out_seconds,
 	)
 	_product_recoil_tween.tween_callback(_mark_product_recoil_peak)
-	_product_recoil_tween.tween_interval(float(feedback.get("fire_recoil_hold_seconds")))
+	_product_recoil_tween.tween_interval(recoil_hold_seconds)
 	_product_recoil_tween.tween_callback(_mark_product_recoil_recovery)
 	_product_recoil_tween.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
 	_product_recoil_tween.tween_method(
 		_apply_product_recoil_pose.bind(mount, kick_position, kick_rotation, _product_recoil_baseline_position, _product_recoil_baseline_rotation_degrees),
 		0.0,
 		1.0,
-		float(feedback.get("fire_recoil_return_seconds")),
+		recoil_return_seconds,
 	)
 	_product_recoil_tween.tween_callback(_finish_product_recoil.bind(mount))
 
@@ -879,6 +932,7 @@ func _clear_live_impacts() -> void:
 
 func snapshot_weapon_state() -> Dictionary:
 	return {
+		"run_epoch": _run_epoch,
 		"weapons": _weapons.duplicate(true),
 		"equipped_id": _equipped_id,
 		"shot_serial": _shot_serial,
@@ -1089,6 +1143,8 @@ func _mcp_state() -> Dictionary:
 		target_position = profile.aim_position if _ads_held else profile.hip_position
 		target_scale = profile.aim_scale if _ads_held else profile.hip_scale
 	return {
+		"run_epoch": _run_epoch,
+		"last_run_epoch_receipt": _last_run_epoch_receipt,
 		"active_weapon_id": String(_equipped_id),
 		"active_profile_id": String(viewmodel.call(&"current_weapon_id")),
 		"active_state": String(_action_state),
@@ -1139,6 +1195,7 @@ func _mcp_state() -> Dictionary:
 		"input_history": _input_history,
 		"shot_count": _shot_serial,
 		"unique_commit_count": _shot_commits.size(),
+		"shot_feedback": shot_feedback.snapshot(),
 		"last_shot": _last_shot,
 		"shot_history": _shot_history,
 		"impact_unique_commit_count": _impact_commits.size(),

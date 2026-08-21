@@ -368,7 +368,7 @@ func _viewmodel_mount() -> Node3D:
 func _current_viewmodel_clip() -> StringName:
 	if viewmodel == null:
 		return &""
-	var value: Variant = viewmodel.get("current_clip")
+	var value := viewmodel.get("current_clip")
 	if value is StringName:
 		return value
 	if value is String:

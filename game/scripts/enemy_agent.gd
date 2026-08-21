@@ -148,6 +148,7 @@ func authoritative_snapshot() -> Dictionary:
 	var combat := snapshot()
 	var presentation_state := _presentation_actor.get_component_state() if _presentation_actor != null else {}
 	return {
+		"run_epoch": run_epoch,
 		"id": stable_id,
 		"region": region_id,
 		"role": tactical_role,
@@ -202,7 +203,7 @@ func begin_checkpoint_restore(epoch: int) -> void:
 	_restore_in_progress = true
 	_restore_quiescent = true
 	_restore_readiness = &"suspended"
-	_shot_feedback.reset_feedback()
+	_shot_feedback.reset_feedback(run_epoch)
 	set_physics_process(false)
 	velocity = Vector3.ZERO
 	reset_volatile_combat_state_for_restore()
@@ -305,7 +306,7 @@ func _on_attack_resolved(report: Dictionary) -> void:
 
 
 func reset_shot_feedback() -> void:
-	_shot_feedback.reset_feedback()
+	_shot_feedback.begin_run_epoch(run_epoch)
 
 
 func _on_target_acquired_after_restore(_target: Node3D) -> void:
@@ -333,7 +334,8 @@ func _on_ai_state_changed(previous: StringName, current: StringName, _combat: Di
 func _commit_enemy_event(kind: StringName, payload: Dictionary) -> void:
 	_event_sequence += 1
 	_last_enemy_event = {
-		"event_id": "enemy:%s:%06d" % [stable_id, _event_sequence],
+		"event_id": "run-%06d:enemy:%s:%06d" % [run_epoch, stable_id, _event_sequence],
+		"run_epoch": run_epoch,
 		"kind": kind,
 		"actor_id": stable_id,
 		"region": region_id,

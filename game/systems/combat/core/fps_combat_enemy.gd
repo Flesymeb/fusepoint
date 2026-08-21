@@ -93,6 +93,7 @@ var target: Node3D
 var last_attack_report: Dictionary = {}
 var rounds_remaining := 0
 var death_sound_event_count := 0
+var run_epoch := 0
 
 var _health: FPSHealth
 var _navigation_agent: NavigationAgent3D
@@ -324,6 +325,15 @@ func force_attack_if_ready() -> Dictionary:
 	return _perform_attack()
 
 
+func set_run_epoch(epoch: int) -> bool:
+	if epoch <= 0 or epoch < run_epoch:
+		return false
+	if epoch > run_epoch:
+		_attack_sequence = 0
+	run_epoch = epoch
+	return true
+
+
 func _fire_block_reason() -> String:
 	if _health == null or _health.is_dead:
 		return "dead"
@@ -356,6 +366,7 @@ func _fire_block_reason() -> String:
 
 func snapshot() -> Dictionary:
 	return {
+		"run_epoch": run_epoch,
 		"state": state_name(),
 		"target": String(target.get_path()) if target != null and target.is_inside_tree() else "",
 		"target_distance": global_position.distance_to(target.global_position) if target != null and is_instance_valid(target) else -1.0,
@@ -1131,7 +1142,7 @@ func _perform_attack() -> Dictionary:
 	rounds_remaining -= 1
 	_attack_sequence += 1
 	_attack_attempts_on_current_target += 1
-	var shot_id := "enemy:%s:%d:%d" % [name, Time.get_ticks_msec(), _attack_sequence]
+	var shot_id := "run-%06d:enemy:%s:%06d" % [run_epoch, name, _attack_sequence]
 	var shot_origin := _muzzle.global_position if _muzzle != null else global_position
 	var shot_endpoint := _target_aim_position(target) if target != null else shot_origin - global_basis.z
 	var shot_direction := shot_origin.direction_to(shot_endpoint)
@@ -1139,6 +1150,7 @@ func _perform_attack() -> Dictionary:
 	var result := StringName(trace.get("result", &"miss"))
 	var report := {
 		"shot_id": shot_id,
+		"run_epoch": run_epoch,
 		"source_team": attack_team,
 		"source_path": String(get_path()) if is_inside_tree() else "",
 		"damage": attack_damage,

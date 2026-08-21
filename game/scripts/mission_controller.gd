@@ -58,6 +58,8 @@ var last_player_restore_receipt: Dictionary = {}
 var last_weapon_restore_receipt: Dictionary = {}
 var last_recovery_rejection: Dictionary = {}
 var last_replay_reset_receipt: Dictionary = {}
+var run_epoch := 0
+var last_run_epoch_receipt: Dictionary = {}
 
 var _active_capture := &""
 var _active_bomb_stage := false
@@ -84,6 +86,8 @@ var _recovery_command_serial := 0
 
 func _ready() -> void:
 	_initialize_mission_state()
+	_issue_run_epoch(&"initial_boot")
+	call_deferred(&"_propagate_run_epoch", true)
 	if player.has_signal(&"authoritative_damage_received"):
 		player.connect(&"authoritative_damage_received", _on_player_damaged)
 	_sync_presentation()
@@ -141,6 +145,7 @@ func begin_deployment() -> bool:
 	if player_validation.get("accepted", false) != true:
 		return false
 	deployment_commit_count = 1
+	_propagate_run_epoch(false)
 	mission_state = &"active_gameplay"
 	deployment_snapshot = candidate_snapshot
 	_record_event(&"deployment_started", {
@@ -159,6 +164,8 @@ func reset_for_replay() -> bool:
 	event_history.clear()
 	last_event.clear()
 	_initialize_mission_state()
+	_issue_run_epoch(&"new_deployment_lineage")
+	_propagate_run_epoch(true)
 	player.call(&"prepare_new_mission")
 	if not roster_snapshot.is_empty():
 		enemy_restore_epoch = int(enemy_roster.call(&"begin_restore_epoch")) if enemy_roster != null and enemy_roster.has_method(&"begin_restore_epoch") else -1
@@ -172,6 +179,7 @@ func reset_for_replay() -> bool:
 	last_replay_reset_receipt = {
 		"accepted": true,
 		"command_type": &"replay_reset",
+		"run_epoch": run_epoch,
 		"restore_epoch": enemy_restore_epoch,
 		"actor_count": int(last_enemy_restore_receipt.get("actor_count", 18 if roster_snapshot.is_empty() else 0)),
 		"mission_checkpoint_transaction_requested": false,
@@ -181,6 +189,24 @@ func reset_for_replay() -> bool:
 	_reset_transient_presentation(enemy_restore_epoch)
 	_sync_presentation()
 	return true
+
+
+func _issue_run_epoch(reason: StringName) -> int:
+	run_epoch += 1
+	last_run_epoch_receipt = {
+		"run_epoch": run_epoch,
+		"reason": reason,
+		"issued_at_usec": Time.get_ticks_usec(),
+		"monotonic": run_epoch > 0,
+	}
+	return run_epoch
+
+
+func _propagate_run_epoch(reset_transients: bool) -> void:
+	if weapon_controller != null and weapon_controller.has_method(&"set_run_epoch"):
+		weapon_controller.call(&"set_run_epoch", run_epoch, reset_transients)
+	if enemy_roster != null and enemy_roster.has_method(&"set_run_epoch"):
+		enemy_roster.call(&"set_run_epoch", run_epoch, reset_transients)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -410,7 +436,7 @@ func _submit_terminal(result: StringName, reason: StringName) -> void:
 	bomb_state = &"defused" if result == &"bomb_defused" else &"detonated"
 	_active_capture = &""
 	_active_bomb_stage = false
-	terminal_event_id = "mission-%06d" % (event_sequence + 1)
+	terminal_event_id = "run-%06d:mission-%06d" % [run_epoch, event_sequence + 1]
 	player.call(&"enter_terminal_lock", terminal_event_id)
 	weapon_controller.call(&"set_gameplay_input_enabled", false)
 	if enemy_roster != null:
@@ -722,6 +748,10 @@ func _reset_transient_presentation(epoch: int) -> void:
 	var terminal := get_node_or_null("../TerminalPresentation")
 	if terminal != null and terminal.has_method(&"reset_for_restore"):
 		terminal.call(&"reset_for_restore", epoch)
+	if weapon_controller != null and weapon_controller.has_method(&"reset_shot_presentation"):
+		weapon_controller.call(&"reset_shot_presentation", run_epoch)
+	if enemy_roster != null and enemy_roster.has_method(&"reset_transient_feedback"):
+		enemy_roster.call(&"reset_transient_feedback")
 
 
 func _fail_checkpoint_restore(reason: StringName, rollback_snapshot: Dictionary, epoch: int, recovery_source := &"checkpoint") -> bool:
@@ -753,6 +783,7 @@ func _fail_checkpoint_restore(reason: StringName, rollback_snapshot: Dictionary,
 func _build_snapshot() -> Dictionary:
 	return {
 		"schema_version": 2,
+		"run_epoch": run_epoch,
 		"version": checkpoint_version,
 		"remaining_time": remaining_time,
 		"mission_state": mission_state,
@@ -805,7 +836,8 @@ func objective_state_for(objective_id: StringName) -> Dictionary:
 func _record_event(kind: StringName, payload: Dictionary, announce := true) -> void:
 	event_sequence += 1
 	last_event = {
-		"event_id": "mission-%06d" % event_sequence,
+		"event_id": "run-%06d:mission-%06d" % [run_epoch, event_sequence],
+		"run_epoch": run_epoch,
 		"sequence": event_sequence,
 		"kind": kind,
 		"remaining_time": remaining_time,
@@ -888,6 +920,8 @@ func _event_text(event: Dictionary) -> String:
 
 func _mcp_state() -> Dictionary:
 	return {
+		"run_epoch": run_epoch,
+		"last_run_epoch_receipt": last_run_epoch_receipt,
 		"mission_state": mission_state,
 		"remaining_time": remaining_time,
 		"timer_owner": get_path(),

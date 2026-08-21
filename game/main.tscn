@@ -1,4 +1,4 @@
-[gd_scene load_steps=15 format=3]
+[gd_scene load_steps=16 format=3]
 
 [ext_resource type="PackedScene" path="res://scenes/arena_foundation.tscn" id="1_arena"]
 [ext_resource type="Script" path="res://scripts/prototype_player.gd" id="2_player"]
@@ -12,6 +12,7 @@
 [ext_resource type="PackedScene" path="res://scenes/terminal_presentation.tscn" id="11_terminal"]
 [ext_resource type="PackedScene" path="res://scenes/mission_feedback_controller.tscn" id="12_mission_feedback"]
 [ext_resource type="Script" path="res://scripts/combat_feedback_matrix.gd" id="13_feedback_matrix"]
+[ext_resource type="Script" path="res://scripts/runtime_qualification_probe.gd" id="14_qualification"]
 
 [sub_resource type="CapsuleShape3D" id="Shape_player"]
 radius = 0.4
@@ -99,6 +100,15 @@ roster_path = NodePath("../EnemyRoster")
 mission_path = NodePath("../MissionController")
 hud_path = NodePath("../TacticalHUD")
 damage_feedback_path = NodePath("../PlayerDamageFeedback")
+mission_feedback_path = NodePath("../MissionFeedbackController")
+
+[node name="RuntimeQualificationProbe" type="Node" parent="." groups=["mcp_watch", "runtime_qualification"]]
+script = ExtResource("14_qualification")
+mission_path = NodePath("../MissionController")
+roster_path = NodePath("../EnemyRoster")
+weapon_path = NodePath("../PrototypePlayer/Head/Camera3D/WeaponController")
+shell_path = NodePath("../ProductShell")
+terminal_path = NodePath("../TerminalPresentation")
 mission_feedback_path = NodePath("../MissionFeedbackController")
 
 [node name="PlayerDamageFeedback" parent="." instance=ExtResource("10_damage_feedback")]

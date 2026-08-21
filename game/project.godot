@@ -5,6 +5,10 @@ config_version=5
 config/name="Fusepoint Prototype Bootstrap"
 run/main_scene="res://main.tscn"
 
+[debug]
+
+gdscript/warnings/inference_on_variant=1
+
 [display]
 
 window/size/viewport_width=1280

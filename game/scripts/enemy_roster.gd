@@ -64,6 +64,8 @@ var _diagnostic_actor_index := 0
 var reservation_transaction_state := &"pending"
 var reservation_failure: Dictionary = {}
 var reservation_minimum_distance := INF
+var run_epoch := 0
+var last_run_epoch_receipt: Dictionary = {}
 
 @onready var player: Node3D = get_node(player_path) as Node3D
 @onready var mission_controller: Node = get_node(mission_controller_path)
@@ -91,6 +93,41 @@ func _process(_delta: float) -> void:
 func reset_transient_feedback() -> void:
 	for enemy: FusepointEnemyAgent in enemies.values():
 		enemy.reset_shot_feedback()
+
+
+func set_run_epoch(epoch: int, reset_transients := true) -> bool:
+	if epoch <= 0 or epoch < run_epoch:
+		last_run_epoch_receipt = {
+			"accepted": false,
+			"requested_epoch": epoch,
+			"previous_epoch": run_epoch,
+			"failure_reason": &"non_monotonic_run_epoch",
+		}
+		return false
+	var previous_epoch := run_epoch
+	run_epoch = epoch
+	if run_epoch > previous_epoch:
+		_roster_event_sequence = 0
+		qualification_event_sequence = 0
+		qualification_run_id = "encounter-run-%06d" % run_epoch
+		roster_events.clear()
+		progression_receipts.clear()
+		_progression_receipt_sequence = 0
+	for enemy: FusepointEnemyAgent in enemies.values():
+		enemy.set_run_epoch(run_epoch)
+		if reset_transients:
+			enemy.reset_shot_feedback()
+	if roster_initialized and run_epoch > previous_epoch:
+		_initialize_qualification_ledger()
+	last_run_epoch_receipt = {
+		"accepted": true,
+		"run_epoch": run_epoch,
+		"previous_epoch": previous_epoch,
+		"fresh_namespace": run_epoch > previous_epoch,
+		"actor_count": enemies.size(),
+		"transients_reset": reset_transients,
+	}
+	return true
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
@@ -176,6 +213,7 @@ func _instantiate_roster() -> bool:
 		var agent := ENEMY_SCENE.instantiate() as FusepointEnemyAgent
 		agent.name = String(entry["id"]).replace("-", "_")
 		agent.configure_roster_entry(entry, player)
+		agent.set_run_epoch(run_epoch)
 		var objective := _objective_for(StringName(entry["region"]))
 		agent.global_position = projected + Vector3.UP * 0.04
 		agent.look_at(objective.global_position, Vector3.UP)
@@ -560,7 +598,8 @@ func _on_enemy_event(event: Dictionary) -> void:
 func _commit_roster_event(kind: StringName, payload: Dictionary) -> void:
 	_roster_event_sequence += 1
 	var event := {
-		"event_id": "roster-%06d" % _roster_event_sequence,
+		"event_id": "run-%06d:roster-%06d" % [run_epoch, _roster_event_sequence],
+		"run_epoch": run_epoch,
 		"kind": kind,
 		"payload": payload.duplicate(true),
 	}
@@ -586,6 +625,8 @@ func _summary() -> Dictionary:
 		alive_count += 1 if enemy.is_alive() else 0
 		actor_states.append(enemy.authoritative_snapshot())
 	return {
+		"run_epoch": run_epoch,
+		"last_run_epoch_receipt": last_run_epoch_receipt,
 		"allocation_state": reservation_transaction_state,
 		"allocation_minimum_distance": reservation_minimum_distance,
 		"allocation_required_separation": MIN_RESERVATION_SEPARATION,

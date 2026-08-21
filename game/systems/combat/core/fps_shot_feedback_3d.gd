@@ -22,6 +22,9 @@ var active_effect_count := 0
 var presented_event_count := 0
 var duplicate_event_count := 0
 var last_event: Dictionary = {}
+var current_run_epoch := 0
+var lifetime_presented_event_count := 0
+var lifetime_duplicate_event_count := 0
 
 var _hitscan: FPSHitscanWeapon
 var _observed_ids: Dictionary = {}
@@ -49,11 +52,14 @@ func show_shot(event: Dictionary) -> bool:
 	var shot_id := String(event.get("shot_id", ""))
 	if not accepted or shot_id.is_empty():
 		return false
-	if _observed_ids.has(shot_id):
+	var event_identity := _event_identity(event, shot_id)
+	if _observed_ids.has(event_identity):
 		duplicate_event_count += 1
+		lifetime_duplicate_event_count += 1
 		return false
-	_remember_event(shot_id)
+	_remember_event(event_identity)
 	presented_event_count += 1
+	lifetime_presented_event_count += 1
 
 	var from: Vector3 = event.get("muzzle_origin", event.get("origin", global_position))
 	var direction: Vector3 = event.get("direction", Vector3.FORWARD)
@@ -87,6 +93,8 @@ func show_shot(event: Dictionary) -> bool:
 	_spawn_audio(from, to, result, surface, source_team, local_player_hit)
 	_last_presentation = {
 		"shot_id": shot_id,
+		"event_identity": event_identity,
+		"run_epoch": int(event.get("run_epoch", current_run_epoch)),
 		"source_actor": String(event.get("actor_id", event.get("source_path", ""))),
 		"source_weapon": String(event.get("weapon_id", "")),
 		"result": result,
@@ -115,7 +123,14 @@ func show_shot(event: Dictionary) -> bool:
 	return true
 
 
-func reset_feedback() -> void:
+func begin_run_epoch(epoch: int) -> void:
+	current_run_epoch = maxi(epoch, 0)
+	reset_feedback(current_run_epoch)
+
+
+func reset_feedback(epoch := -1) -> void:
+	if epoch >= 0:
+		current_run_epoch = epoch
 	for effect: Node3D in _active_effects.duplicate():
 		if is_instance_valid(effect):
 			effect.queue_free()
@@ -125,13 +140,21 @@ func reset_feedback() -> void:
 	_observed_order.clear()
 	last_event.clear()
 	_last_presentation.clear()
+	presented_event_count = 0
+	duplicate_event_count = 0
+	_variant_use_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+	_culled_effect_count = 0
+	_local_impact_suppression_count = 0
 
 
 func snapshot() -> Dictionary:
 	return {
 		"family_id": &"enemy_shot_feedback_vfx",
+		"run_epoch": current_run_epoch,
 		"presented_event_count": presented_event_count,
 		"duplicate_event_count": duplicate_event_count,
+		"lifetime_presented_event_count": lifetime_presented_event_count,
+		"lifetime_duplicate_event_count": lifetime_duplicate_event_count,
 		"active_effect_count": active_effect_count,
 		"cached_event_count": _observed_ids.size(),
 		"last_event": last_event,
@@ -153,6 +176,11 @@ func _remember_event(shot_id: String) -> void:
 	_observed_order.append(shot_id)
 	while _observed_order.size() > event_cache_limit:
 		_observed_ids.erase(_observed_order.pop_front())
+
+
+func _event_identity(event: Dictionary, shot_id: String) -> String:
+	var event_epoch := int(event.get("run_epoch", current_run_epoch))
+	return "run-%06d:%s" % [event_epoch, shot_id]
 
 
 func _spawn_muzzle(position: Vector3, direction: Vector3, color: Color, event: Dictionary, variant_index: int) -> void:
