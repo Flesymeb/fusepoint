@@ -22,6 +22,10 @@ var _sample_clock := 0.0
 var _fixed_spawn := Vector3.ZERO
 var _last_player_position := Vector3.ZERO
 var _last_blocker: Dictionary = {}
+var _measurement_generation := 0
+var _measurement_source := &"initial_ready"
+var _first_movement: Dictionary = {}
+var _completion_result: Dictionary = {}
 
 
 func _ready() -> void:
@@ -31,9 +35,18 @@ func _ready() -> void:
 		_last_player_position = player.global_position
 		if player.has_signal("spawn_reset"):
 			player.connect("spawn_reset", Callable(self, "_reset_trace"))
+	var arena := get_node_or_null(arena_path)
+	if arena != null and arena.has_signal("walkable_topology_bound"):
+		arena.connect("walkable_topology_bound", Callable(self, "_on_topology_bound"))
+	_reset_trace(&"initial_ready")
 
 
-func _reset_trace() -> void:
+func _on_topology_bound(report: Dictionary) -> void:
+	if report.get("anchors_applied", false) == true:
+		_reset_trace(&"native_anchor_bound")
+
+
+func _reset_trace(source: StringName = &"spawn_reset") -> void:
 	var player := get_node_or_null(player_path) as CharacterBody3D
 	effective_traversal_seconds = 0.0
 	path_length_traveled = 0.0
@@ -44,14 +57,22 @@ func _reset_trace() -> void:
 	_last_blocker.clear()
 	_sample_clock = 0.0
 	route_samples.clear()
+	_first_movement.clear()
+	_completion_result.clear()
+	_measurement_source = source
+	_measurement_generation += 1
 	if player != null:
 		_fixed_spawn = player.global_position
 		_last_player_position = player.global_position
+		var player_state: Dictionary = player.call(&"_mcp_state")
+		_measurement_generation = int(player_state.get("deployment_generation", _measurement_generation))
 
 
 func _physics_process(delta: float) -> void:
 	var player := get_node_or_null(player_path) as CharacterBody3D
 	if player == null:
+		return
+	if not _completion_result.is_empty():
 		return
 	total_elapsed_seconds += delta
 	if player.is_on_floor():
@@ -62,6 +83,14 @@ func _physics_process(delta: float) -> void:
 		player.global_position.z - _last_player_position.z
 	).length()
 	if horizontal_displacement > 0.001:
+		if _first_movement.is_empty():
+			_first_movement = {
+				"event_id": "route-first-movement-g%04d" % _measurement_generation,
+				"measurement_generation": _measurement_generation,
+				"mission_generation": _measurement_generation,
+				"elapsed_seconds": snappedf(maxf(total_elapsed_seconds - delta, 0.0), 0.001),
+				"position": player.global_position,
+			}
 		effective_traversal_seconds += delta
 		path_length_traveled += horizontal_displacement
 	_last_player_position = player.global_position
@@ -70,6 +99,37 @@ func _physics_process(delta: float) -> void:
 	if _sample_clock >= 2.0:
 		_sample_clock = 0.0
 		_append_sample(player, horizontal_speed)
+	_latch_first_legal_alpha_overlap(player)
+
+
+func _latch_first_legal_alpha_overlap(player: CharacterBody3D) -> void:
+	if not _completion_result.is_empty() or _first_movement.is_empty():
+		return
+	var alpha := get_node_or_null(alpha_path) as Area3D
+	var mission := get_tree().get_first_node_in_group(&"mission_controller")
+	if alpha == null or mission == null or not alpha.overlaps_body(player):
+		return
+	var objective_state: Dictionary = mission.call(&"objective_state_for", &"alpha")
+	if objective_state.get("legal", false) != true:
+		return
+	var elapsed_from_first_movement := total_elapsed_seconds - float(_first_movement.get("elapsed_seconds", 0.0))
+	_completion_result = {
+		"event_id": "route-alpha-overlap-g%04d" % _measurement_generation,
+		"measurement_generation": _measurement_generation,
+		"mission_generation": _measurement_generation,
+		"first_movement": _first_movement.duplicate(true),
+		"first_alpha_overlap_elapsed_seconds": snappedf(total_elapsed_seconds, 0.01),
+		"elapsed_from_first_movement_seconds": snappedf(elapsed_from_first_movement, 0.01),
+		"effective_traversal_seconds": snappedf(effective_traversal_seconds, 0.01),
+		"traveled_distance": snappedf(path_length_traveled, 0.01),
+		"grounded_ratio": snappedf(grounded_seconds / maxf(total_elapsed_seconds, 0.001), 0.001),
+		"collision_frames": collision_frames,
+		"persistent_stall_seconds": snappedf(persistent_stall_seconds, 0.01),
+		"collision_blocker": _last_blocker.duplicate(true),
+		"ordered_navigation_corners": _route_chain(&"spawn_to_a"),
+		"within_budget": effective_traversal_seconds >= EXPECTED_MIN_SECONDS and effective_traversal_seconds <= EXPECTED_MAX_SECONDS,
+		"latched": true,
+	}
 
 
 func _update_collision_stall(player: CharacterBody3D, horizontal_speed: float, delta: float) -> void:
@@ -208,8 +268,12 @@ func _mcp_state() -> Dictionary:
 	var within_budget := effective_traversal_seconds >= EXPECTED_MIN_SECONDS and effective_traversal_seconds <= EXPECTED_MAX_SECONDS
 	return {
 		"route_id": ROUTE_ID,
-		"ready": arena != null and arena.get("collision_ready") == true,
+		"ready": arena != null and arena.get("collision_ready") == true and arena.get("topology_ready") == true,
 		"fixed_spawn": _fixed_spawn,
+		"measurement_generation": _measurement_generation,
+		"measurement_source": _measurement_source,
+		"first_movement": _first_movement,
+		"completion_result": _completion_result,
 		"alpha_position": alpha.global_position,
 		"bravo_position": bravo.global_position if bravo != null else Vector3.ZERO,
 		"charlie_position": charlie.global_position if charlie != null else Vector3.ZERO,

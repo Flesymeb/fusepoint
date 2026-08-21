@@ -73,6 +73,9 @@ var screen_shake_enabled := true
 var _look_input_serial := 0
 var _last_look_receipt: Dictionary = {}
 var _look_history: Array[Dictionary] = []
+var _deployment_generation := 0
+var _look_generation_sequence := 0
+var _look_observation_boundary: Dictionary = {}
 var _deployment_reset_count := 0
 var _last_deployment_reset_receipt: Dictionary = {}
 var _last_restore_receipt: Dictionary = {}
@@ -100,6 +103,7 @@ func _ready() -> void:
 	safe_margin = 0.03
 	max_slides = 8
 	_capture_mouse()
+	_begin_look_observation_generation(&"initial_ready")
 
 
 func _input(event: InputEvent) -> void:
@@ -201,21 +205,49 @@ func _apply_look_delta(yaw_delta: float, pitch_delta: float, source: StringName,
 	)
 	head.rotation.x = _pitch
 	_look_input_serial += 1
+	_look_generation_sequence += 1
 	_last_look_receipt = {
+		"event_id": "look-g%04d-%04d" % [_deployment_generation, _look_generation_sequence],
+		"receipt_id": "look-input-%06d" % _look_input_serial,
 		"edge_id": "look-input-%06d" % _look_input_serial,
+		"deployment_generation": _deployment_generation,
+		"generation_sequence": _look_generation_sequence,
 		"source": source,
 		"raw_input": raw_input,
 		"delta_seconds": delta_seconds,
+		"yaw_before_degrees": rad_to_deg(yaw_before),
+		"pitch_before_degrees": rad_to_deg(pitch_before),
 		"yaw_delta_degrees": rad_to_deg(angle_difference(yaw_before, rotation.y)),
 		"pitch_delta_degrees": rad_to_deg(_pitch - pitch_before),
 		"yaw_after_degrees": rotation_degrees.y,
 		"pitch_after_degrees": head.rotation_degrees.x,
+		"accepted": true,
 		"gameplay_enabled": gameplay_input_enabled,
 		"mouse_captured": _mouse_captured,
+		"capture_eligible": gameplay_input_enabled and _mouse_captured,
 	}
 	_look_history.append(_last_look_receipt.duplicate(true))
 	while _look_history.size() > 24:
 		_look_history.pop_front()
+
+
+func _begin_look_observation_generation(source: StringName) -> void:
+	var previous_generation := _deployment_generation
+	var boundary_pitch_degrees := head.rotation_degrees.x if head != null else rad_to_deg(_pitch)
+	_deployment_generation += 1
+	_look_generation_sequence = 0
+	_look_history.clear()
+	_last_look_receipt.clear()
+	_look_observation_boundary = {
+		"event_id": "look-boundary-%04d" % _deployment_generation,
+		"source": source,
+		"previous_generation": previous_generation,
+		"deployment_generation": _deployment_generation,
+		"yaw_degrees": rotation_degrees.y,
+		"pitch_degrees": boundary_pitch_degrees,
+		"gameplay_enabled": gameplay_input_enabled,
+		"mouse_captured": _mouse_captured,
+	}
 
 
 func _get_target_speed(sprinting: bool) -> float:
@@ -467,6 +499,8 @@ func _reset_to_spawn(source: StringName = &"mission_setup") -> void:
 		"accepted": true,
 		"validation": validation,
 	}
+	_begin_look_observation_generation(source)
+	_last_deployment_reset_receipt["deployment_generation"] = _deployment_generation
 	spawn_reset.emit()
 
 
@@ -647,6 +681,7 @@ func bind_deployment_to_walkable(walkable_position: Vector3, look_target := Vect
 	_spawn_transform = global_transform
 	_spawn_head_rotation = head.rotation
 	velocity = Vector3.ZERO
+	_begin_look_observation_generation(&"native_anchor_bound")
 
 
 func set_gameplay_input_enabled(enabled: bool) -> void:
@@ -698,18 +733,21 @@ func exit_terminal_lock() -> void:
 
 
 func _mcp_state() -> Dictionary:
+	var head_ready := head != null
+	var camera_ready := camera != null
+	var collision_ready := collision_shape != null and collision_shape.shape is CapsuleShape3D
 	return {
 		"position": global_position,
 		"velocity": velocity,
 		"yaw_degrees": rotation_degrees.y,
-		"pitch_degrees": head.rotation_degrees.x,
+		"pitch_degrees": head.rotation_degrees.x if head_ready else rad_to_deg(_pitch),
 		"mouse_captured": _mouse_captured,
 		"on_floor": is_on_floor(),
-		"camera_current": camera.current,
-		"camera_forward": -camera.global_transform.basis.z,
-		"camera_height": _camera_height_above_feet(),
-		"camera_fov": camera.fov,
-		"collision_height": (collision_shape.shape as CapsuleShape3D).height,
+		"camera_current": camera.current if camera_ready else false,
+		"camera_forward": -camera.global_transform.basis.z if camera_ready else -global_transform.basis.z,
+		"camera_height": _camera_height_above_feet() if camera_ready else 0.0,
+		"camera_fov": camera.fov if camera_ready else _base_camera_fov,
+		"collision_height": (collision_shape.shape as CapsuleShape3D).height if collision_ready else standing_height,
 		"spawn_position": _spawn_transform.origin,
 		"deployment_reset_count": _deployment_reset_count,
 		"last_deployment_reset_receipt": _last_deployment_reset_receipt,
@@ -723,8 +761,8 @@ func _mcp_state() -> Dictionary:
 		"jump_available": is_on_floor() and _stance == "standing",
 		"landing_active": _landing_time_left > 0.0,
 		"stand_clearance": _stand_clearance,
-		"posture_height": (collision_shape.shape as CapsuleShape3D).height,
-		"posture_radius": (collision_shape.shape as CapsuleShape3D).radius,
+		"posture_height": (collision_shape.shape as CapsuleShape3D).height if collision_ready else standing_height,
+		"posture_radius": (collision_shape.shape as CapsuleShape3D).radius if collision_ready else standing_radius,
 		"auto_step_enabled": auto_step_enabled,
 		"max_step_height": max_step_height,
 		"auto_step_count": _auto_step_count,
@@ -745,5 +783,10 @@ func _mcp_state() -> Dictionary:
 		"screen_shake_enabled": screen_shake_enabled,
 		"look_input_authority": &"player_raw_input_and_physics_stick",
 		"look_input_count": _look_input_serial,
+		"deployment_generation": _deployment_generation,
+		"look_generation_sequence": _look_generation_sequence,
+		"look_observation_boundary": _look_observation_boundary,
+		"look_receipt_history": _look_history.duplicate(true),
+		"look_receipt_history_limit": 24,
 		"last_look_receipt": _last_look_receipt,
 	}
