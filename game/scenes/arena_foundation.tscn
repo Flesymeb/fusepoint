@@ -20,12 +20,12 @@ radiance_size = 3
 [sub_resource type="Environment" id="Environment_daylight"]
 background_mode = 2
 sky = SubResource("Sky_daylight")
-background_energy_multiplier = 0.8
+background_energy_multiplier = 0.68
 ambient_light_source = 3
-ambient_light_energy = 0.75
-ambient_light_sky_contribution = 0.7
+ambient_light_energy = 0.58
+ambient_light_sky_contribution = 0.82
 reflected_light_source = 2
-tonemap_mode = 2
+tonemap_mode = 3
 
 [sub_resource type="NavigationMesh" id="NavigationMesh_arena"]
 agent_height = 1.8
@@ -115,8 +115,8 @@ environment = SubResource("Environment_daylight")
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
 rotation_degrees = Vector3(-48, -32, 0)
-light_color = Color(1, 0.94, 0.82, 1)
-light_energy = 1.35
+light_color = Color(1, 0.965, 0.9, 1)
+light_energy = 0.92
 shadow_enabled = true
 directional_shadow_max_distance = 180.0
 shadow_bias = 0.025

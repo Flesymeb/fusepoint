@@ -702,7 +702,7 @@ func _candidate_has_line_of_fire(position: Vector3) -> bool:
 	if target == null:
 		return false
 	var start := position + Vector3.UP * (target_height + 0.3)
-	var endpoint := target.global_position + Vector3.UP * target_height
+	var endpoint := _target_aim_position(target)
 	var query := PhysicsRayQueryParameters3D.create(start, endpoint, sight_collision_mask, [get_rid()])
 	query.collide_with_areas = true
 	query.collide_with_bodies = true
@@ -1064,7 +1064,7 @@ func _is_inside_vision_cone(candidate: Node3D) -> bool:
 func _has_line_of_sight_to(candidate: Node3D) -> bool:
 	if candidate == null or _eye == null:
 		return false
-	var endpoint := candidate.global_position + Vector3.UP * target_height
+	var endpoint := _target_aim_position(candidate)
 	var query := PhysicsRayQueryParameters3D.create(
 		_eye.global_position,
 		endpoint,
@@ -1133,8 +1133,10 @@ func _perform_attack() -> Dictionary:
 	_attack_attempts_on_current_target += 1
 	var shot_id := "enemy:%s:%d:%d" % [name, Time.get_ticks_msec(), _attack_sequence]
 	var shot_origin := _muzzle.global_position if _muzzle != null else global_position
-	var shot_endpoint := target.global_position + Vector3.UP * target_height if target != null else shot_origin - global_basis.z
+	var shot_endpoint := _target_aim_position(target) if target != null else shot_origin - global_basis.z
 	var shot_direction := shot_origin.direction_to(shot_endpoint)
+	var trace := _resolve_attack_trace(shot_origin, shot_endpoint)
+	var result := StringName(trace.get("result", &"miss"))
 	var report := {
 		"shot_id": shot_id,
 		"source_team": attack_team,
@@ -1145,22 +1147,61 @@ func _perform_attack() -> Dictionary:
 		"origin": _eye.global_position if _eye != null else global_position,
 		"muzzle_origin": shot_origin,
 		"direction": shot_direction,
-		"hit_position": shot_endpoint,
+		"hit_position": trace.get("position", shot_endpoint),
+		"hit_normal": trace.get("normal", Vector3.UP),
+		"result": result,
+		"surface_kind": trace.get("surface_kind", &"air"),
+		"ammo_before": rounds_remaining + 1,
+		"ammo_after": rounds_remaining,
+		"ammo_commit": 1,
 		"target_path": String(target.get_path()) if target != null else "",
 		"applied": false,
-		"reason": "no_line_of_sight",
+		"reason": "resolved_%s" % String(result),
 	}
-	if target != null and _target_health != null and _has_line_of_sight():
+	if result == &"hit" and target != null and _target_health != null:
 		report = _target_health.call("apply_damage", attack_damage, report)
 		report["accepted"] = true
 		report["hit"] = report.get("applied", false) == true
 		report["origin"] = _eye.global_position if _eye != null else global_position
 		report["muzzle_origin"] = _muzzle.global_position if _muzzle != null else global_position
 		report["direction"] = shot_direction
-		report["hit_position"] = shot_endpoint
+		report["hit_position"] = trace.get("position", shot_endpoint)
+		report["hit_normal"] = trace.get("normal", Vector3.UP)
+		report["result"] = &"hit"
+		report["surface_kind"] = &"character"
+		report["ammo_before"] = rounds_remaining + 1
+		report["ammo_after"] = rounds_remaining
+		report["ammo_commit"] = 1
 	last_attack_report = report
 	attack_resolved.emit(report)
 	return report
+
+
+func _resolve_attack_trace(origin: Vector3, endpoint: Vector3) -> Dictionary:
+	var query := PhysicsRayQueryParameters3D.create(origin, endpoint, sight_collision_mask, [get_rid()])
+	query.collide_with_areas = true
+	query.collide_with_bodies = true
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty():
+		return {"result": &"miss", "position": endpoint, "normal": Vector3.UP, "surface_kind": &"air"}
+	var collider := hit.get("collider") as Node
+	if _belongs_to_target(collider):
+		return {"result": &"hit", "position": hit.get("position", endpoint), "normal": hit.get("normal", Vector3.UP), "surface_kind": &"character"}
+	return {
+		"result": &"blocked",
+		"position": hit.get("position", endpoint),
+		"normal": hit.get("normal", Vector3.UP),
+		"surface_kind": _surface_kind_for(collider),
+	}
+
+
+func _surface_kind_for(collider: Node) -> StringName:
+	if collider == null:
+		return &"concrete"
+	var hint := String(collider.name).to_lower()
+	if "metal" in hint or "fence" in hint or "container" in hint or "gate" in hint:
+		return &"metal"
+	return &"concrete"
 
 
 func _begin_reload() -> void:
@@ -1174,7 +1215,7 @@ func _begin_reload() -> void:
 func _has_line_of_sight() -> bool:
 	if target == null or _eye == null:
 		return false
-	var endpoint := target.global_position + Vector3.UP * target_height
+	var endpoint := _target_aim_position(target)
 	var query := PhysicsRayQueryParameters3D.create(
 		_eye.global_position,
 		endpoint,
@@ -1196,6 +1237,13 @@ func _belongs_to_target(node: Node) -> bool:
 			return true
 		cursor = cursor.get_parent()
 	return false
+
+
+func _target_aim_position(candidate: Node3D) -> Vector3:
+	if candidate == null:
+		return global_position - global_basis.z
+	var head := candidate.get_node_or_null("Head") as Node3D
+	return head.global_position if head != null else candidate.global_position + Vector3.UP * target_height
 
 
 func _find_damage_receiver(root: Node) -> Node:

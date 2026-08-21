@@ -670,6 +670,11 @@ theme_override_constants/separation = 14
 custom_minimum_size = Vector2(260, 52)
 layout_mode = 2
 text = "REPLAY OPERATION"
+[node name="RestartButton" type="Button" parent="Root/Pages/ResultPage/Menu"]
+visible = false
+custom_minimum_size = Vector2(260, 52)
+layout_mode = 2
+text = "RESTART LAST CHECKPOINT"
 [node name="HomeButton" type="Button" parent="Root/Pages/ResultPage/Menu"]
 custom_minimum_size = Vector2(180, 52)
 layout_mode = 2

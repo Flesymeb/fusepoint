@@ -1,15 +1,15 @@
-[gd_scene load_steps=18 format=3]
+[gd_scene load_steps=13 format=3]
 
 [ext_resource type="PackedScene" path="res://scenes/arena_foundation.tscn" id="1_arena"]
 [ext_resource type="Script" path="res://scripts/prototype_player.gd" id="2_player"]
 [ext_resource type="PackedScene" path="res://systems/weapons/viewmodels/ak74/addons/fps_ak74_viewmodel/fps_ak74_viewmodel.tscn" id="3_viewmodel"]
 [ext_resource type="PackedScene" path="res://scenes/weapon_controller.tscn" id="4_weapon_controller"]
-[ext_resource type="Script" path="res://scripts/controlled_target.gd" id="5_target"]
 [ext_resource type="Script" path="res://scripts/mission_controller.gd" id="6_mission"]
 [ext_resource type="Script" path="res://scripts/enemy_roster.gd" id="7_roster"]
 [ext_resource type="PackedScene" path="res://scenes/tactical_hud.tscn" id="8_hud"]
 [ext_resource type="PackedScene" path="res://scenes/product_shell.tscn" id="9_shell"]
 [ext_resource type="PackedScene" path="res://systems/combat/core/fps_player_damage_feedback.tscn" id="10_damage_feedback"]
+[ext_resource type="PackedScene" path="res://scenes/terminal_presentation.tscn" id="11_terminal"]
 
 [sub_resource type="CapsuleShape3D" id="Shape_player"]
 radius = 0.4
@@ -26,31 +26,6 @@ corner_radius_top_left = 4
 corner_radius_top_right = 4
 corner_radius_bottom_right = 4
 corner_radius_bottom_left = 4
-
-[sub_resource type="BoxMesh" id="Mesh_target_plate"]
-size = Vector3(0.92, 1.62, 0.12)
-
-[sub_resource type="StandardMaterial3D" id="Material_target_plate"]
-albedo_color = Color(0.12, 0.145, 0.16, 1)
-metallic = 0.72
-roughness = 0.32
-
-[sub_resource type="CylinderMesh" id="Mesh_target_center"]
-top_radius = 0.24
-bottom_radius = 0.24
-height = 0.045
-radial_segments = 32
-
-[sub_resource type="StandardMaterial3D" id="Material_target_center"]
-albedo_color = Color(0.88, 0.49, 0.08, 1)
-metallic = 0.35
-roughness = 0.28
-emission_enabled = true
-emission = Color(0.24, 0.075, 0.005, 1)
-emission_energy_multiplier = 0.7
-
-[sub_resource type="BoxShape3D" id="Shape_target"]
-size = Vector3(0.92, 1.62, 0.12)
 
 [node name="FusepointBootstrap" type="Node3D"]
 
@@ -85,23 +60,6 @@ hud_action_path = NodePath("../CombatHUD/Root/WeaponPanel/VBox/StateRow/Action")
 hud_result_path = NodePath("../CombatHUD/Root/Result")
 hud_reticle_path = NodePath("../CombatHUD/Root/Reticle")
 
-[node name="BallisticsCalibrationPlate" type="StaticBody3D" parent="." groups=["controlled_target", "mcp_watch"]]
-position = Vector3(0, 1.48, -9.2)
-script = ExtResource("5_target")
-
-[node name="Plate" type="MeshInstance3D" parent="BallisticsCalibrationPlate"]
-mesh = SubResource("Mesh_target_plate")
-material_override = SubResource("Material_target_plate")
-
-[node name="Center" type="MeshInstance3D" parent="BallisticsCalibrationPlate"]
-position = Vector3(0, 0.1, 0.085)
-rotation_degrees = Vector3(90, 0, 0)
-mesh = SubResource("Mesh_target_center")
-material_override = SubResource("Material_target_center")
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="BallisticsCalibrationPlate"]
-shape = SubResource("Shape_target")
-
 [node name="MissionController" type="Node" parent="." groups=["mcp_watch", "mission_controller"]]
 script = ExtResource("6_mission")
 player_path = NodePath("../PrototypePlayer")
@@ -131,6 +89,16 @@ charlie_path = NodePath("../ArenaFoundation/Charlie")
 [node name="PlayerDamageFeedback" parent="." instance=ExtResource("10_damage_feedback")]
 player_path = NodePath("../PrototypePlayer")
 camera_path = NodePath("../PrototypePlayer/Head/Camera3D")
+settings_store_path = NodePath("../ProductShell/SettingsStore")
+
+[node name="TerminalPresentation" parent="." instance=ExtResource("11_terminal")]
+mission_path = NodePath("../MissionController")
+player_path = NodePath("../PrototypePlayer")
+weapon_path = NodePath("../PrototypePlayer/Head/Camera3D/WeaponController")
+roster_path = NodePath("../EnemyRoster")
+bomb_path = NodePath("../ArenaFoundation/Charlie")
+camera_path = NodePath("../PrototypePlayer/Head/Camera3D")
+damage_feedback_path = NodePath("../PlayerDamageFeedback")
 settings_store_path = NodePath("../ProductShell/SettingsStore")
 
 [node name="ProductShell" parent="." instance=ExtResource("9_shell")]

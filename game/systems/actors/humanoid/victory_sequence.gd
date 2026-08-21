@@ -20,6 +20,7 @@ var _reveal_center: Vector3
 var _headline: Label
 var _summary: Label
 var _accent: ColorRect
+var _sequence_tween: Tween
 
 
 func _ready() -> void:
@@ -41,17 +42,32 @@ func begin(camera: Camera3D, avatar: EnemyHumanoidActor, summary := "MISSION COM
 	_reveal_center = _avatar.global_position + Vector3(0.0, 1.05, 0.0)
 	_rear_position = _avatar.global_position + _avatar.global_basis * Vector3(0.0, 1.45, -rear_distance)
 	sequence_started.emit()
-	var tween := create_tween()
-	tween.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
-	tween.tween_method(_pull_camera_back, 0.0, 1.0, pullback_seconds)
-	tween.tween_method(_orbit_camera, 0.0, 1.0, orbit_seconds)
-	tween.parallel().tween_method(_reveal_overlay, 0.0, 1.0, orbit_seconds)
-	tween.tween_callback(camera_reveal_complete.emit)
+	_sequence_tween = create_tween()
+	_sequence_tween.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	_sequence_tween.tween_method(_pull_camera_back, 0.0, 1.0, pullback_seconds)
+	_sequence_tween.tween_method(_orbit_camera, 0.0, 1.0, orbit_seconds)
+	_sequence_tween.parallel().tween_method(_reveal_overlay, 0.0, 1.0, orbit_seconds)
+	_sequence_tween.tween_callback(camera_reveal_complete.emit)
 	return true
 
 
+func reset_sequence(restore_camera := true) -> void:
+	if _sequence_tween != null and _sequence_tween.is_valid():
+		_sequence_tween.kill()
+	_sequence_tween = null
+	if restore_camera and _camera != null:
+		_camera.global_transform = _start_transform
+	if _avatar != null:
+		_avatar.visible = false
+	_headline.modulate.a = 0.0
+	_summary.modulate.a = 0.0
+	_accent.color.a = 0.0
+	_camera = null
+	_avatar = null
+
+
 func _pull_camera_back(weight: float) -> void:
-	var position := _start_transform.origin.lerp(_rear_position, weight)
+	var position := _safe_camera_position(_start_transform.origin.lerp(_rear_position, weight))
 	_camera.global_transform = _look_transform(position)
 
 
@@ -60,8 +76,25 @@ func _orbit_camera(weight: float) -> void:
 	var front_angle := PI * 0.42
 	var angle := lerpf(rear_angle, front_angle, weight)
 	var radius := lerpf(rear_distance, reveal_distance, weight)
-	var position := _avatar.global_position + Vector3(cos(angle) * radius, 1.32, sin(angle) * radius)
+	var position := _safe_camera_position(_avatar.global_position + Vector3(cos(angle) * radius, 1.32, sin(angle) * radius))
 	_camera.global_transform = _look_transform(position)
+
+
+func _safe_camera_position(desired: Vector3) -> Vector3:
+	if _camera == null or _avatar == null:
+		return desired
+	var excluded: Array[RID] = []
+	var player := get_tree().get_first_node_in_group(&"player")
+	if player is CollisionObject3D:
+		excluded.append((player as CollisionObject3D).get_rid())
+	var query := PhysicsRayQueryParameters3D.create(_reveal_center, desired, 0xFFFFFFFF, excluded)
+	query.collide_with_areas = false
+	query.collide_with_bodies = true
+	var hit := _camera.get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty():
+		return desired
+	var hit_position: Vector3 = hit.get("position", desired)
+	return hit_position.move_toward(_reveal_center, 0.38)
 
 
 func _look_transform(position: Vector3) -> Transform3D:

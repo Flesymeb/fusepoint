@@ -19,12 +19,12 @@ const STATE_RESULT := &"result"
 @onready var weapon: Node = get_node("../PrototypePlayer/Head/Camera3D/WeaponController")
 @onready var roster: Node = get_node("../EnemyRoster")
 @onready var hud: CanvasLayer = get_node("../TacticalHUD")
+@onready var terminal: Node = get_node("../TerminalPresentation")
 
 var app_state := STATE_TITLE
 var _return_from_settings := STATE_TITLE
 var _selected_weapon := &"ak74m"
 var _loading_remaining := 0.0
-var _terminal_remaining := -1.0
 var _transition_serial := 0
 
 
@@ -32,6 +32,7 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_connect_controls()
 	player.player_died.connect(_on_player_died)
+	terminal.presentation_completed.connect(_on_terminal_presentation_completed)
 	settings_store.settings_applied.connect(_on_settings_applied)
 	_set_gameplay_enabled(false)
 	_load_settings_controls()
@@ -57,6 +58,7 @@ func _connect_controls() -> void:
 	$Root/Pages/DeathPage/Menu/RestartButton.pressed.connect(_restart_checkpoint)
 	$Root/Pages/DeathPage/Menu/HomeButton.pressed.connect(_return_home)
 	$Root/Pages/ResultPage/Menu/ReplayButton.pressed.connect(_replay)
+	$Root/Pages/ResultPage/Menu/RestartButton.pressed.connect(_restart_checkpoint)
 	$Root/Pages/ResultPage/Menu/HomeButton.pressed.connect(_return_home)
 
 
@@ -92,18 +94,6 @@ func _process(delta: float) -> void:
 		$Root/Pages/LoadingPage/Progress.value = (1.0 - _loading_remaining / 1.35) * 100.0
 		if _loading_remaining <= 0.0:
 			_show_page(STATE_BRIEFING)
-	if app_state == STATE_GAMEPLAY:
-		var mission_state := StringName(mission.get("mission_state"))
-		if mission_state in [&"bomb_defused", &"bomb_detonated"]:
-			if _terminal_remaining < 0.0:
-				_terminal_remaining = 1.5
-				player.call(&"set_gameplay_input_enabled", false)
-				weapon.call(&"set_gameplay_input_enabled", false)
-				roster.process_mode = Node.PROCESS_MODE_DISABLED
-			else:
-				_terminal_remaining -= delta
-				if _terminal_remaining <= 0.0:
-					_show_result(mission_state)
 
 
 func _show_page(state: StringName) -> void:
@@ -172,7 +162,6 @@ func _deploy() -> void:
 	if not mission.call(&"begin_deployment"):
 		$Root/Pages/BriefingPage/Error.text = "DEPLOYMENT ALREADY COMMITTED"
 		return
-	_terminal_remaining = -1.0
 	get_tree().paused = false
 	_set_gameplay_enabled(true)
 	_show_page(STATE_GAMEPLAY)
@@ -254,6 +243,8 @@ func _on_player_died(_event: Dictionary) -> void:
 
 
 func _restart_checkpoint() -> void:
+	if app_state == STATE_RESULT:
+		return
 	mission.call(&"request_checkpoint_restore")
 	get_tree().paused = false
 	_set_gameplay_enabled(true)
@@ -262,18 +253,23 @@ func _restart_checkpoint() -> void:
 
 func _return_home() -> void:
 	get_tree().paused = false
+	terminal.reset_presentation(true, true)
 	mission.call(&"reset_for_replay")
 	_set_gameplay_enabled(false)
-	_terminal_remaining = -1.0
 	_show_page(STATE_TITLE)
 
 
 func _replay() -> void:
 	get_tree().paused = false
+	terminal.reset_presentation(true, true)
 	mission.call(&"reset_for_replay")
 	_set_gameplay_enabled(false)
-	_terminal_remaining = -1.0
 	_show_page(STATE_LOADOUT)
+
+
+func _on_terminal_presentation_completed(_event_id: String, result: StringName) -> void:
+	if app_state == STATE_GAMEPLAY:
+		_show_result(result)
 
 
 func _show_result(result: StringName) -> void:
@@ -281,14 +277,24 @@ func _show_result(result: StringName) -> void:
 	var success := result == &"bomb_defused"
 	$Root/Pages/ResultPage/Outcome.text = "MISSION COMPLETE" if success else "MISSION FAILED"
 	$Root/Pages/ResultPage/Outcome.modulate = Color(0.2, 0.92, 0.82) if success else Color(1.0, 0.27, 0.18)
-	var remaining := int(float(mission.get("remaining_time")))
-	var points: Dictionary = mission.get("capture_points")
-	$Root/Pages/ResultPage/Metrics.text = "RESULT  %s\nTIME REMAINING  %02d:%02d\nALPHA  %s    BRAVO  %s\nKEYS  %d / 2    CHECKPOINTS  %d\nENEMY ROSTER  %d" % [
-		String(result).replace("_", " ").to_upper(), remaining / 60, remaining % 60,
-		String(points[&"alpha"]["state"]).replace("_", " ").to_upper(),
-		String(points[&"bravo"]["state"]).replace("_", " ").to_upper(),
-		mission.get("committed_keys").size(), int(mission.get("checkpoint_commit_count")), (roster.get("enemies") as Dictionary).size(),
+	var snapshot: Dictionary = mission.call(&"result_snapshot")
+	var components: Dictionary = snapshot.get("score_components", {})
+	var remaining := int(snapshot.get("remaining_seconds", 0))
+	var completion := int(snapshot.get("completion_seconds", 0))
+	var rank := int(snapshot.get("leaderboard_rank", 0))
+	var rank_text := "—" if rank <= 0 else "#%d" % rank
+	$Root/Pages/ResultPage/Metrics.text = "RESULT  %s    SCORE  %d\nCOMPLETION  %02d:%02d    REMAINING  %02d:%02d\nALPHA  %s    BRAVO  %s\nELIMINATIONS  %d    DEATHS  %d    RESTARTS  %d\n\nSCORE COMPONENTS\nTIME %+d  •  A %+d  •  B %+d  •  ELIMS %+d\nDIAGNOSIS %+d  •  ISOLATION %+d  •  DETONATOR %+d\nDEATHS %+d  •  RESTARTS %+d\n\nFASTEST-SUCCESS DELTA  %+.1fs    LEADERBOARD  %s" % [
+		String(result).replace("_", " ").to_upper(), int(snapshot.get("score", 0)),
+		completion / 60, completion % 60, remaining / 60, remaining % 60,
+		"SECURED" if snapshot.get("alpha_captured", false) else "HOSTILE",
+		"SECURED" if snapshot.get("bravo_captured", false) else "HOSTILE",
+		int(snapshot.get("eliminations", 0)), int(snapshot.get("deaths", 0)), int(snapshot.get("restart_count", 0)),
+		int(components.get("time", 0)), int(components.get("alpha", 0)), int(components.get("bravo", 0)), int(components.get("eliminations", 0)),
+		int(components.get("diagnosis", 0)), int(components.get("power_isolation", 0)), int(components.get("detonator_removal", 0)),
+		int(components.get("deaths", 0)), int(components.get("checkpoint_restarts", 0)),
+		float(snapshot.get("fastest_success_delta", 0.0)), rank_text,
 	]
+	$Root/Pages/ResultPage/Menu/RestartButton.visible = not success and remaining > 0 and int(mission.get("checkpoint_version")) > 0
 	_show_page(STATE_RESULT)
 
 
@@ -301,5 +307,6 @@ func _mcp_state() -> Dictionary:
 		"paused": get_tree().paused,
 		"gameplay_input_enabled": player.get("gameplay_input_enabled"),
 		"mission_state": mission.get("mission_state"),
+		"terminal_presentation": terminal.snapshot(),
 		"focused_control": str(get_viewport().gui_get_focus_owner().get_path()) if get_viewport().gui_get_focus_owner() != null else "",
 	}

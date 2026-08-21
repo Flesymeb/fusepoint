@@ -50,12 +50,18 @@ var _damage_serial := 0
 var _damage_commits: Dictionary = {}
 var _last_damage_event: Dictionary = {}
 var gameplay_input_enabled := true
+var terminal_locked := false
+var terminal_event_id := ""
+var _deployment_collision_layer := 1
+var _deployment_collision_mask := 1
 
 
 func _ready() -> void:
 	_spawn_transform = global_transform
 	_spawn_head_rotation = head.rotation
 	health = max_health
+	_deployment_collision_layer = collision_layer
+	_deployment_collision_mask = collision_mask
 	_standing_clearance_shape.radius = 0.4
 	_standing_clearance_shape.height = standing_height
 	floor_snap_length = 0.25
@@ -230,6 +236,7 @@ func _release_mouse() -> void:
 
 
 func _reset_to_spawn() -> void:
+	exit_terminal_lock()
 	global_transform = _spawn_transform
 	head.rotation = _spawn_head_rotation
 	_pitch = _spawn_head_rotation.x
@@ -260,6 +267,7 @@ func restore_checkpoint_state(checkpoint_transform: Transform3D, checkpoint_heal
 
 
 func _restore_movement_state(target_transform: Transform3D, target_health: float) -> void:
+	exit_terminal_lock()
 	global_transform = target_transform
 	head.rotation = _spawn_head_rotation
 	_pitch = _spawn_head_rotation.x
@@ -298,6 +306,7 @@ func apply_authoritative_damage(amount: float, damage_event_id := "", metadata: 
 		"shot_id": String(metadata.get("shot_id", event_id)),
 		"source_path": String(metadata.get("source_path", "")),
 		"source_position": source_position,
+		"damage_class": StringName(metadata.get("damage_class", &"ballistic")),
 		"amount": amount,
 		"severity": severity,
 		"severity_ratio": severity_ratio,
@@ -342,9 +351,9 @@ func bind_deployment_to_walkable(walkable_position: Vector3, look_target := Vect
 
 
 func set_gameplay_input_enabled(enabled: bool) -> void:
-	gameplay_input_enabled = enabled
+	gameplay_input_enabled = enabled and not terminal_locked
 	velocity = Vector3.ZERO
-	if enabled:
+	if gameplay_input_enabled:
 		_capture_mouse()
 	else:
 		_release_mouse()
@@ -352,6 +361,29 @@ func set_gameplay_input_enabled(enabled: bool) -> void:
 
 func prepare_new_mission() -> void:
 	_reset_to_spawn()
+
+
+func enter_terminal_lock(event_id: String) -> bool:
+	if terminal_locked:
+		return terminal_event_id == event_id
+	terminal_locked = true
+	terminal_event_id = event_id
+	gameplay_input_enabled = false
+	velocity = Vector3.ZERO
+	collision_layer = 0
+	collision_mask = 0
+	collision_shape.set_deferred(&"disabled", true)
+	_release_mouse()
+	return true
+
+
+func exit_terminal_lock() -> void:
+	terminal_locked = false
+	terminal_event_id = ""
+	collision_layer = _deployment_collision_layer
+	collision_mask = _deployment_collision_mask
+	if collision_shape != null:
+		collision_shape.set_deferred(&"disabled", false)
 
 
 func _mcp_state() -> Dictionary:
@@ -382,4 +414,6 @@ func _mcp_state() -> Dictionary:
 		"damage_commit_count": _damage_commits.size(),
 		"last_damage_event": _last_damage_event,
 		"gameplay_input_enabled": gameplay_input_enabled,
+		"terminal_locked": terminal_locked,
+		"terminal_event_id": terminal_event_id,
 	}

@@ -23,6 +23,7 @@ const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
 @onready var camera: Camera3D = get_node(camera_path) as Camera3D
 @onready var viewmodel: Node3D = get_node(viewmodel_path) as Node3D
 @onready var feedback: Node = viewmodel.get_node("FPSViewmodelFeedback")
+@onready var shot_feedback: FPSShotFeedback3D = $ShotFeedback
 @onready var hud_weapon: Label = get_node_or_null(hud_weapon_path) as Label
 @onready var hud_ammo: Label = get_node_or_null(hud_ammo_path) as Label
 @onready var hud_mode: Label = get_node_or_null(hud_mode_path) as Label
@@ -53,8 +54,9 @@ var gameplay_input_enabled := true
 var _observed_fire_down := false
 var _fire_rearm_required := false
 var _fire_edge_queue: Array[Dictionary] = []
-var _fire_source_hint := &"none"
 var _active_fire_source := &"none"
+var _active_fire_press_edge_id := ""
+var _active_fire_press_time_usec := 0
 var _input_edge_serial := 0
 var _last_input_receipt: Dictionary = {}
 var _input_history: Array[Dictionary] = []
@@ -81,12 +83,16 @@ func _finish_ready() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	# Raw events only preserve the human-readable source label. InputMap's frame
-	# edge flags below are the sole press/release authority for both mouse and
-	# mapped analog input, including events injected between rendered frames.
+	# This normalized raw-event stream is the sole fire-edge authority. Both
+	# edges can arrive between physics ticks; preserving them in order prevents
+	# InputMap frame flags from stretching a short press into an AUTO interval.
 	if not event.is_action(&"fire"):
 		return
-	_fire_source_hint = _input_source_for(event)
+	var pressed := event.is_action_pressed(&"fire")
+	var released := event.is_action_released(&"fire")
+	if not pressed and not released:
+		return
+	_observe_fire_transition(pressed, _input_source_for(event), Time.get_ticks_usec())
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -113,6 +119,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(_delta: float) -> void:
 	if not _ready_for_combat:
 		return
+	_drain_fire_edges()
 	if not gameplay_input_enabled:
 		_sync_hud()
 		return
@@ -129,6 +136,15 @@ func _process(_delta: float) -> void:
 		_action_state = &"ads" if _ads_held else &"hip"
 	if hud_result != null and now >= _last_result_until and not hud_result.text.is_empty():
 		hud_result.text = ""
+	# AUTO cadence is evaluated once after the render-frame input pump. A raw
+	# release queued for this frame therefore cancels before a repeat can commit,
+	# even when several physics ticks occurred between rendered frames.
+	var scheduled_shots := 0
+	while _trigger_held and not _active_fire_press_edge_id.is_empty() and _current_weapon()["fire_mode"] == FIRE_MODE_AUTO and _now() >= _next_shot_time and scheduled_shots < 8:
+		if _try_submit_shot().is_empty():
+			break
+		_next_shot_time += _fire_interval()
+		scheduled_shots += 1
 	_sync_movement_feedback()
 	_sync_hud()
 
@@ -138,34 +154,12 @@ func _physics_process(delta: float) -> void:
 		return
 	if gameplay_input_enabled:
 		_combat_clock_seconds += maxf(delta, 0.0)
-	_capture_mapped_fire_edges()
 	_drain_fire_edges()
 	if not gameplay_input_enabled:
 		return
-	var scheduled_shots := 0
-	while _trigger_held and _current_weapon()["fire_mode"] == FIRE_MODE_AUTO and _now() >= _next_shot_time and scheduled_shots < 8:
-		if _try_submit_shot().is_empty():
-			break
-		_next_shot_time += _fire_interval()
-		scheduled_shots += 1
 
 
-func _capture_mapped_fire_edges() -> void:
-	var pressed := Input.is_action_just_pressed(&"fire")
-	var released := Input.is_action_just_released(&"fire")
-	if not pressed and not released:
-		return
-	var source := _fire_source_hint
-	if source == &"none":
-		source = &"mouse_left" if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) else &"gamepad_trigger"
-	if pressed:
-		_observe_fire_transition(true, source)
-	if released:
-		_observe_fire_transition(false, source)
-	_fire_source_hint = &"none"
-
-
-func _observe_fire_transition(pressed: bool, source: StringName) -> void:
+func _observe_fire_transition(pressed: bool, source: StringName, captured_at_usec := 0) -> void:
 	if pressed == _observed_fire_down:
 		return
 	_observed_fire_down = pressed
@@ -182,6 +176,7 @@ func _observe_fire_transition(pressed: bool, source: StringName) -> void:
 		"pressed": pressed,
 		"source": source,
 		"captured_at_seconds": _now(),
+		"captured_at_usec": captured_at_usec if captured_at_usec > 0 else Time.get_ticks_usec(),
 	})
 
 
@@ -195,7 +190,7 @@ func _drain_fire_edges() -> void:
 			_record_input_edge(source, &"press" if edge.get("pressed", false) else &"release", false, "gameplay_disabled", "", magazine, magazine, "eligibility_changed", edge_id)
 			continue
 		if edge.get("pressed", false) == true:
-			_begin_fire(source, edge_id)
+			_begin_fire(source, edge_id, int(edge.get("captured_at_usec", 0)))
 		else:
 			_end_fire(source, "release", edge_id)
 
@@ -206,13 +201,15 @@ func _consume_fire_edge(pressed: bool, source: StringName) -> void:
 	_observe_fire_transition(pressed, source)
 
 
-func _begin_fire(source := &"mapped_action", edge_id := "") -> void:
+func _begin_fire(source := &"mapped_action", edge_id := "", captured_at_usec := 0) -> void:
 	var magazine_before := int(_current_weapon()["magazine"])
 	if not _can_fire():
 		_record_input_edge(source, &"press", false, _fire_rejection_reason(), "", magazine_before, magazine_before, "", edge_id)
 		return
 	_trigger_held = true
 	_active_fire_source = source
+	_active_fire_press_edge_id = edge_id
+	_active_fire_press_time_usec = captured_at_usec
 	var receipt := _try_submit_shot()
 	_next_shot_time = _now() + _fire_interval()
 	if _current_weapon()["fire_mode"] == FIRE_MODE_SEMI:
@@ -234,6 +231,8 @@ func _begin_fire(source := &"mapped_action", edge_id := "") -> void:
 func _end_fire(source := &"mapped_action", cancellation_reason := "release", edge_id := "") -> void:
 	var was_held := _trigger_held
 	_trigger_held = false
+	_active_fire_press_edge_id = ""
+	_active_fire_press_time_usec = 0
 	if feedback.has_method(&"end_fire"):
 		feedback.call(&"end_fire")
 	if cancellation_reason == "release":
@@ -262,6 +261,7 @@ func _try_submit_shot() -> Dictionary:
 	_weapons[_equipped_id] = weapon
 	var receipt := _resolve_ballistics(shot_id, weapon)
 	_dispatch_impact_receipt(receipt)
+	shot_feedback.show_shot(receipt)
 	_last_shot = receipt
 	_shot_history.append(receipt.duplicate(true))
 	if _shot_history.size() > 24:
@@ -334,6 +334,10 @@ func _resolve_ballistics(shot_id: String, weapon: Dictionary) -> Dictionary:
 		"damage_commit": damage_committed,
 		"ammo_commit": 1,
 		"presentation_commit": 1,
+		"accepted": true,
+		"hit": result == &"hit",
+		"source_team": &"player",
+		"surface_kind": &"character" if result == &"hit" else &"concrete" if result == &"blocked" else &"air",
 		"input_source": _active_fire_source,
 	}
 
@@ -522,7 +526,6 @@ func set_gameplay_input_enabled(enabled: bool) -> void:
 		_cancel_queued_fire_edges("gameplay_disabled")
 		_cancel_held_fire("gameplay_disabled")
 		_fire_rearm_required = _observed_fire_down
-		_fire_source_hint = &"none"
 		_ads_held = false
 		_cancel_action(&"idle")
 	elif _action_state == &"idle":
@@ -617,7 +620,6 @@ func _dispatch_impact_receipt(receipt: Dictionary) -> bool:
 	_impact_history.append(event)
 	while _impact_history.size() > 24:
 		_impact_history.pop_front()
-	_spawn_impact(event)
 	return true
 
 
@@ -782,6 +784,8 @@ func _cancel_held_fire(reason: String) -> void:
 	_record_input_edge(_active_fire_source, &"cancel", false, "cancelled", "", magazine, magazine, reason)
 	_trigger_held = false
 	_active_fire_source = &"none"
+	_active_fire_press_edge_id = ""
+	_active_fire_press_time_usec = 0
 	if feedback.has_method(&"end_fire"):
 		feedback.call(&"end_fire")
 
@@ -855,8 +859,10 @@ func _mcp_state() -> Dictionary:
 		"fire_rearm_required": _fire_rearm_required,
 		"queued_fire_edge_count": _fire_edge_queue.size(),
 		"combat_clock_seconds": _combat_clock_seconds,
-		"fire_edge_authority": &"input_map_frame_edges",
+		"fire_edge_authority": &"normalized_raw_input_events",
 		"active_fire_source": _active_fire_source,
+		"active_fire_press_edge_id": _active_fire_press_edge_id,
+		"active_fire_press_time_usec": _active_fire_press_time_usec,
 		"last_input_receipt": _last_input_receipt,
 		"input_history": _input_history,
 		"shot_count": _shot_serial,

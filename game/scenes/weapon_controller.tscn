@@ -1,6 +1,10 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scripts/weapon_controller.gd" id="1_controller"]
+[ext_resource type="Script" path="res://systems/combat/core/fps_shot_feedback_3d.gd" id="2_feedback"]
 
 [node name="WeaponController" type="Node" groups=["mcp_watch", "weapon_controllers"]]
 script = ExtResource("1_controller")
+
+[node name="ShotFeedback" type="Node3D" parent="."]
+script = ExtResource("2_feedback")

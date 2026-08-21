@@ -1,0 +1,121 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://scripts/terminal_presentation_controller.gd" id="1_controller"]
+[ext_resource type="PackedScene" path="res://systems/actors/humanoid/player_victory_avatar.tscn" id="2_avatar"]
+[ext_resource type="Script" path="res://systems/actors/humanoid/victory_sequence.gd" id="3_victory"]
+[ext_resource type="FontFile" path="res://systems/actors/humanoid/fonts/BarlowCondensed-SemiBold.ttf" id="4_font"]
+
+[sub_resource type="StyleBoxFlat" id="RedEdgeStyle"]
+bg_color = Color(0.08, 0.002, 0.001, 0)
+border_width_left = 24
+border_width_top = 18
+border_width_right = 24
+border_width_bottom = 18
+border_color = Color(0.92, 0.015, 0.002, 0.8)
+corner_radius_top_left = 18
+corner_radius_top_right = 18
+corner_radius_bottom_right = 18
+corner_radius_bottom_left = 18
+
+[node name="TerminalPresentation" type="Node3D" groups=["mcp_watch", "terminal_presenter"]]
+script = ExtResource("1_controller")
+
+[node name="EffectRoot" type="Node3D" parent="."]
+
+[node name="VictoryAvatar" parent="." instance=ExtResource("2_avatar")]
+visible = false
+
+[node name="VictorySequence" type="CanvasLayer" parent="."]
+layer = 96
+script = ExtResource("3_victory")
+
+[node name="BlastAudio" type="AudioStreamPlayer3D" parent="."]
+unit_size = 12.0
+max_distance = 120.0
+
+[node name="TailAudio" type="AudioStreamPlayer3D" parent="."]
+unit_size = 16.0
+max_distance = 160.0
+
+[node name="TerminalOverlay" type="CanvasLayer" parent="."]
+layer = 94
+
+[node name="Flash" type="ColorRect" parent="TerminalOverlay"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(1, 0.96, 0.82, 0)
+
+[node name="RedEdge" type="Panel" parent="TerminalOverlay"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_styles/panel = SubResource("RedEdgeStyle")
+
+[node name="MediaFallback" type="Control" parent="TerminalOverlay"]
+visible = false
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Treatment" type="ColorRect" parent="TerminalOverlay/MediaFallback"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.035, 0.012, 0.008, 0.34)
+
+[node name="TopRail" type="ColorRect" parent="TerminalOverlay/MediaFallback"]
+offset_left = 84.0
+offset_top = 78.0
+offset_right = 1196.0
+offset_bottom = 82.0
+color = Color(0.92, 0.37, 0.08, 0.84)
+
+[node name="Title" type="Label" parent="TerminalOverlay/MediaFallback"]
+offset_left = 84.0
+offset_top = 92.0
+offset_right = 1196.0
+offset_bottom = 154.0
+theme_override_fonts/font = ExtResource("4_font")
+theme_override_colors/font_color = Color(1, 0.92, 0.72, 1)
+theme_override_colors/font_outline_color = Color(0.02, 0.006, 0.002, 0.96)
+theme_override_constants/outline_size = 7
+theme_override_font_sizes/font_size = 40
+text = "TERMINAL EVENT"
+
+[node name="Copy" type="Label" parent="TerminalOverlay/MediaFallback"]
+offset_left = 86.0
+offset_top = 164.0
+offset_right = 870.0
+offset_bottom = 232.0
+theme_override_fonts/font = ExtResource("4_font")
+theme_override_colors/font_color = Color(0.9, 0.88, 0.78, 0.96)
+theme_override_colors/font_outline_color = Color(0.01, 0.006, 0.004, 0.9)
+theme_override_constants/outline_size = 5
+theme_override_font_sizes/font_size = 22
+text = "ARCHIVED FIELD IMAGE FALLBACK"
+
+[node name="Skip" type="Label" parent="TerminalOverlay/MediaFallback"]
+offset_left = 84.0
+offset_top = 642.0
+offset_right = 1196.0
+offset_bottom = 682.0
+theme_override_fonts/font = ExtResource("4_font")
+theme_override_colors/font_color = Color(0.78, 0.84, 0.82, 0.9)
+theme_override_colors/font_outline_color = Color(0.01, 0.006, 0.004, 0.92)
+theme_override_constants/outline_size = 4
+theme_override_font_sizes/font_size = 17
+text = "[ENTER / E]  SKIP PRESENTATION"
+horizontal_alignment = 2

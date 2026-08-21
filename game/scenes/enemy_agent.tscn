@@ -1,7 +1,8 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=6 format=3]
 
 [ext_resource type="Script" path="res://scripts/enemy_agent.gd" id="1_agent"]
 [ext_resource type="Script" path="res://systems/combat/core/fps_health.gd" id="2_health"]
+[ext_resource type="Script" path="res://systems/combat/core/fps_shot_feedback_3d.gd" id="3_shot_feedback"]
 
 [sub_resource type="CapsuleShape3D" id="Capsule_enemy"]
 radius = 0.4
@@ -51,3 +52,7 @@ position = Vector3(0.24, -0.16, -0.42)
 unit_size = 7.0
 max_distance = 26.0
 volume_db = -7.0
+
+[node name="ShotFeedback" type="Node3D" parent="."]
+script = ExtResource("3_shot_feedback")
+enemy_tracer_color = Color(1, 0.12, 0.025, 0.96)

@@ -16,6 +16,7 @@ var mission_active := false
 var activation_sequence := 0
 var cleanup_hidden := false
 var _presentation_actor: EnemyHumanoidActor
+@onready var _shot_feedback: FPSShotFeedback3D = $ShotFeedback
 var _cleanup_remaining := 0.0
 var _event_sequence := 0
 var _last_enemy_event: Dictionary = {}
@@ -167,6 +168,7 @@ func authoritative_snapshot() -> Dictionary:
 		"ammo": combat.get("rounds_remaining", 0),
 		"magazine_size": combat.get("magazine_size", 0),
 		"shot_event_id": String((combat.get("last_attack", {}) as Dictionary).get("shot_id", "")),
+		"shot_feedback": _shot_feedback.snapshot(),
 		"nearest_neighbor_distance": combat.get("nearest_enemy_distance", -1.0),
 		"health": combat.get("health", {}),
 		"activation_sequence": activation_sequence,
@@ -188,6 +190,7 @@ func begin_checkpoint_restore(epoch: int) -> void:
 	_restore_in_progress = true
 	_restore_quiescent = true
 	_restore_readiness = &"suspended"
+	_shot_feedback.reset_feedback()
 	set_physics_process(false)
 	velocity = Vector3.ZERO
 	reset_volatile_combat_state_for_restore()
@@ -267,6 +270,7 @@ func _on_attack_resolved(report: Dictionary) -> void:
 	event["region"] = region_id
 	event["role"] = tactical_role
 	event["ammo_after"] = rounds_remaining
+	_shot_feedback.show_shot(event)
 	_commit_enemy_event(&"shot_resolved", event)
 
 

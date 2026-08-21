@@ -7,6 +7,7 @@ signal mission_state_changed(state: Dictionary)
 const POINT_IDS: Array[StringName] = [&"alpha", &"bravo"]
 const BOMB_STAGE_IDS: Array[StringName] = [&"diagnosis", &"power_isolation", &"detonator_removal"]
 const HISTORY_LIMIT := 512
+const LEADERBOARD_PATH := "user://fusepoint_results.cfg"
 
 @export_range(30.0, 900.0, 1.0) var mission_duration_seconds := 300.0
 @export_range(1.0, 30.0, 0.5) var capture_duration_seconds := 12.0
@@ -40,6 +41,10 @@ var checkpoint_snapshot: Dictionary = {}
 var checkpoint_commit_count := 0
 var checkpoint_restore_count := 0
 var terminal_commit_count := 0
+var terminal_event_id := ""
+var elimination_count := 0
+var player_death_count := 0
+var last_result_snapshot: Dictionary = {}
 var event_sequence := 0
 var event_history: Array[Dictionary] = []
 var last_event: Dictionary = {}
@@ -55,6 +60,9 @@ var _bomb_progress_bucket := -1
 var _timer_tick_bucket := -1
 var _hud_event_until := 0.0
 var _last_announced_event: Dictionary = {}
+var _eliminated_actor_ids: Dictionary = {}
+var _player_death_event_ids: Dictionary = {}
+var _terminal_damage_in_progress := false
 
 @onready var player: CharacterBody3D = get_node(player_path) as CharacterBody3D
 @onready var weapon_controller: Node = get_node(weapon_controller_path)
@@ -97,6 +105,13 @@ func _initialize_mission_state() -> void:
 	checkpoint_restore_in_progress = false
 	last_enemy_restore_receipt.clear()
 	terminal_commit_count = 0
+	terminal_event_id = ""
+	elimination_count = 0
+	player_death_count = 0
+	last_result_snapshot.clear()
+	_eliminated_actor_ids.clear()
+	_player_death_event_ids.clear()
+	_terminal_damage_in_progress = false
 	_active_capture = &""
 	_active_bomb_stage = false
 	_timer_tick_bucket = -1
@@ -224,6 +239,11 @@ func _enemy_occupancy(point_id: StringName) -> int:
 
 func report_enemy_event(event: Dictionary) -> void:
 	var kind := StringName(event.get("kind", &"enemy_event"))
+	if kind == &"died":
+		var actor_id := String(event.get("actor_id", ""))
+		if not actor_id.is_empty() and not _eliminated_actor_ids.has(actor_id):
+			_eliminated_actor_ids[actor_id] = true
+			elimination_count += 1
 	_record_event(StringName("enemy_%s" % kind), event, false)
 
 
@@ -320,8 +340,14 @@ func _complete_bomb_stage() -> void:
 func _on_player_damaged(event: Dictionary) -> void:
 	if _active_bomb_stage:
 		_interrupt_bomb(&"authoritative_damage")
+	var damage_event_id := String(event.get("event_id", ""))
+	if float(event.get("health_after", player.get("health"))) <= 0.0 and not _player_death_event_ids.has(damage_event_id):
+		_player_death_event_ids[damage_event_id] = true
+		player_death_count += 1
+	if _terminal_damage_in_progress and damage_event_id == terminal_event_id:
+		return
 	_record_event(&"player_damaged", {
-		"damage_event_id": String(event.get("event_id", "")),
+		"damage_event_id": damage_event_id,
 		"shot_id": String(event.get("shot_id", "")),
 		"health": event.get("health_after", player.get("health")),
 	})
@@ -338,7 +364,96 @@ func _submit_terminal(result: StringName, reason: StringName) -> void:
 	bomb_state = &"defused" if result == &"bomb_defused" else &"detonated"
 	_active_capture = &""
 	_active_bomb_stage = false
-	_record_event(&"terminal_submitted", {"result": result, "reason": reason, "remaining_time": remaining_time})
+	terminal_event_id = "mission-%06d" % (event_sequence + 1)
+	player.call(&"enter_terminal_lock", terminal_event_id)
+	weapon_controller.call(&"set_gameplay_input_enabled", false)
+	if enemy_roster != null:
+		enemy_roster.process_mode = Node.PROCESS_MODE_DISABLED
+	var bomb_origin := (get_node_or_null(charlie_path) as Node3D).global_position if get_node_or_null(charlie_path) is Node3D else player.global_position
+	if result == &"bomb_detonated":
+		_terminal_damage_in_progress = true
+		player.call(&"apply_authoritative_damage", float(player.get("health")) + float(player.get("max_health")), terminal_event_id, {
+			"event_id": terminal_event_id,
+			"shot_id": terminal_event_id,
+			"source_path": String(get_node_or_null(charlie_path).get_path()) if get_node_or_null(charlie_path) != null else "",
+			"source_position": bomb_origin,
+			"damage_class": &"bomb_terminal_explosion",
+		})
+		_terminal_damage_in_progress = false
+	_commit_result_record(result)
+	_record_event(&"terminal_submitted", {
+		"result": result,
+		"reason": reason,
+		"remaining_time": remaining_time,
+		"terminal_event_id": terminal_event_id,
+		"world_origin": bomb_origin,
+		"result_snapshot": last_result_snapshot,
+	})
+
+
+func result_snapshot() -> Dictionary:
+	return last_result_snapshot.duplicate(true)
+
+
+func _commit_result_record(result: StringName) -> void:
+	var success := result == &"bomb_defused"
+	var alpha_captured := StringName(capture_points[&"alpha"]["state"]) == &"secured_aegis"
+	var bravo_captured := StringName(capture_points[&"bravo"]["state"]) == &"secured_aegis"
+	var remaining_seconds := maxi(0, int(floor(remaining_time)))
+	var components := {
+		"time": remaining_seconds * 10,
+		"alpha": 500 if alpha_captured else 0,
+		"bravo": 500 if bravo_captured else 0,
+		"eliminations": elimination_count * 100,
+		"diagnosis": 250 if bomb_completed[0] else 0,
+		"power_isolation": 250 if bomb_completed[1] else 0,
+		"detonator_removal": 1000 if bomb_completed[2] else 0,
+		"deaths": player_death_count * -500,
+		"checkpoint_restarts": checkpoint_restore_count * -250,
+	}
+	var total_score := 0
+	for value: int in components.values():
+		total_score += value
+	var record := {
+		"terminal_event_id": terminal_event_id,
+		"result": result,
+		"success": success,
+		"completion_seconds": mission_duration_seconds - remaining_time,
+		"remaining_seconds": remaining_seconds,
+		"score": total_score,
+		"score_components": components,
+		"alpha_captured": alpha_captured,
+		"bravo_captured": bravo_captured,
+		"eliminations": elimination_count,
+		"deaths": player_death_count,
+		"restart_count": checkpoint_restore_count,
+		"selected_loadout": String((weapon_controller.call(&"snapshot_weapon_state") as Dictionary).get("equipped_id", &"ak74m")),
+		"timestamp_unix": Time.get_unix_time_from_system(),
+		"leaderboard_rank": 0,
+		"fastest_success_delta": 0.0,
+	}
+	var config := ConfigFile.new()
+	config.load(LEADERBOARD_PATH)
+	var fastest: Dictionary = config.get_value("leaderboard", "fastest_success", {})
+	if success:
+		if fastest.is_empty():
+			record["leaderboard_rank"] = 1
+			config.set_value("leaderboard", "fastest_success", record.duplicate(true))
+		else:
+			var previous_seconds := float(fastest.get("completion_seconds", INF))
+			record["fastest_success_delta"] = float(record["completion_seconds"]) - previous_seconds
+			if float(record["completion_seconds"]) < previous_seconds:
+				record["leaderboard_rank"] = 1
+				config.set_value("leaderboard", "fastest_success", record.duplicate(true))
+			else:
+				record["leaderboard_rank"] = 2
+	var recent: Array = config.get_value("history", "recent", [])
+	recent.push_front(record.duplicate(true))
+	while recent.size() > 10:
+		recent.pop_back()
+	config.set_value("history", "recent", recent)
+	config.save(LEADERBOARD_PATH)
+	last_result_snapshot = record
 
 
 func _commit_checkpoint(point_id: StringName) -> void:
@@ -556,6 +671,10 @@ func _mcp_state() -> Dictionary:
 		"checkpoint_restore_in_progress": checkpoint_restore_in_progress,
 		"last_enemy_restore_receipt": last_enemy_restore_receipt,
 		"terminal_commit_count": terminal_commit_count,
+		"terminal_event_id": terminal_event_id,
+		"elimination_count": elimination_count,
+		"player_death_count": player_death_count,
+		"last_result_snapshot": last_result_snapshot,
 		"active_capture": _active_capture,
 		"active_bomb_stage": _active_bomb_stage,
 		"event_sequence": event_sequence,

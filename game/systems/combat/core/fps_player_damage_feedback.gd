@@ -14,14 +14,14 @@ signal death_feedback_started(event: Dictionary)
 @export_range(0.0, 1.0, 0.01) var damage_flash_min_alpha := 0.10
 @export_range(0.0, 1.0, 0.01) var damage_flash_max_alpha := 0.28
 @export_range(0.0, 1.0, 0.01) var low_health_max_alpha := 0.08
-@export_range(0.0, 1.0, 0.01) var death_vignette_alpha := 0.72
-@export_range(0.0, 1.0, 0.01) var death_wash_alpha := 0.62
+@export_range(0.0, 1.0, 0.01) var death_vignette_alpha := 0.34
+@export_range(0.0, 1.0, 0.01) var death_wash_alpha := 0.24
 @export_range(0.05, 3.0, 0.01) var death_fade_seconds := 0.48
 @export_range(0.05, 3.0, 0.01) var death_camera_seconds := 0.78
-@export_range(0.0, 2.0, 0.05) var death_camera_drop := 0.62
-@export_range(0.0, 2.0, 0.05) var death_camera_pullback := 0.5
-@export_range(-30.0, 30.0, 0.5) var death_camera_pitch_degrees := 8.0
-@export_range(-30.0, 30.0, 0.5) var death_camera_roll_degrees := 4.0
+@export_range(0.0, 2.0, 0.05) var death_camera_drop := 0.36
+@export_range(0.0, 2.0, 0.05) var death_camera_pullback := 0.18
+@export_range(-30.0, 30.0, 0.5) var death_camera_pitch_degrees := 12.0
+@export_range(-30.0, 30.0, 0.5) var death_camera_roll_degrees := 5.0
 
 @onready var pain_overlay: TextureRect = %PainOverlay
 @onready var damage_arc: Line2D = %DamageArc
@@ -37,6 +37,7 @@ var observed_severity := &"none"
 var observed_severity_ratio := 0.0
 var feedback_lifetime_remaining := 0.0
 var camera_response_active := false
+var death_kind := &"none"
 
 var _player: Node
 var _camera: Camera3D
@@ -127,22 +128,25 @@ func show_death(event: Dictionary) -> void:
 	if death_active or (not event_id.is_empty() and event_id == _last_death_event_id):
 		return
 	_last_death_event_id = event_id
+	death_kind = &"bomb_terminal" if StringName(event.get("damage_class", &"")) == &"bomb_terminal_explosion" else &"combat"
 	death_active = true
 	feedback_lifetime_remaining = 0.0
 	camera_response_active = false
 	_kill_damage_tween()
 	_kill_death_tween()
-	pain_overlay.modulate = Color(1.0, 1.0, 1.0, death_vignette_alpha)
+	pain_overlay.modulate = Color(1.0, 1.0, 1.0, death_vignette_alpha if death_kind == &"bomb_terminal" else minf(0.56, death_vignette_alpha + 0.16))
 	damage_arc.modulate = Color(1.0, 1.0, 1.0, 0.0)
 	death_wash.modulate = Color(1.0, 1.0, 1.0, 0.0)
 	death_message.modulate = Color(1.0, 1.0, 1.0, 0.0)
 	_death_tween = create_tween().set_parallel(true)
 	_death_tween.set_pause_mode(Tween.TWEEN_PAUSE_BOUND)
 	_death_tween.tween_property(death_wash, "modulate", Color(1.0, 1.0, 1.0, death_wash_alpha), death_fade_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	_death_tween.tween_property(death_message, "modulate", Color.WHITE, death_fade_seconds * 0.8).set_delay(death_fade_seconds * 0.2)
+	if death_kind != &"bomb_terminal":
+		_death_tween.tween_property(death_message, "modulate", Color.WHITE, death_fade_seconds * 0.8).set_delay(death_fade_seconds * 0.2)
 	if _camera != null:
-		_death_tween.tween_property(_camera, "position", _camera_rest_position + Vector3(0.0, -death_camera_drop, death_camera_pullback), death_camera_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
-		_death_tween.tween_property(_camera, "rotation", _camera_rest_rotation + Vector3(deg_to_rad(death_camera_pitch_degrees), 0.0, deg_to_rad(death_camera_roll_degrees)), death_camera_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+		var motion_scale := _camera_motion_scale()
+		_death_tween.tween_property(_camera, "position", _camera_rest_position + Vector3(0.0, -death_camera_drop * motion_scale, death_camera_pullback * motion_scale), death_camera_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+		_death_tween.tween_property(_camera, "rotation", _camera_rest_rotation + Vector3(deg_to_rad(death_camera_pitch_degrees) * motion_scale, 0.0, deg_to_rad(death_camera_roll_degrees) * motion_scale), death_camera_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
 	death_feedback_started.emit(event.duplicate(true))
 
 
@@ -156,6 +160,7 @@ func reset_feedback(clear_event_history := false) -> void:
 		damage_event_count = 0
 		_observed_events.clear()
 		_last_death_event_id = ""
+		death_kind = &"none"
 		observed_event_id = ""
 		observed_direction = &"none"
 		observed_severity = &"none"
@@ -183,6 +188,7 @@ func snapshot() -> Dictionary:
 		"feedback_alpha": maxf(pain_overlay.modulate.a, damage_arc.modulate.a * damage_arc.default_color.a) if pain_overlay != null and damage_arc != null else 0.0,
 		"feedback_lifetime_remaining": feedback_lifetime_remaining,
 		"camera_response_active": camera_response_active,
+		"death_kind": death_kind,
 		"health_bound": _player != null,
 		"camera_bound": _camera != null,
 		"camera_offset": _camera.position - _camera_rest_position if _camera != null else Vector3.ZERO,
