@@ -24,6 +24,7 @@ enum MotionState {
 const UAL1_SCENE := preload("res://systems/actors/humanoid/assets/animations/ual1_standard.glb")
 const UAL2_SCENE := preload("res://systems/actors/humanoid/assets/animations/ual2_standard.glb")
 const PRIMARY_RIFLE_SCENE := preload("res://systems/actors/humanoid/assets/weapons/primary_rifle/m4_rifle.glb")
+const WEAPON_FAMILY := &"rifle"
 const SKINS := {
 	"soldier_a": {
 		"label": "Mixamo Soldier A (68 bones)",
@@ -39,7 +40,10 @@ const SKINS := {
 	},
 }
 const STATE_CLIPS := {
-	MotionState.IDLE: {"library": "ual1", "clip": "Pistol_Idle", "loop": true},
+	# The intact UAL package does not expose a named rifle library. Use its
+	# neutral/carry/two-hand clips as the M4 adapter; pistol semantics are never
+	# selected for an actor whose visible weapon family is rifle.
+	MotionState.IDLE: {"library": "ual1", "clip": "Idle", "loop": true},
 	MotionState.WALK: {"library": "ual1", "clip": "Walk", "loop": true},
 	MotionState.RUN: {"library": "ual1", "clip": "Jog_Fwd", "loop": true},
 	MotionState.CROUCH_IDLE: {"library": "ual1", "clip": "Crouch_Idle", "loop": true},
@@ -47,9 +51,9 @@ const STATE_CLIPS := {
 	MotionState.JUMP_START: {"library": "ual1", "clip": "Jump_Start", "loop": false},
 	MotionState.AIRBORNE: {"library": "ual1", "clip": "Jump", "loop": true},
 	MotionState.LAND: {"library": "ual1", "clip": "Jump_Land", "loop": false},
-	MotionState.AIM: {"library": "ual1", "clip": "Pistol_Aim_Neutral", "loop": true},
-	MotionState.FIRE: {"library": "ual1", "clip": "Pistol_Shoot", "loop": false},
-	MotionState.RELOAD: {"library": "ual1", "clip": "Pistol_Reload", "loop": false},
+	MotionState.AIM: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
+	MotionState.FIRE: {"library": "ual1", "clip": "Spell_Simple_Shoot", "loop": false},
+	MotionState.RELOAD: {"library": "ual1", "clip": "Interact", "loop": false},
 	# A regular bullet hit should read as a short flinch, not a full-body
 	# knockback. Hit_Head gives the requested small head snap while preserving
 	# the actor's planted combat stance.
@@ -87,6 +91,8 @@ var _custom_loop := false
 var _weapon_attachment: BoneAttachment3D
 var _locomotion_playback_scale := 1.0
 var _state_change_count := 0
+var _aim_pitch_degrees := 0.0
+var _aim_pitch_serial := 0
 
 
 func _ready() -> void:
@@ -301,6 +307,7 @@ func die() -> void:
 
 
 func reset_enemy() -> void:
+	set_aim_pitch(0.0)
 	set_motion_state(MotionState.IDLE, true)
 
 
@@ -373,7 +380,35 @@ func _hips_translation_mode() -> String:
 
 func _apply_pose_and_ground() -> void:
 	_retargeter.apply_pose(_hips_translation_mode())
+	_apply_rifle_aim_overlay()
 	_apply_ground_contact()
+
+
+func set_aim_pitch(pitch_degrees: float) -> void:
+	var clamped_pitch := clampf(pitch_degrees, -50.0, 50.0)
+	if not is_equal_approx(clamped_pitch, _aim_pitch_degrees):
+		_aim_pitch_serial += 1
+	_aim_pitch_degrees = clamped_pitch
+
+
+func _apply_rifle_aim_overlay() -> void:
+	if _target_skeleton == null or current_state not in [MotionState.AIM, MotionState.FIRE]:
+		return
+	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
+	var pitch_radians := deg_to_rad(_aim_pitch_degrees)
+	for overlay in [
+		{"bone": "spine_mid", "weight": 0.18},
+		{"bone": "chest", "weight": 0.34},
+		{"bone": "right_shoulder", "weight": 0.20},
+		{"bone": "left_shoulder", "weight": 0.20},
+	]:
+		var canonical := String(overlay["bone"])
+		if not mapping.has(canonical):
+			continue
+		var bone_index: int = mapping[canonical]
+		var base_rotation := _target_skeleton.get_bone_pose_rotation(bone_index)
+		var pitch_rotation := Quaternion(Vector3.RIGHT, pitch_radians * float(overlay["weight"]))
+		_target_skeleton.set_bone_pose_rotation(bone_index, base_rotation * pitch_rotation)
 
 
 func _apply_ground_contact() -> void:
@@ -485,6 +520,13 @@ func get_component_state() -> Dictionary:
 		"animation_length_seconds": animation_length,
 		"animation_normalized_time": clampf(animation_position / animation_length, 0.0, 1.0) if animation_length > 0.0 else 0.0,
 		"animation_playing": player != null and player.is_playing(),
+		"weapon_family": WEAPON_FAMILY,
+		"weapon_family_compatible": "pistol" not in String(STATE_CLIPS[current_state]["clip"]).to_lower(),
+		"aim_pitch_degrees": _aim_pitch_degrees,
+		"aim_pitch_serial": _aim_pitch_serial,
+		"socket_bound": _weapon_attachment != null,
+		"socket_bone": String(_weapon_attachment.bone_name) if _weapon_attachment != null else "",
+		"weapon_attached": _weapon_attachment != null and _weapon_attachment.get_node_or_null("PrimaryRifle") != null,
 		"locomotion_playback_scale": _locomotion_playback_scale,
 		"state_change_count": _state_change_count,
 		"binding": binding_report,

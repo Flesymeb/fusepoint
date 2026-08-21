@@ -230,7 +230,10 @@ func _instantiate_roster() -> bool:
 		agent.set_run_epoch(run_epoch)
 		var objective := _objective_for(StringName(entry["region"]))
 		agent.global_position = projected + Vector3.UP * 0.04
-		agent.look_at(objective.global_position, Vector3.UP)
+		var objective_direction := agent.global_position.direction_to(objective.global_position)
+		objective_direction.y = 0.0
+		if objective_direction.length_squared() > 0.0001:
+			agent.rotation = Vector3(0.0, atan2(-objective_direction.x, -objective_direction.z), 0.0)
 		agent.authoritative_enemy_event.connect(_on_enemy_event)
 		enemies[agent.stable_id] = agent
 	return enemies.size() == ROSTER.size()
@@ -543,7 +546,7 @@ func validate_restore_occupancy(player_position: Vector3, require_active_layout 
 		})
 	if ids.size() != 18:
 		failure_reason = &"stable_identity_count_invalid"
-	elif minimum_actor_distance < ACTOR_CAPSULE_RADIUS * 2.0:
+	elif minimum_actor_distance < MIN_RESERVATION_SEPARATION:
 		failure_reason = &"hostile_capsule_overlap"
 	elif minimum_player_distance < 1.2:
 		failure_reason = &"player_hostile_separation_blocked"
@@ -555,7 +558,7 @@ func validate_restore_occupancy(player_position: Vector3, require_active_layout 
 		"failure_reason": failure_reason,
 		"actor_count": ids.size(),
 		"minimum_actor_distance": -1.0 if is_inf(minimum_actor_distance) else minimum_actor_distance,
-		"required_actor_distance": ACTOR_CAPSULE_RADIUS * 2.0,
+		"required_actor_distance": MIN_RESERVATION_SEPARATION,
 		"minimum_player_distance": -1.0 if is_inf(minimum_player_distance) else minimum_player_distance,
 		"required_player_distance": 1.2,
 		"expected_active_region": expected_region,

@@ -116,6 +116,8 @@ var _fire_pose_remaining := 0.0
 var _reload_remaining := 0.0
 var _attack_sequence := 0
 var _navigation_safe_velocity := Vector3.ZERO
+var _navigation_safe_velocity_ready := false
+var _navigation_desired_velocity := Vector3.ZERO
 var _navigation_default_target_desired_distance := 0.0
 var _cover_anchor: FPSCoverAnchor
 var _pending_cover_after_hurt := false
@@ -131,6 +133,8 @@ var _evade_response_chance := 0.35
 var _flank_reposition_chance := 0.18
 var _rng := RandomNumberGenerator.new()
 var _engagement_slot_index := -1
+var _engagement_projected_position := Vector3.ZERO
+var _engagement_projection_rejection := &"unreserved"
 var _reposition_decision_remaining := 0.0
 var _reposition_timeout_remaining := 0.0
 var _force_reposition := false
@@ -401,8 +405,11 @@ func snapshot() -> Dictionary:
 		"last_threat_position": _last_threat_position,
 		"has_last_threat_position": _has_last_threat_position,
 		"navigation_safe_velocity": _navigation_safe_velocity,
+		"navigation_desired_velocity": _navigation_desired_velocity,
+		"navigation_safe_velocity_ready": _navigation_safe_velocity_ready,
 		"engagement_slot_index": _engagement_slot_index,
 		"engagement_slot_position": _engagement_destination(),
+		"engagement_projection_rejection": _engagement_projection_rejection,
 		"engagement_reservation_count": FPSEngagementSlots.reservation_count(target),
 		"nearest_enemy_distance": _nearest_enemy_distance(),
 		"crowded": _is_crowded(),
@@ -436,6 +443,8 @@ func reset_volatile_combat_state_for_restore() -> void:
 	_fire_pose_remaining = 0.0
 	_reload_remaining = 0.0
 	_navigation_safe_velocity = Vector3.ZERO
+	_navigation_desired_velocity = Vector3.ZERO
+	_navigation_safe_velocity_ready = false
 	_release_cover()
 	_evade_remaining = 0.0
 	_evade_destination = Vector3.ZERO
@@ -584,25 +593,28 @@ func _chase_or_search(delta: float, visible: bool) -> void:
 	var direction := global_position.direction_to(next_point)
 	direction.y = 0.0
 	direction = direction.normalized()
-	velocity.x = direction.x * move_speed
-	velocity.z = direction.z * move_speed
+	var desired_velocity := direction * move_speed
 	if _navigation_agent != null:
-		_navigation_agent.set_velocity(Vector3(velocity.x, 0.0, velocity.z))
+		_submit_navigation_velocity(desired_velocity)
+	else:
+		velocity.x = desired_velocity.x
+		velocity.z = desired_velocity.z
 	_face_direction(direction, delta)
 	_drive_locomotion_presentation(move_state)
 
 
 func _should_reposition_from_combat() -> bool:
-	# First make the contact readable: acquire, turn, aim, and fire. Tactical
-	# spacing/flanking may only interrupt subsequent shots, never the initial
-	# response to a visible target.
-	if _attack_attempts_on_current_target <= 0:
-		return false
+	# Personal-space authority precedes attack authority. An actor in a collapsed
+	# occupancy must clear its reserved slot before its first legal shot.
 	if _is_crowded():
 		_force_reposition = true
 		_reposition_timeout_remaining = reposition_timeout_seconds
 		_last_reposition_reason = &"personal_space"
 		return true
+	# Once occupancy is clear, keep the first readable contact free of an
+	# optional flank decision.
+	if _attack_attempts_on_current_target <= 0:
+		return false
 	if _reposition_decision_remaining > 0.0:
 		return false
 	_reposition_decision_remaining = reposition_interval_seconds
@@ -658,18 +670,28 @@ func _reserve_engagement_slot(prefer_different: bool) -> bool:
 	var radius := _engagement_radius()
 	var best_index := -1
 	var best_score := INF
+	var best_position := Vector3.ZERO
 	for slot_index: int in available:
 		var candidate := FPSEngagementSlots.position_for(target, slot_index, engagement_slot_count, radius)
 		candidate = _project_engagement_position(candidate)
+		if not FPSEngagementSlots.projected_position_available(self, target, candidate, personal_space_radius):
+			continue
 		var score := global_position.distance_to(candidate)
 		if not _candidate_has_line_of_fire(candidate):
 			score += attack_range * 2.0
 		if score < best_score:
 			best_score = score
 			best_index = slot_index
-	if best_index < 0 or not FPSEngagementSlots.reserve(self, target, best_index):
+			best_position = candidate
+	if best_index < 0:
+		_engagement_projection_rejection = &"no_separated_projected_slot"
+		return false
+	if not FPSEngagementSlots.reserve(self, target, best_index, best_position, personal_space_radius):
+		_engagement_projection_rejection = &"projection_reservation_race"
 		return false
 	_engagement_slot_index = best_index
+	_engagement_projected_position = best_position
+	_engagement_projection_rejection = &""
 	return true
 
 
@@ -677,6 +699,8 @@ func _release_engagement_slot() -> void:
 	if target != null and is_instance_valid(target):
 		FPSEngagementSlots.release(self, target)
 	_engagement_slot_index = -1
+	_engagement_projected_position = Vector3.ZERO
+	_engagement_projection_rejection = &"released"
 	_force_reposition = false
 	_reposition_timeout_remaining = 0.0
 
@@ -689,14 +713,22 @@ func _engagement_destination() -> Vector3:
 	if target == null or not is_instance_valid(target):
 		return _last_seen_target_position
 	if _engagement_slot_index < 0:
-		return target.global_position
+		# No reservation means no movement authority toward the shared target
+		# origin. Hold the current capsule until a separated slot is available.
+		return global_position
 	var raw_position := FPSEngagementSlots.position_for(
 		target,
 		_engagement_slot_index,
 		engagement_slot_count,
 		_engagement_radius(),
 	)
-	return _project_engagement_position(raw_position)
+	var projected := _project_engagement_position(raw_position)
+	if FPSEngagementSlots.update_projected_position(self, target, projected, personal_space_radius):
+		_engagement_projected_position = projected
+		_engagement_projection_rejection = &""
+	else:
+		_engagement_projection_rejection = &"moving_target_projection_collapsed"
+	return _engagement_projected_position
 
 
 func _project_engagement_position(position: Vector3) -> Vector3:
@@ -809,12 +841,28 @@ func _move_to_tactical_destination(
 	var direction := global_position.direction_to(next_point)
 	direction.y = 0.0
 	direction = direction.normalized()
-	velocity.x = direction.x * move_speed
-	velocity.z = direction.z * move_speed
+	var desired_velocity := direction * move_speed
 	if _navigation_agent != null:
-		_navigation_agent.set_velocity(Vector3(velocity.x, 0.0, velocity.z))
+		_submit_navigation_velocity(desired_velocity)
+	else:
+		velocity.x = desired_velocity.x
+		velocity.z = desired_velocity.z
 	_face_direction(direction, delta)
 	_drive_locomotion_presentation(locomotion)
+
+
+func _submit_navigation_velocity(desired_velocity: Vector3) -> void:
+	_navigation_desired_velocity = Vector3(desired_velocity.x, 0.0, desired_velocity.z)
+	_navigation_agent.set_velocity(_navigation_desired_velocity)
+	# Navigation avoidance is computed at the server sync boundary. Consume only
+	# the last velocity_computed receipt; never move on an unqualified desired
+	# velocity during the first frame of activation or after a restore.
+	if _navigation_safe_velocity_ready:
+		velocity.x = _navigation_safe_velocity.x
+		velocity.z = _navigation_safe_velocity.z
+	else:
+		velocity.x = 0.0
+		velocity.z = 0.0
 
 
 func _select_cover_anchor(threat_position: Vector3) -> FPSCoverAnchor:
@@ -1278,10 +1326,7 @@ func _face_target(delta: float) -> void:
 
 func _on_navigation_velocity_computed(safe_velocity: Vector3) -> void:
 	_navigation_safe_velocity = safe_velocity
-	if ai_state not in [AIState.CHASE, AIState.SEARCH, AIState.REPOSITION, AIState.SEEK_COVER, AIState.EVADE]:
-		return
-	velocity.x = safe_velocity.x
-	velocity.z = safe_velocity.z
+	_navigation_safe_velocity_ready = true
 
 
 func _face_direction(direction: Vector3, delta: float) -> void:
@@ -1405,12 +1450,17 @@ func _on_died(event: Dictionary) -> void:
 	_evade_remaining = 0.0
 	_release_cover()
 	_release_engagement_slot()
-	_set_ai_state(AIState.DEAD)
-	_play_death_sound()
+	target = null
+	_target_health = null
 	if _collision_shape != null:
 		_collision_shape.set_deferred("disabled", true)
 	if _navigation_agent != null:
 		_navigation_agent.avoidance_enabled = false
+		_navigation_agent.set_velocity_forced(Vector3.ZERO)
+	# Presentation follows authoritative shutdown: a death pose can never precede
+	# attack, navigation and collision revocation.
+	_set_ai_state(AIState.DEAD)
+	_play_death_sound()
 	enemy_died.emit(event)
 
 

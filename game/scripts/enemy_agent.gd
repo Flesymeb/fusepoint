@@ -27,9 +27,12 @@ var _restored_epoch := 0
 var _restore_quiescent := false
 var _restore_readiness := &"ordinary"
 var reserved_position := Vector3.ZERO
+var _aim_pitch_degrees := 0.0
+var _upright_correction_count := 0
 
 
 func _ready() -> void:
+	_enforce_upright_navigation_root()
 	super._ready()
 	add_to_group(&"mcp_watch")
 	add_to_group(&"fusepoint_enemy")
@@ -45,12 +48,34 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	if not mission_active:
 		return
+	_enforce_upright_navigation_root()
 	super._physics_process(delta)
+	_update_presentation_aim_pitch()
+	_enforce_upright_navigation_root()
 	if _cleanup_remaining > 0.0:
 		_cleanup_remaining = maxf(0.0, _cleanup_remaining - delta)
-		if _cleanup_remaining <= 0.0 and _presentation_actor != null:
+		if _cleanup_remaining <= 0.0 and _presentation_actor != null and not is_alive():
 			_presentation_actor.visible = false
 			cleanup_hidden = true
+
+
+func _enforce_upright_navigation_root() -> void:
+	if absf(rotation.x) <= 0.0001 and absf(rotation.z) <= 0.0001:
+		return
+	rotation = Vector3(0.0, rotation.y, 0.0)
+	_upright_correction_count += 1
+
+
+func _update_presentation_aim_pitch() -> void:
+	if _presentation_actor == null:
+		return
+	var requested_pitch := 0.0
+	if target != null and is_instance_valid(target) and _eye != null:
+		var aim_delta := _target_aim_position(target) - _eye.global_position
+		var horizontal_distance := Vector2(aim_delta.x, aim_delta.z).length()
+		requested_pitch = -rad_to_deg(atan2(aim_delta.y, maxf(horizontal_distance, 0.001)))
+	_aim_pitch_degrees = clampf(requested_pitch, -50.0, 50.0)
+	_presentation_actor.set_aim_pitch(_aim_pitch_degrees)
 
 
 func configure_roster_entry(entry: Dictionary, target_node: Node3D) -> void:
@@ -61,6 +86,11 @@ func configure_roster_entry(entry: Dictionary, target_node: Node3D) -> void:
 	route_pressure = entry["route_pressure"] == true
 	roster_index = int(entry["index"])
 	reserved_position = entry.get("reserved_position", global_position)
+	# add_child() enters the tree before the roster can apply the final global
+	# transform, so the reusable base briefly observes the roster origin. Replace
+	# that provisional home with this actor's committed navigation reservation.
+	_home_position = reserved_position + Vector3.UP * 0.04
+	_has_home_position = true
 	tactical_random_seed = 17041 + roster_index * 131
 	difficulty = int(entry.get("difficulty", Difficulty.MEDIUM))
 	target_group = &"player"
@@ -85,6 +115,9 @@ func set_mission_active(active: bool, sequence := 0) -> void:
 	if mission_active == active and (not active or activation_sequence > 0):
 		return
 	mission_active = active
+	_navigation_safe_velocity = Vector3.ZERO
+	_navigation_desired_velocity = Vector3.ZERO
+	_navigation_safe_velocity_ready = false
 	if active:
 		activation_sequence = sequence
 		_ensure_presentation()
@@ -188,6 +221,16 @@ func authoritative_snapshot() -> Dictionary:
 		"animation_normalized_time": presentation_state.get("animation_normalized_time", 0.0),
 		"animation_playing": presentation_state.get("animation_playing", false),
 		"animation_state_change_count": presentation_state.get("state_change_count", 0),
+		"weapon_family": presentation_state.get("weapon_family", &"unbound"),
+		"weapon_family_compatible": presentation_state.get("weapon_family_compatible", false),
+		"weapon_socket_bound": presentation_state.get("socket_bound", false),
+		"weapon_attached": presentation_state.get("weapon_attached", false),
+		"root_pitch_degrees": rad_to_deg(rotation.x),
+		"root_yaw_degrees": rad_to_deg(rotation.y),
+		"root_roll_degrees": rad_to_deg(rotation.z),
+		"root_upright": absf(rotation.x) <= 0.001 and absf(rotation.z) <= 0.001,
+		"upright_correction_count": _upright_correction_count,
+		"aim_pitch_degrees": _aim_pitch_degrees,
 		"binding_accepted": _presentation_actor.binding_report.get("accepted", false) == true if _presentation_actor != null else false,
 		"restore_epoch": _restore_epoch,
 		"restored_epoch": _restored_epoch,
@@ -227,6 +270,7 @@ func apply_checkpoint_snapshot(saved: Dictionary, epoch: int) -> bool:
 		push_error("Restore reservation mismatch for %s" % stable_id)
 		return false
 	global_transform = saved.get("transform", global_transform)
+	_enforce_upright_navigation_root()
 	velocity = Vector3.ZERO
 	rounds_remaining = int(saved.get("ammo", magazine_size))
 	activation_sequence = int(saved.get("activation_sequence", activation_sequence))
