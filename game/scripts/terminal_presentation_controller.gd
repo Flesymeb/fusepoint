@@ -6,11 +6,13 @@ extends Node3D
 
 signal presentation_started(event: Dictionary)
 signal presentation_completed(event_id: String, result: StringName)
+signal branch_receipt_updated(receipt: Dictionary)
 
 const FAMILY_ID := &"bomb_terminal_sequence"
 const SUCCESS_DURATION := 6.2
 const FAILURE_DURATION := 5.8
 const FAILURE_MEDIA_START := 1.5
+const BRANCH_RECEIPT_LIMIT := 4
 
 @export var mission_path: NodePath
 @export var player_path: NodePath
@@ -62,6 +64,9 @@ var _tactical_hud: Node
 var _applied_reduced_motion := false
 var _applied_screen_shake := true
 var _restore_epoch := 0
+var _active_branch_receipt: Dictionary = {}
+var _retained_branch_receipts: Array[Dictionary] = []
+var _phase_timestamps: Dictionary = {}
 
 
 func _ready() -> void:
@@ -115,6 +120,35 @@ func _start_presentation(event_id: String, result: StringName, origin: Vector3, 
 	phase = &"native_victory" if branch == &"success" else &"flash_impulse"
 	elapsed_seconds = 0.0
 	world_origin = origin
+	_phase_timestamps.clear()
+	_phase_timestamps[phase] = _phase_stamp()
+	var payload: Dictionary = event.get("payload", {})
+	_active_branch_receipt = {
+		"family_id": &"bomb_terminal_effects",
+		"run_epoch": int(event.get("run_epoch", mission.get("run_epoch"))),
+		"terminal_event_id": event_id,
+		"immutable_identity": "run-%06d:%s" % [int(event.get("run_epoch", mission.get("run_epoch"))), event_id],
+		"result": result,
+		"branch": branch,
+		"authority_event": event.duplicate(true),
+		"authority_committed_usec": int(event.get("committed_at_usec", Time.get_ticks_usec())),
+		"authority_committed_frame": int(event.get("committed_frame", Engine.get_process_frames())),
+		"terminal_commit_count": int(mission.get("terminal_commit_count")),
+		"terminal_duplicate_submit_count": int(mission.get("terminal_duplicate_submit_count")),
+		"health_zero_at_start": float(player.get("health")) <= 0.0,
+		"health_at_start": player.get("health"),
+		"bomb_state": mission.get("bomb_state"),
+		"combat_locks": _combat_lock_snapshot(),
+		"result_payload": payload.get("result_snapshot", {}),
+		"presentation_started_usec": Time.get_ticks_usec(),
+		"presentation_started_frame": Engine.get_process_frames(),
+		"phase_timestamps": _phase_timestamps.duplicate(true),
+		"effect_layers": [],
+		"audio": {},
+		"completed": false,
+		"presentation_only": true,
+		"authoritative_calls": [],
+	}
 	weapon.call(&"set_gameplay_input_enabled", false)
 	roster.process_mode = Node.PROCESS_MODE_DISABLED
 	if _tactical_hud != null and _tactical_hud.has_method(&"set_hud_enabled"):
@@ -126,7 +160,9 @@ func _start_presentation(event_id: String, result: StringName, origin: Vector3, 
 		_begin_success()
 	else:
 		_begin_failure()
+	_refresh_active_receipt()
 	presentation_started.emit(event.duplicate(true))
+	branch_receipt_updated.emit(_active_branch_receipt.duplicate(true))
 
 
 func _begin_success() -> void:
@@ -179,10 +215,10 @@ func _begin_failure() -> void:
 func _tick_failure() -> void:
 	if not _expansion_started and elapsed_seconds >= 0.12:
 		_expansion_started = true
-		phase = &"expansion_camera_down"
+		_set_phase(&"expansion_camera_down")
 	if not _media_started and elapsed_seconds >= FAILURE_MEDIA_START:
 		_media_started = true
-		phase = &"terminal_media_fallback"
+		_set_phase(&"terminal_media_fallback")
 		media_layer.visible = true
 		media_layer.modulate.a = 0.0
 		create_tween().tween_property(media_layer, "modulate:a", 1.0, 0.42)
@@ -194,7 +230,7 @@ func _tick_failure() -> void:
 func _tick_success() -> void:
 	if elapsed_seconds >= 2.8 and not _media_started:
 		_media_started = true
-		phase = &"victory_media_fallback"
+		_set_phase(&"victory_media_fallback")
 		media_layer.visible = true
 		media_layer.modulate.a = 0.0
 		create_tween().tween_property(media_layer, "modulate:a", 0.72, 0.55)
@@ -208,12 +244,18 @@ func _complete_presentation() -> void:
 		return
 	_completed_current = true
 	active = false
-	phase = &"completed"
+	_set_phase(&"completed")
 	completion_count += 1
+	_refresh_active_receipt()
 	presentation_completed.emit(current_event_id, &"bomb_defused" if branch == &"success" else &"bomb_detonated")
+	call_deferred(&"_retain_active_receipt", &"presentation_completed")
 
 
 func reset_presentation(clear_event_cache := true, restore_camera := true) -> void:
+	if not _active_branch_receipt.is_empty() and _active_branch_receipt.get("completed", false) != true:
+		_refresh_active_receipt()
+		_active_branch_receipt["reset_before_completion"] = true
+		_retain_active_receipt(&"lifecycle_reset")
 	if _flash_tween != null and _flash_tween.is_valid():
 		_flash_tween.kill()
 	if _edge_tween != null and _edge_tween.is_valid():
@@ -358,6 +400,8 @@ func _add_world_layer(node: Node3D, position: Vector3) -> void:
 	effect_root.add_child(node)
 	node.global_position = position
 	node.set_meta(&"terminal_event_id", current_event_id)
+	node.set_meta(&"spawned_usec", Time.get_ticks_usec())
+	node.set_meta(&"spawned_phase", phase)
 	node.add_to_group(&"bomb_terminal_sequence")
 	_effect_nodes.append(node)
 
@@ -460,7 +504,7 @@ func snapshot() -> Dictionary:
 		"world_origin": world_origin,
 		"health_zero": float(player.get("health")) <= 0.0 if player != null else false,
 		"player_terminal_locked": player.get("terminal_locked") if player != null else false,
-		"effect_layer_count": _effect_nodes.size(),
+		"effect_layer_count": _effect_layer_receipts().size(),
 		"media_visible": media_layer.visible,
 		"skip_available": skip_available,
 		"completion_count": completion_count,
@@ -476,8 +520,150 @@ func snapshot() -> Dictionary:
 		"restore_epoch": _restore_epoch,
 		"reduced_camera_motion": _applied_reduced_motion,
 		"screen_shake_enabled": _applied_screen_shake,
+		"active_branch_receipt": _active_branch_receipt.duplicate(true),
+		"retained_branch_receipts": _retained_branch_receipts.duplicate(true),
+		"retained_branch_receipt_count": _retained_branch_receipts.size(),
+		"retained_branch_receipt_limit": BRANCH_RECEIPT_LIMIT,
 	}
 
 
+func _set_phase(next_phase: StringName) -> void:
+	if phase == next_phase:
+		return
+	phase = next_phase
+	_phase_timestamps[next_phase] = _phase_stamp()
+	_refresh_active_receipt()
+	if not _active_branch_receipt.is_empty():
+		branch_receipt_updated.emit(_active_branch_receipt.duplicate(true))
+
+
+func _phase_stamp() -> Dictionary:
+	return {
+		"elapsed_seconds": elapsed_seconds,
+		"observed_usec": Time.get_ticks_usec(),
+		"observed_frame": Engine.get_process_frames(),
+	}
+
+
+func _combat_lock_snapshot() -> Dictionary:
+	return {
+		"player_terminal_locked": player.get("terminal_locked") if player != null else false,
+		"player_gameplay_input_enabled": player.get("gameplay_input_enabled") if player != null else true,
+		"player_collision_layer": player.collision_layer if player != null else -1,
+		"weapon_gameplay_input_enabled": weapon.get("gameplay_input_enabled") if weapon != null else true,
+		"enemy_process_mode": roster.process_mode if roster != null else -1,
+	}
+
+
+func _effect_layer_receipts() -> Array[Dictionary]:
+	var layers: Array[Dictionary] = []
+	for node: Node in _effect_nodes:
+		if not is_instance_valid(node):
+			continue
+		layers.append({
+			"name": node.name,
+			"spawned_usec": int(node.get_meta(&"spawned_usec", 0)),
+			"spawned_phase": StringName(node.get_meta(&"spawned_phase", &"unknown")),
+			"world_origin": (node as Node3D).global_position if node is Node3D else Vector3.ZERO,
+			"visible": (node as Node3D).visible if node is Node3D else true,
+			"cleanup_pending": true,
+		})
+	return layers
+
+
+func _refresh_active_receipt() -> void:
+	if _active_branch_receipt.is_empty():
+		return
+	_active_branch_receipt["phase"] = phase
+	_active_branch_receipt["elapsed_seconds"] = elapsed_seconds
+	_active_branch_receipt["phase_timestamps"] = _phase_timestamps.duplicate(true)
+	_active_branch_receipt["health_zero"] = float(player.get("health")) <= 0.0 if player != null else false
+	_active_branch_receipt["health"] = player.get("health") if player != null else -1
+	_active_branch_receipt["combat_locks"] = _combat_lock_snapshot()
+	_active_branch_receipt["effect_layers"] = _effect_layer_receipts()
+	_active_branch_receipt["effect_layer_count"] = (_active_branch_receipt["effect_layers"] as Array).size()
+	_active_branch_receipt["audio"] = {
+		"blast": {"bus": blast_audio.bus, "playing": blast_audio.playing, "stream_bound": blast_audio.stream != null, "spatial": true, "unit_size": blast_audio.unit_size, "max_distance": blast_audio.max_distance},
+		"tail": {"bus": tail_audio.bus, "playing": tail_audio.playing, "stream_bound": tail_audio.stream != null, "spatial": true, "unit_size": tail_audio.unit_size, "max_distance": tail_audio.max_distance},
+	}
+	_active_branch_receipt["camera"] = {
+		"position": camera.global_position if camera != null else Vector3.ZERO,
+		"victory": victory_sequence.snapshot(),
+	}
+	_active_branch_receipt["media"] = {"visible": media_layer.visible, "skip_available": skip_available, "fallback": true}
+	_active_branch_receipt["duplicate_event_count"] = duplicate_event_count
+	_active_branch_receipt["completion_count"] = completion_count
+
+
+func _retain_active_receipt(reason: StringName) -> void:
+	if _active_branch_receipt.is_empty():
+		return
+	_refresh_active_receipt()
+	var shell := get_tree().get_first_node_in_group(&"product_shell")
+	var shell_state: Dictionary = shell.call(&"_mcp_state") if shell != null and shell.has_method(&"_mcp_state") else {}
+	_active_branch_receipt["completed"] = reason == &"presentation_completed"
+	_active_branch_receipt["retained_reason"] = reason
+	_active_branch_receipt["retained_usec"] = Time.get_ticks_usec()
+	_active_branch_receipt["result_transition"] = {
+		"app_state": shell_state.get("app_state", &"unknown"),
+		"result_entry_count": shell_state.get("result_entry_count", 0),
+		"observed_terminal_results": shell_state.get("observed_terminal_results", {}),
+		"focused_control": shell_state.get("focused_control", ""),
+		"actions": [&"replay", &"home"],
+	}
+	_active_branch_receipt["cleanup"] = {
+		"live_effect_count": _effect_layer_receipts().size(),
+		"blast_playing": blast_audio.playing,
+		"tail_playing": tail_audio.playing,
+	}
+	_retained_branch_receipts.append(_active_branch_receipt.duplicate(true))
+	while _retained_branch_receipts.size() > BRANCH_RECEIPT_LIMIT:
+		_retained_branch_receipts.pop_front()
+	_cleanup_completed_presentation()
+	_retained_branch_receipts[_retained_branch_receipts.size() - 1]["cleanup_after_result"] = {
+		"live_effect_count": 0,
+		"blast_playing": blast_audio.playing,
+		"tail_playing": tail_audio.playing,
+		"media_visible": media_layer.visible,
+		"victory_avatar_visible": victory_avatar.visible,
+		"observed_usec": Time.get_ticks_usec(),
+	}
+	branch_receipt_updated.emit((_retained_branch_receipts[_retained_branch_receipts.size() - 1] as Dictionary).duplicate(true))
+	_active_branch_receipt.clear()
+
+
+func _cleanup_completed_presentation() -> void:
+	for node: Node in _effect_nodes:
+		if is_instance_valid(node):
+			node.queue_free()
+	_effect_nodes.clear()
+	for child: Node in effect_root.get_children():
+		child.queue_free()
+	blast_audio.stop()
+	tail_audio.stop()
+	victory_sequence.reset_sequence(true)
+	victory_avatar.visible = false
+	_clear_overlay()
+
+
 func _mcp_state() -> Dictionary:
-	return snapshot()
+	var state := snapshot()
+	return {
+		"family_id": FAMILY_ID,
+		"active": active,
+		"branch": branch,
+		"phase": phase,
+		"elapsed_seconds": elapsed_seconds,
+		"current_event_id": current_event_id,
+		"completion_count": completion_count,
+		"duplicate_event_count": duplicate_event_count,
+		"effect_layer_count": _effect_layer_receipts().size(),
+		"health_zero": state.get("health_zero", false),
+		"player_terminal_locked": state.get("player_terminal_locked", false),
+		"media_visible": media_layer.visible,
+		"skip_available": skip_available,
+		"active_branch_receipt": _active_branch_receipt.duplicate(true),
+		"retained_branch_receipt_count": _retained_branch_receipts.size(),
+		"retained_branch_receipts": _retained_branch_receipts.duplicate(true),
+		"restore_epoch": _restore_epoch,
+	}

@@ -15,6 +15,7 @@ const LOW_FPS_FRAME_MS := 1000.0 / 45.0
 @export var shell_path: NodePath
 @export var terminal_path: NodePath
 @export var mission_feedback_path: NodePath
+@export var feedback_matrix_path: NodePath
 
 @onready var mission: Node = get_node(mission_path)
 @onready var roster: Node = get_node(roster_path)
@@ -22,6 +23,7 @@ const LOW_FPS_FRAME_MS := 1000.0 / 45.0
 @onready var shell: Node = get_node(shell_path)
 @onready var terminal: Node = get_node(terminal_path)
 @onready var mission_feedback: Node = get_node(mission_feedback_path)
+@onready var feedback_matrix: Node = get_node(feedback_matrix_path)
 
 var _raw_frame_times_ms: Array[float] = []
 var _sample_count := 0
@@ -136,6 +138,7 @@ func _refresh_cleanup_counters() -> void:
 	var shell_state: Dictionary = shell.call(&"_mcp_state")
 	var terminal_state: Dictionary = terminal.call(&"_mcp_state")
 	var mission_feedback_state: Dictionary = mission_feedback.call(&"_mcp_state")
+	var feedback_matrix_state: Dictionary = feedback_matrix.call(&"_mcp_state")
 	var actors: Array = roster_state.get("actors", [])
 	var corpse_count := 0
 	var active_effect_count := int(mission_feedback_state.get("active_cue_count", 0))
@@ -169,6 +172,10 @@ func _refresh_cleanup_counters() -> void:
 		"signal_connection_count": _signal_connection_count(),
 		"shell_transition_count": int(shell_state.get("transition_serial", 0)),
 		"shot_commit_count": int(weapon_state.get("unique_commit_count", 0)),
+		"joined_receipt_count": int(feedback_matrix_state.get("cached_event_count", 0)),
+		"retained_previous_receipt_count": int(feedback_matrix_state.get("previous_receipt_count", 0)),
+		"terminal_branch_receipt_count": int(terminal_state.get("retained_branch_receipt_count", 0)),
+		"terminal_duplicate_submit_count": int(mission_state.get("terminal_duplicate_submit_count", 0)),
 	}
 
 

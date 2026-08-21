@@ -110,6 +110,7 @@ weapon_path = NodePath("../PrototypePlayer/Head/Camera3D/WeaponController")
 shell_path = NodePath("../ProductShell")
 terminal_path = NodePath("../TerminalPresentation")
 mission_feedback_path = NodePath("../MissionFeedbackController")
+feedback_matrix_path = NodePath("../CombatFeedbackMatrix")
 
 [node name="PlayerDamageFeedback" parent="." instance=ExtResource("10_damage_feedback")]
 player_path = NodePath("../PrototypePlayer")

@@ -30,10 +30,12 @@ layer = 96
 script = ExtResource("3_victory")
 
 [node name="BlastAudio" type="AudioStreamPlayer3D" parent="."]
+bus = &"Combat"
 unit_size = 12.0
 max_distance = 120.0
 
 [node name="TailAudio" type="AudioStreamPlayer3D" parent="."]
+bus = &"Ambience"
 unit_size = 16.0
 max_distance = 160.0
 

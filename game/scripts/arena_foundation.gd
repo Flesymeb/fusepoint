@@ -17,6 +17,10 @@ const CALIBRATED_EFFECTIVE_ROUTE_SPEED := 2.6
 @onready var map_instance: Node3D = $NavigationRegion3D/AuthoredEnvironmentWrapper/StandoffArena
 @onready var map_collision: StaticBody3D = $MapCollision
 @onready var navigation_region: NavigationRegion3D = $NavigationRegion3D
+@onready var world_environment: WorldEnvironment = $WorldEnvironment
+@onready var sun: DirectionalLight3D = $Sun
+@onready var cloud_layer: MeshInstance3D = $AtmospherePresentation/CloudLayer
+@onready var sun_flare: Control = $AtmospherePresentation/SunFlareCanvas/DirectionalSunFlare
 
 var map_bounds := AABB()
 var visible_mesh_count := 0
@@ -676,6 +680,7 @@ func get_route_chain(leg_id: StringName) -> PackedVector3Array:
 func _mcp_state() -> Dictionary:
 	return {
 		"asset_id": "standoff_arena_authored_environment",
+		"atmosphere_layers": _atmosphere_snapshot(),
 		"source_sha256": EXPECTED_SOURCE_SHA256,
 		"environment_instance_count": 1,
 		"environment_instance_path": map_instance.get_path(),
@@ -702,4 +707,32 @@ func _mcp_state() -> Dictionary:
 		"route_corner_chains": route_corner_chains,
 		"route_clearance": route_clearance,
 		"deployment_anchor_selection": deployment_anchor_selection,
+	}
+
+
+func _atmosphere_snapshot() -> Dictionary:
+	var environment := world_environment.environment
+	var cloud_material := cloud_layer.material_override as ShaderMaterial
+	return {
+		"daylight_exposure": {
+			"background_energy_multiplier": environment.background_energy_multiplier,
+			"tonemap_exposure": environment.tonemap_exposure,
+			"accepted_values_unchanged": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.tonemap_exposure, 1.0),
+		},
+		"source_sky": {"enabled": environment.sky != null, "background_mode": environment.background_mode},
+		"source_shadows": {"enabled": sun.shadow_enabled, "max_distance": sun.directional_shadow_max_distance},
+		"source_ssao": {"enabled": environment.ssao_enabled, "radius": environment.ssao_radius, "intensity": environment.ssao_intensity},
+		"clouds": {
+			"family_id": &"environment_cloud_layer",
+			"enabled": cloud_layer.visible,
+			"singleton_count": 1,
+			"runtime_variant_count": 1,
+			"material_bound": cloud_material != null and cloud_material.shader != null,
+			"density": cloud_material.get_shader_parameter(&"density") if cloud_material != null else -1.0,
+			"drift_speed": cloud_material.get_shader_parameter(&"drift_speed") if cloud_material != null else 0.0,
+			"sun_response": cloud_material.get_shader_parameter(&"sun_response") if cloud_material != null else 0.0,
+			"world_height": cloud_layer.global_position.y,
+			"authored_geometry_changed": false,
+		},
+		"directional_sun_flare": sun_flare.call(&"_mcp_state") if sun_flare != null and sun_flare.has_method(&"_mcp_state") else {},
 	}

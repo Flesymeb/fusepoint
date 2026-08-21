@@ -1,10 +1,12 @@
-[gd_scene load_steps=21 format=3]
+[gd_scene load_steps=24 format=3]
 
 [ext_resource type="PackedScene" path="res://systems/world/3d_fps_map/standoff_2/chicken_gun_standoff_2_arena.glb" id="1_map"]
 [ext_resource type="Script" path="res://scripts/arena_foundation.gd" id="2_foundation"]
 [ext_resource type="Script" path="res://scripts/placeholder_objective.gd" id="3_objective"]
 [ext_resource type="Script" path="res://scripts/arena_route_probe.gd" id="4_route"]
 [ext_resource type="Script" path="res://scripts/bomb_objective.gd" id="5_bomb"]
+[ext_resource type="Shader" path="res://shaders/fusepoint_cloud_layer.gdshader" id="6_cloud_shader"]
+[ext_resource type="Script" path="res://scripts/directional_sun_flare.gd" id="7_sun_flare"]
 
 [sub_resource type="ProceduralSkyMaterial" id="SkyMaterial_daylight"]
 sky_top_color = Color(0.18, 0.38, 0.62, 1)
@@ -43,6 +45,18 @@ cell_height = 0.2
 filter_low_hanging_obstacles = true
 filter_ledge_spans = true
 filter_walkable_low_height_spans = true
+
+[sub_resource type="PlaneMesh" id="Mesh_cloud_layer"]
+size = Vector2(2600, 2600)
+
+[sub_resource type="ShaderMaterial" id="Material_cloud_layer"]
+render_priority = -2
+shader = ExtResource("6_cloud_shader")
+shader_parameter/cloud_color = Color(0.98, 0.99, 1, 0.34)
+shader_parameter/cloud_scale = 14.0
+shader_parameter/drift_speed = 0.0035
+shader_parameter/density = 0.57
+shader_parameter/sun_response = 0.16
 
 [sub_resource type="BoxShape3D" id="Shape_alpha"]
 size = Vector3(8, 2.4, 8)
@@ -126,6 +140,27 @@ light_energy = 1.35
 shadow_enabled = true
 directional_shadow_max_distance = 180.0
 shadow_bias = 0.025
+
+[node name="AtmospherePresentation" type="Node3D" parent="."]
+
+[node name="CloudLayer" type="MeshInstance3D" parent="AtmospherePresentation"]
+position = Vector3(0, 120, 0)
+mesh = SubResource("Mesh_cloud_layer")
+material_override = SubResource("Material_cloud_layer")
+
+[node name="SunFlareCanvas" type="CanvasLayer" parent="AtmospherePresentation"]
+layer = 4
+
+[node name="DirectionalSunFlare" type="Control" parent="AtmospherePresentation/SunFlareCanvas" groups=["mcp_watch"]]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("7_sun_flare")
+sun_path = NodePath("../../../Sun")
 
 [node name="NavigationRegion3D" type="NavigationRegion3D" parent="."]
 navigation_mesh = SubResource("NavigationMesh_arena")

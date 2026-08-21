@@ -8,6 +8,8 @@ signal shot_presented(event: Dictionary)
 signal trace_spawned(event: Dictionary, effect: Node3D)
 signal impact_spawned(event: Dictionary, effect: Node3D)
 
+const AUDIO_RECEIPT_LIMIT := 64
+
 @export_node_path("FPSHitscanWeapon") var hitscan_weapon_path: NodePath
 @export_range(0.02, 0.5, 0.01) var muzzle_seconds := 0.075
 @export_range(0.03, 0.5, 0.01) var tracer_seconds := 0.11
@@ -39,6 +41,8 @@ var _last_presentation: Dictionary = {}
 var _variant_use_counts := {0: 0, 1: 0, 2: 0, 3: 0}
 var _culled_effect_count := 0
 var _local_impact_suppression_count := 0
+var _audio_receipts: Array[Dictionary] = []
+var _audio_cleanup_count := 0
 
 
 func _ready() -> void:
@@ -90,7 +94,7 @@ func show_shot(event: Dictionary) -> bool:
 		_spawn_impact(to, event)
 		roles.append(&"character_hit" if surface == &"character" else &"metal_sparks" if surface == &"metal" else &"concrete_dust")
 		roles.append(&"surface_impact_audio")
-	_spawn_audio(from, to, result, surface, source_team, local_player_hit)
+	_spawn_audio(from, to, result, surface, source_team, local_player_hit, event_identity)
 	_last_presentation = {
 		"shot_id": shot_id,
 		"event_identity": event_identity,
@@ -167,6 +171,11 @@ func snapshot() -> Dictionary:
 		"max_single_variant_share": _max_variant_share(),
 		"culled_effect_count": _culled_effect_count,
 		"local_impact_suppression_count": _local_impact_suppression_count,
+		"audio_receipts": _audio_receipts.duplicate(true),
+		"audio_receipt_limit": AUDIO_RECEIPT_LIMIT,
+		"active_audio_voice_count": _active_audio_voice_count(),
+		"decoded_audio_voice_count": _decoded_audio_voice_count(),
+		"audio_cleanup_count": _audio_cleanup_count,
 		"variant_roles": [&"compact_muzzle", &"bounded_tracer", &"near_miss", &"character_hit", &"metal_sparks", &"concrete_dust"],
 	}
 
@@ -324,18 +333,19 @@ func _build_concrete_impact(root: Node3D) -> void:
 		root.add_child(chip)
 
 
-func _spawn_audio(muzzle_position: Vector3, impact_position: Vector3, result: StringName, surface: StringName, source_team: StringName, local_player_hit: bool) -> void:
-	_spawn_audio_cue(muzzle_position, _get_shot_audio(), &"spatial_report_audio", -5.0 if source_team == &"enemy" else -7.0, 0.92 if source_team == &"enemy" else 1.06)
+func _spawn_audio(muzzle_position: Vector3, impact_position: Vector3, result: StringName, surface: StringName, source_team: StringName, local_player_hit: bool, event_identity: String) -> void:
+	_spawn_audio_cue(muzzle_position, _get_shot_audio(), &"spatial_report_audio", -5.0 if source_team == &"enemy" else -7.0, 0.92 if source_team == &"enemy" else 1.06, event_identity)
 	if result == &"miss":
-		_spawn_audio_cue(impact_position, _get_near_miss_audio(), &"near_miss_audio", -10.0, 1.0)
+		_spawn_audio_cue(impact_position, _get_near_miss_audio(), &"near_miss_audio", -10.0, 1.0, event_identity)
 	elif result in [&"hit", &"blocked"] and not local_player_hit:
 		var stream := _get_character_impact_audio() if surface == &"character" else _get_metal_impact_audio() if surface == &"metal" else _get_concrete_impact_audio()
-		_spawn_audio_cue(impact_position, stream, &"surface_impact_audio", -8.0, 1.0)
+		_spawn_audio_cue(impact_position, stream, &"surface_impact_audio", -8.0, 1.0, event_identity)
 
 
-func _spawn_audio_cue(position: Vector3, stream: AudioStreamWAV, role: StringName, volume_db: float, pitch: float) -> void:
+func _spawn_audio_cue(position: Vector3, stream: AudioStreamWAV, role: StringName, volume_db: float, pitch: float, event_identity: String) -> void:
 	var audio_root := Node3D.new()
-	audio_root.name = String(role).to_pascal_case()
+	var receipt_id := "%s:%s:%d" % [event_identity, role, Time.get_ticks_usec()]
+	audio_root.name = "%s_%s" % [String(role).to_pascal_case(), _safe_receipt_id(receipt_id)]
 	var player := AudioStreamPlayer3D.new()
 	player.stream = stream
 	player.bus = &"Combat"
@@ -346,7 +356,29 @@ func _spawn_audio_cue(position: Vector3, stream: AudioStreamWAV, role: StringNam
 	audio_root.add_child(player)
 	_add_effect(audio_root, role, 0.42)
 	audio_root.global_position = position
+	audio_root.set_meta(&"audio_receipt_id", receipt_id)
 	player.play()
+	_append_audio_receipt({
+		"receipt_id": receipt_id,
+		"event_identity": event_identity,
+		"run_epoch": current_run_epoch,
+		"role": role,
+		"bus": player.bus,
+		"voice_path": String(player.get_path()),
+		"stream_bound": player.stream != null,
+		"decoded": stream != null and stream.data.size() > 0 and stream.mix_rate > 0,
+		"onset_usec": Time.get_ticks_usec(),
+		"onset_frame": Engine.get_process_frames(),
+		"playing_at_onset": player.playing,
+		"world_origin": position,
+		"spatial": true,
+		"attenuation": {"unit_size": player.unit_size, "max_distance": player.max_distance},
+		"volume_db": volume_db,
+		"pitch_scale": pitch,
+		"lifetime_seconds": 0.42,
+		"cleanup_observed": false,
+		"cleanup_usec": 0,
+	})
 	get_tree().create_timer(0.42).timeout.connect(_retire_effect.bind(audio_root))
 
 
@@ -370,7 +402,47 @@ func _retire_effect(effect: Node3D) -> void:
 	_active_effects.erase(effect)
 	active_effect_count = _active_effects.size()
 	if is_instance_valid(effect):
+		var receipt_id := String(effect.get_meta(&"audio_receipt_id", ""))
+		if not receipt_id.is_empty():
+			_mark_audio_cleanup(receipt_id)
 		effect.queue_free()
+
+
+func _append_audio_receipt(receipt: Dictionary) -> void:
+	_audio_receipts.append(receipt)
+	while _audio_receipts.size() > AUDIO_RECEIPT_LIMIT:
+		_audio_receipts.pop_front()
+
+
+func _mark_audio_cleanup(receipt_id: String) -> void:
+	for index in range(_audio_receipts.size() - 1, -1, -1):
+		if String(_audio_receipts[index].get("receipt_id", "")) != receipt_id:
+			continue
+		_audio_receipts[index]["cleanup_observed"] = true
+		_audio_receipts[index]["cleanup_usec"] = Time.get_ticks_usec()
+		_audio_receipts[index]["voice_lifetime_usec"] = maxi(int(_audio_receipts[index]["cleanup_usec"]) - int(_audio_receipts[index]["onset_usec"]), 0)
+		_audio_cleanup_count += 1
+		return
+
+
+func _active_audio_voice_count() -> int:
+	var count := 0
+	for effect: Node3D in _active_effects:
+		if is_instance_valid(effect) and not String(effect.get_meta(&"audio_receipt_id", "")).is_empty():
+			count += 1
+	return count
+
+
+func _decoded_audio_voice_count() -> int:
+	var count := 0
+	for receipt: Dictionary in _audio_receipts:
+		if receipt.get("decoded", false) == true:
+			count += 1
+	return count
+
+
+func _safe_receipt_id(receipt_id: String) -> String:
+	return receipt_id.replace(":", "_").replace("-", "_")
 
 
 func _active_effect_snapshot() -> Array[Dictionary]:

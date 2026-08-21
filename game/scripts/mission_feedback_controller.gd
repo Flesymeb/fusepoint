@@ -42,6 +42,7 @@ var _audio_streams: Dictionary = {}
 var _audio_durations: Dictionary = {}
 var _active_voice_lifetimes: Dictionary = {}
 var _voice_receipts: Array[Dictionary] = []
+var _retained_voice_receipts: Array[Dictionary] = []
 var _footstep_emitters: Dictionary = {}
 var _enemy_step_elapsed: Dictionary = {}
 var _player_step_elapsed := 0.0
@@ -102,7 +103,7 @@ func present_event(event: Dictionary) -> bool:
 	elif kind == &"terminal_submitted":
 		_stop_mission_bed()
 		_stop_spatial_voices()
-		_voice_receipts.clear()
+		_archive_voice_receipts(&"terminal_submitted")
 	_remember_event(event_id)
 	if active_cue_count > 0:
 		concurrency_cull_count += 1
@@ -132,6 +133,7 @@ func present_event(event: Dictionary) -> bool:
 
 
 func reset_feedback(clear_history := false) -> void:
+	_archive_voice_receipts(&"feedback_reset")
 	_clear_active_cue()
 	_warning_thresholds_seen.clear()
 	last_event.clear()
@@ -144,7 +146,6 @@ func reset_feedback(clear_history := false) -> void:
 		player.stop()
 	_stop_spatial_voices()
 	_active_voice_lifetimes.clear()
-	_voice_receipts.clear()
 	_enemy_step_elapsed.clear()
 	_player_step_elapsed = 0.0
 
@@ -196,6 +197,18 @@ func snapshot() -> Dictionary:
 		"audio_role_count": _audio_streams.size(),
 		"voice_receipts": _voice_receipts,
 		"voice_receipt_count": _voice_receipts.size(),
+		"retained_voice_receipts": _retained_voice_receipts,
+		"retained_voice_receipt_count": _retained_voice_receipts.size(),
+		"audio_concurrency_limits": {"mission_family": 1, "footstep_emitters_per_actor": 1, "retained_receipts": VOICE_RECEIPT_LIMIT},
+		"semantic_role_contract": {
+			"objective": [&"capture", &"route"],
+			"bomb": [&"defusal", &"warning", &"terminal"],
+			"dialogue": [&"dialogue"],
+			"ambience": [&"ambience"],
+			"music": [&"music"],
+			"footstep": [&"player_walk", &"player_sprint", &"player_crouch", &"player_land", &"enemy_step"],
+			"combat_external_bus": &"Combat",
+		},
 		"independent_buses": [&"Mission", &"Dialogue", &"Ambience", &"Music", &"Foley"],
 		"authoritative_calls": [],
 		"presentation_only": true,
@@ -342,7 +355,10 @@ func _play_role(role: StringName, priority: int, source_id: String) -> void:
 		"bus": player.bus,
 		"voice_path": String(player.get_path()),
 		"stream_bound": player.stream != null,
+		"decoded": player.stream is AudioStreamWAV and (player.stream as AudioStreamWAV).data.size() > 0,
 		"playing": player.playing,
+		"onset_usec": Time.get_ticks_usec(),
+		"onset_frame": Engine.get_process_frames(),
 		"lifetime_seconds": float(_audio_durations.get(role, 0.0)),
 		"attenuation": &"non_spatial",
 		"priority": priority,
@@ -420,6 +436,9 @@ func _emit_footstep(actor: CharacterBody3D, role: StringName, cadence: float, si
 		"voice_path": String(emitter.get_path()),
 		"stream_bound": emitter.stream != null,
 		"playing": emitter.playing,
+		"decoded": emitter.stream is AudioStreamWAV and (emitter.stream as AudioStreamWAV).data.size() > 0,
+		"onset_usec": Time.get_ticks_usec(),
+		"onset_frame": Engine.get_process_frames(),
 		"actor_id": String(actor.get("stable_id")) if actor.is_in_group(&"fps_enemy") else "player",
 		"emitter_transform": actor.global_transform,
 		"surface": surface,
@@ -446,16 +465,30 @@ func _append_voice_receipt(receipt: Dictionary) -> void:
 		_voice_receipts.pop_front()
 
 
+func _archive_voice_receipts(reason: StringName) -> void:
+	for receipt: Dictionary in _voice_receipts:
+		var archived := receipt.duplicate(true)
+		archived["cleanup_reason"] = reason
+		archived["cleanup_observed"] = true
+		archived["cleanup_usec"] = Time.get_ticks_usec()
+		_retained_voice_receipts.append(archived)
+	while _retained_voice_receipts.size() > VOICE_RECEIPT_LIMIT:
+		_retained_voice_receipts.pop_front()
+	_voice_receipts.clear()
+
+
 func _audio_role_snapshot() -> Dictionary:
 	var roles: Dictionary = {}
 	for role: StringName in _audio_streams:
 		var player := _audio_players.get(role) as AudioStreamPlayer
 		roles[role] = {
 			"stream_bound": _audio_streams[role] != null,
+			"decoded": _audio_streams[role] is AudioStreamWAV and (_audio_streams[role] as AudioStreamWAV).data.size() > 0,
 			"non_silent": float(_audio_durations.get(role, 0.0)) > 0.0,
 			"bus": player.bus if player != null else &"Foley",
 			"playing": player.playing if player != null else _recent_role_playing(role),
 			"lifetime_remaining": float(_active_voice_lifetimes.get(role, 0.0)),
+			"fallback_behavior": &"candidate_owned_pcm",
 		}
 	return roles
 

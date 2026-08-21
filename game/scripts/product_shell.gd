@@ -24,6 +24,7 @@ const BRIEFING_CAPTIONS: Array[String] = [
 ]
 const BRIEFING_BEAT_SECONDS := 2.4
 const TRANSITION_HISTORY_LIMIT := 32
+const TERMINAL_RESULT_RECEIPT_LIMIT := 4
 const SAFE_AREA_RATIO := 0.05
 const LIFECYCLE_TABLE := {
 	&"title": {"predecessors":[&"title",&"loadout",&"briefing",&"settings",&"pause",&"death_recovery",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/TitlePage/Menu/StartButton"},
@@ -83,6 +84,7 @@ var _lifecycle_action_serial := 0
 var _last_lifecycle_action_receipt: Dictionary = {}
 var _lifecycle_action_history: Array[Dictionary] = []
 var _observed_terminal_results: Dictionary = {}
+var _terminal_result_receipts: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -620,7 +622,24 @@ func _on_terminal_presentation_completed(event_id: String, result: StringName) -
 		_record_transition_rejection(&"terminal_completion", &"terminal_predecessor_mismatch")
 		return
 	_observed_terminal_results[event_id] = result
+	var receipt := {
+		"run_epoch": int(mission.get("run_epoch")),
+		"terminal_event_id": event_id,
+		"result": result,
+		"presentation_completion_usec": Time.get_ticks_usec(),
+		"presentation_completion_frame": Engine.get_process_frames(),
+		"predecessor_state": app_state,
+		"terminal_commit_count": int(mission.get("terminal_commit_count")),
+		"duplicate_submit_count": int(mission.get("terminal_duplicate_submit_count")),
+		"result_payload": mission.call(&"result_snapshot"),
+	}
 	_show_result(result)
+	receipt["result_state"] = app_state
+	receipt["transition_receipt"] = _last_transition_receipt.duplicate(true)
+	receipt["actions"] = [&"replay", &"home"]
+	_terminal_result_receipts.append(receipt)
+	while _terminal_result_receipts.size() > TERMINAL_RESULT_RECEIPT_LIMIT:
+		_terminal_result_receipts.pop_front()
 
 
 func _show_result(result: StringName) -> void:
@@ -684,6 +703,8 @@ func _mcp_state() -> Dictionary:
 		"terminal_event_id": String(mission.get("terminal_event_id")),
 		"result_entry_count": _observed_terminal_results.size(),
 		"observed_terminal_results": _observed_terminal_results.duplicate(true),
+		"terminal_result_receipts": _terminal_result_receipts.duplicate(true),
+		"terminal_result_receipt_count": _terminal_result_receipts.size(),
 		"terminal_presentation": terminal.snapshot(),
 		"focused_control": str(get_viewport().gui_get_focus_owner().get_path()) if get_viewport().gui_get_focus_owner() != null else "",
 		"layout": _layout_snapshot(),

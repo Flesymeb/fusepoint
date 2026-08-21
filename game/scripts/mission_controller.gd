@@ -41,6 +41,7 @@ var checkpoint_snapshot: Dictionary = {}
 var checkpoint_commit_count := 0
 var checkpoint_restore_count := 0
 var terminal_commit_count := 0
+var terminal_duplicate_submit_count := 0
 var terminal_event_id := ""
 var elimination_count := 0
 var player_death_count := 0
@@ -122,6 +123,7 @@ func _initialize_mission_state() -> void:
 	last_recovery_rejection.clear()
 	last_replay_reset_receipt.clear()
 	terminal_commit_count = 0
+	terminal_duplicate_submit_count = 0
 	terminal_event_id = ""
 	elimination_count = 0
 	player_death_count = 0
@@ -426,7 +428,10 @@ func _on_player_damaged(event: Dictionary) -> void:
 
 
 func _submit_terminal(result: StringName, reason: StringName) -> void:
-	if terminal_commit_count > 0 or mission_state != &"active_gameplay":
+	if terminal_commit_count > 0:
+		terminal_duplicate_submit_count += 1
+		return
+	if mission_state != &"active_gameplay":
 		return
 	if result == &"bomb_defused" and remaining_time <= 0.0:
 		result = &"bomb_detonated"
@@ -840,6 +845,8 @@ func _record_event(kind: StringName, payload: Dictionary, announce := true) -> v
 		"run_epoch": run_epoch,
 		"sequence": event_sequence,
 		"kind": kind,
+		"committed_at_usec": Time.get_ticks_usec(),
+		"committed_frame": Engine.get_process_frames(),
 		"remaining_time": remaining_time,
 		"payload": payload.duplicate(true),
 	}
@@ -947,6 +954,7 @@ func _mcp_state() -> Dictionary:
 		"last_recovery_rejection": last_recovery_rejection,
 		"last_replay_reset_receipt": last_replay_reset_receipt,
 		"terminal_commit_count": terminal_commit_count,
+		"terminal_duplicate_submit_count": terminal_duplicate_submit_count,
 		"terminal_event_id": terminal_event_id,
 		"elimination_count": elimination_count,
 		"player_death_count": player_death_count,
