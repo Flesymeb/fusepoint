@@ -22,6 +22,8 @@ signal player_died(event: Dictionary)
 
 @export_group("Camera")
 @export var mouse_sensitivity := 0.0022
+@export_range(30.0, 360.0, 1.0) var gamepad_look_speed_degrees := 150.0
+@export_range(0.0, 0.95, 0.01) var gamepad_look_deadzone := 0.18
 @export_range(30.0, 89.0, 1.0) var pitch_limit_degrees := 82.0
 @export var stance_camera_speed := 3.2
 
@@ -57,9 +59,13 @@ var _deployment_collision_mask := 1
 var restore_epoch := 0
 var reduced_camera_motion := false
 var screen_shake_enabled := true
+var _look_input_serial := 0
+var _last_look_receipt: Dictionary = {}
+var _look_history: Array[Dictionary] = []
 
 
 func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	_spawn_transform = global_transform
 	_spawn_head_rotation = head.rotation
 	health = max_health
@@ -72,7 +78,7 @@ func _ready() -> void:
 	_capture_mouse()
 
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if not gameplay_input_enabled:
 		return
 	if event is InputEventMouseButton:
@@ -84,13 +90,13 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event is InputEventMouseMotion and _mouse_captured:
 		var mouse_motion := event as InputEventMouseMotion
-		rotate_y(-mouse_motion.relative.x * mouse_sensitivity)
-		_pitch = clampf(
-			_pitch - mouse_motion.relative.y * mouse_sensitivity,
-			-deg_to_rad(pitch_limit_degrees),
-			deg_to_rad(pitch_limit_degrees)
+		_apply_look_delta(
+			-mouse_motion.relative.x * mouse_sensitivity,
+			-mouse_motion.relative.y * mouse_sensitivity,
+			&"mouse_relative",
+			mouse_motion.relative,
+			0.0,
 		)
-		head.rotation.x = _pitch
 		get_viewport().set_input_as_handled()
 
 
@@ -98,6 +104,7 @@ func _physics_process(delta: float) -> void:
 	if not gameplay_input_enabled:
 		velocity = Vector3.ZERO
 		return
+	_apply_gamepad_look(delta)
 	if Input.is_action_just_pressed("restart"):
 		var mission_controller := get_tree().get_first_node_in_group(&"mission_controller")
 		if mission_controller == null or mission_controller.call(&"request_checkpoint_restore") != true:
@@ -135,6 +142,52 @@ func _physics_process(delta: float) -> void:
 
 	move_and_slide()
 	_update_authoritative_state(was_on_floor, input_vector, sprinting, delta)
+
+
+func _apply_gamepad_look(delta: float) -> void:
+	var stick := Input.get_vector(&"look_left", &"look_right", &"look_up", &"look_down")
+	if stick.length() <= gamepad_look_deadzone:
+		return
+	var normalized_strength := (stick.length() - gamepad_look_deadzone) / maxf(1.0 - gamepad_look_deadzone, 0.001)
+	var shaped := stick.normalized() * clampf(normalized_strength, 0.0, 1.0)
+	var radians_per_second := deg_to_rad(gamepad_look_speed_degrees)
+	_apply_look_delta(
+		-shaped.x * radians_per_second * delta,
+		-shaped.y * radians_per_second * delta,
+		&"gamepad_right_stick",
+		stick,
+		delta,
+	)
+
+
+func _apply_look_delta(yaw_delta: float, pitch_delta: float, source: StringName, raw_input: Vector2, delta_seconds: float) -> void:
+	if not gameplay_input_enabled or not _mouse_captured:
+		return
+	var yaw_before := rotation.y
+	var pitch_before := _pitch
+	rotate_y(yaw_delta)
+	_pitch = clampf(
+		_pitch + pitch_delta,
+		-deg_to_rad(pitch_limit_degrees),
+		deg_to_rad(pitch_limit_degrees),
+	)
+	head.rotation.x = _pitch
+	_look_input_serial += 1
+	_last_look_receipt = {
+		"edge_id": "look-input-%06d" % _look_input_serial,
+		"source": source,
+		"raw_input": raw_input,
+		"delta_seconds": delta_seconds,
+		"yaw_delta_degrees": rad_to_deg(angle_difference(yaw_before, rotation.y)),
+		"pitch_delta_degrees": rad_to_deg(_pitch - pitch_before),
+		"yaw_after_degrees": rotation_degrees.y,
+		"pitch_after_degrees": head.rotation_degrees.x,
+		"gameplay_enabled": gameplay_input_enabled,
+		"mouse_captured": _mouse_captured,
+	}
+	_look_history.append(_last_look_receipt.duplicate(true))
+	while _look_history.size() > 24:
+		_look_history.pop_front()
 
 
 func _get_target_speed(sprinting: bool) -> float:
@@ -433,4 +486,7 @@ func _mcp_state() -> Dictionary:
 		"restore_epoch": restore_epoch,
 		"reduced_camera_motion": reduced_camera_motion,
 		"screen_shake_enabled": screen_shake_enabled,
+		"look_input_authority": &"player_raw_input_and_physics_stick",
+		"look_input_count": _look_input_serial,
+		"last_look_receipt": _last_look_receipt,
 	}

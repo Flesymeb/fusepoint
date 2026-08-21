@@ -63,14 +63,25 @@ var _input_history: Array[Dictionary] = []
 var _combat_clock_seconds := 0.0
 var _restore_epoch := 0
 var _transient_reset_complete := false
+var _observed_ads_down := false
+var _ads_rearm_required := false
+var _ads_edge_serial := 0
+var _last_ads_receipt: Dictionary = {}
+var _ads_history: Array[Dictionary] = []
+var _viewmodel_ads_settled := false
+var _ads_transition_complete := true
+var _ads_transition_serial := 0
 
 
 func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	_weapons = _fresh_weapon_data()
 	viewmodel.set("handle_right_mouse", false)
 	viewmodel.set("handle_mouse_wheel", false)
 	if viewmodel.has_signal(&"weapon_changed"):
 		viewmodel.connect(&"weapon_changed", _on_viewmodel_weapon_changed)
+	if viewmodel.has_signal(&"aiming_changed"):
+		viewmodel.connect(&"aiming_changed", _on_viewmodel_aiming_changed)
 	var player := get_tree().get_first_node_in_group(&"player")
 	if player != null and player.has_signal(&"spawn_reset"):
 		player.connect(&"spawn_reset", _on_spawn_reset)
@@ -88,23 +99,21 @@ func _input(event: InputEvent) -> void:
 	# This normalized raw-event stream is the sole fire-edge authority. Both
 	# edges can arrive between physics ticks; preserving them in order prevents
 	# InputMap frame flags from stretching a short press into an AUTO interval.
-	if not event.is_action(&"fire"):
+	if event.is_action(&"fire"):
+		var fire_pressed := event.is_action_pressed(&"fire")
+		var fire_released := event.is_action_released(&"fire")
+		if fire_pressed or fire_released:
+			_observe_fire_transition(fire_pressed, _input_source_for(event), Time.get_ticks_usec())
 		return
-	var pressed := event.is_action_pressed(&"fire")
-	var released := event.is_action_released(&"fire")
-	if not pressed and not released:
+	if event.is_action(&"ads"):
+		var ads_pressed := event.is_action_pressed(&"ads")
+		var ads_released := event.is_action_released(&"ads")
+		if ads_pressed or ads_released:
+			_observe_ads_transition(ads_pressed, _ads_input_source_for(event))
 		return
-	_observe_fire_transition(pressed, _input_source_for(event), Time.get_ticks_usec())
-
-
-func _unhandled_input(event: InputEvent) -> void:
 	if not _ready_for_combat or not gameplay_input_enabled:
 		return
-	if event.is_action_pressed(&"ads"):
-		_set_ads(true)
-	elif event.is_action_released(&"ads"):
-		_set_ads(false)
-	elif event.is_action_pressed(&"reload"):
+	if event.is_action_pressed(&"reload"):
 		_begin_reload()
 	elif event.is_action_pressed(&"switch_weapon"):
 		_switch_weapon(1)
@@ -116,6 +125,43 @@ func _unhandled_input(event: InputEvent) -> void:
 		_toggle_fire_mode()
 	elif event.is_action_pressed(&"inspect_weapon"):
 		_begin_inspect()
+
+
+func _observe_ads_transition(pressed: bool, source: StringName) -> void:
+	if pressed == _observed_ads_down:
+		return
+	_observed_ads_down = pressed
+	if not pressed and _ads_rearm_required:
+		_ads_rearm_required = false
+		_record_ads_edge(source, &"release", false, &"rearmed_after_boundary")
+		return
+	if not _ready_for_combat or not gameplay_input_enabled or _ads_rearm_required:
+		if pressed:
+			_ads_rearm_required = true
+		_record_ads_edge(source, &"press" if pressed else &"release", false, &"gameplay_disabled")
+		return
+	_set_ads(pressed)
+	_record_ads_edge(source, &"press" if pressed else &"release", true, &"accepted")
+
+
+func _record_ads_edge(source: StringName, edge: StringName, accepted: bool, reason: StringName) -> void:
+	_ads_edge_serial += 1
+	_last_ads_receipt = {
+		"edge_id": "ads-input-%06d" % _ads_edge_serial,
+		"source": source,
+		"edge": edge,
+		"accepted": accepted,
+		"reason": reason,
+		"requested_aim": _ads_held,
+		"viewmodel_aim_flag": viewmodel.get("aiming") == true,
+		"transition_complete": _ads_transition_complete,
+		"action_state": _action_state,
+		"gameplay_enabled": gameplay_input_enabled,
+		"timestamp_seconds": _now(),
+	}
+	_ads_history.append(_last_ads_receipt.duplicate(true))
+	while _ads_history.size() > 24:
+		_ads_history.pop_front()
 
 
 func _process(_delta: float) -> void:
@@ -395,6 +441,7 @@ func _commit_reload() -> void:
 	_weapons[_equipped_id] = weapon
 	_reload_kind = &"none"
 	_action_state = &"ads" if _ads_held else &"hip"
+	_request_viewmodel_aim(_ads_held)
 	viewmodel.call(&"play_clip", &"idle")
 	weapon_state_changed.emit(_mcp_state())
 
@@ -403,8 +450,22 @@ func _set_ads(enabled: bool) -> void:
 	_ads_held = enabled
 	if _action_state in [&"reload", &"switch", &"inspect"]:
 		return
-	viewmodel.call(&"set_aiming", enabled)
+	_request_viewmodel_aim(enabled)
 	_action_state = &"ads" if enabled else &"hip"
+	weapon_state_changed.emit(_mcp_state())
+
+
+func _request_viewmodel_aim(enabled: bool, immediate := false) -> void:
+	_ads_transition_serial += 1
+	_ads_transition_complete = immediate
+	viewmodel.call(&"set_aiming", enabled, immediate)
+	if immediate:
+		_viewmodel_ads_settled = enabled
+
+
+func _on_viewmodel_aiming_changed(enabled: bool) -> void:
+	_viewmodel_ads_settled = enabled
+	_ads_transition_complete = enabled == _ads_held
 	weapon_state_changed.emit(_mcp_state())
 
 
@@ -441,6 +502,8 @@ func _on_viewmodel_weapon_changed(weapon_id: StringName, _weapon_index: int) -> 
 	_pending_equipped_id = &""
 	_action_state = &"hip"
 	_ads_held = false
+	_viewmodel_ads_settled = false
+	_ads_transition_complete = true
 	weapon_state_changed.emit(_mcp_state())
 
 
@@ -450,7 +513,6 @@ func _begin_inspect() -> void:
 	_cancel_action(&"inspect")
 	_action_state = &"inspect"
 	_action_until = _now() + 1.35
-	viewmodel.call(&"set_aiming", false, true)
 	if viewmodel.call(&"play_clip", &"inspect") == true:
 		feedback.call(&"trigger_inspect")
 		return
@@ -463,7 +525,7 @@ func _begin_inspect() -> void:
 
 func _finish_inspect() -> void:
 	viewmodel.rotation_degrees = Vector3.ZERO
-	viewmodel.call(&"set_aiming", _ads_held, true)
+	_request_viewmodel_aim(_ads_held, true)
 	viewmodel.call(&"play_clip", &"idle")
 	_action_state = &"ads" if _ads_held else &"hip"
 	weapon_state_changed.emit(_mcp_state())
@@ -475,16 +537,17 @@ func _cancel_action(next_state: StringName) -> void:
 	if _inspect_tween != null and _inspect_tween.is_valid():
 		_inspect_tween.kill()
 	viewmodel.rotation_degrees = Vector3.ZERO
-	viewmodel.call(&"set_aiming", false, true)
+	_request_viewmodel_aim(false, true)
 	_action_state = next_state
 
 
 func _on_spawn_reset() -> void:
+	_ads_held = false
+	_ads_rearm_required = _observed_ads_down
 	_cancel_action(&"hip")
 	_weapons = _fresh_weapon_data()
 	_equipped_id = &"ak74m"
 	_pending_equipped_id = &""
-	_ads_held = false
 	_shot_serial = 0
 	_shot_commits.clear()
 	_shot_history.clear()
@@ -528,11 +591,12 @@ func set_gameplay_input_enabled(enabled: bool) -> void:
 		_cancel_queued_fire_edges("gameplay_disabled")
 		_cancel_held_fire("gameplay_disabled")
 		_fire_rearm_required = _observed_fire_down
+		_ads_rearm_required = _observed_ads_down
 		_ads_held = false
 		_cancel_action(&"idle")
 	elif _action_state == &"idle":
 		_action_state = &"hip"
-		viewmodel.call(&"set_aiming", false, true)
+		_request_viewmodel_aim(false, true)
 	# A press observed across a page/pause/death/restore boundary remains armed
 	# off until its genuine release event arrives; enabling never samples a
 	# physical level and therefore cannot fabricate a transition.
@@ -704,11 +768,12 @@ func restore_weapon_state(snapshot: Dictionary, epoch := 0) -> void:
 	var serial_before := _shot_serial
 	_restore_epoch = maxi(_restore_epoch, epoch)
 	_transient_reset_complete = false
+	_ads_held = false
+	_ads_rearm_required = _observed_ads_down
 	_cancel_action(&"hip")
 	_weapons = snapshot.get("weapons", _fresh_weapon_data()).duplicate(true)
 	_equipped_id = StringName(snapshot.get("equipped_id", &"ak74m"))
 	_pending_equipped_id = &""
-	_ads_held = false
 	_shot_serial = maxi(serial_before, int(snapshot.get("shot_serial", 0)))
 	reset_transient_state_for_restore()
 	viewmodel.call(&"equip_weapon_id", _equipped_id, true)
@@ -730,6 +795,8 @@ func reset_transient_state_for_restore() -> void:
 	_impact_history.clear()
 	_last_input_receipt.clear()
 	_input_history.clear()
+	_last_ads_receipt.clear()
+	_ads_history.clear()
 	_last_result_until = 0.0
 	if hud_result != null:
 		hud_result.text = ""
@@ -781,6 +848,16 @@ func _input_source_for(event: InputEvent) -> StringName:
 		return &"mouse_left"
 	if event is InputEventJoypadMotion:
 		return &"gamepad_trigger"
+	if event is InputEventJoypadButton:
+		return &"gamepad_button"
+	return &"mapped_action"
+
+
+func _ads_input_source_for(event: InputEvent) -> StringName:
+	if event is InputEventMouseButton:
+		return &"mouse_right"
+	if event is InputEventJoypadMotion:
+		return &"gamepad_left_trigger"
 	if event is InputEventJoypadButton:
 		return &"gamepad_button"
 	return &"mapped_action"
@@ -859,12 +936,36 @@ func _record_input_edge(
 func _mcp_state() -> Dictionary:
 	var weapon := _current_weapon()
 	var audit := _visible_rig_audit()
+	var profile: FPSViewmodelProfile = viewmodel.call(&"current_profile") as FPSViewmodelProfile
+	var target_position := viewmodel.position
+	var target_scale := viewmodel.scale
+	if profile != null:
+		target_position = profile.aim_position if _ads_held else profile.hip_position
+		target_scale = profile.aim_scale if _ads_held else profile.hip_scale
 	return {
+		"active_weapon_id": String(_equipped_id),
+		"active_profile_id": String(viewmodel.call(&"current_weapon_id")),
+		"active_state": String(_action_state),
 		"equipped_id": _equipped_id,
 		"pending_equipped_id": _pending_equipped_id,
 		"action_state": _action_state,
 		"reload_kind": _reload_kind,
 		"ads": _ads_held,
+		"ads_input_authority": &"weapon_controller_raw_input_events",
+		"ads_action_down": _observed_ads_down,
+		"ads_rearm_required": _ads_rearm_required,
+		"ads_edge_count": _ads_edge_serial,
+		"last_ads_receipt": _last_ads_receipt,
+		"viewmodel_requested_aim": _ads_held,
+		"viewmodel_aim_flag": viewmodel.get("aiming") == true,
+		"viewmodel_settled_aim": _viewmodel_ads_settled,
+		"viewmodel_aim_transition_complete": _ads_transition_complete,
+		"viewmodel_aim_transition_serial": _ads_transition_serial,
+		"viewmodel_position": viewmodel.position,
+		"viewmodel_scale": viewmodel.scale,
+		"viewmodel_target_position": target_position,
+		"viewmodel_target_scale": target_scale,
+		"viewmodel_position_error": viewmodel.position.distance_to(target_position),
 		"fire_mode": weapon["fire_mode"],
 		"rounds_per_minute": weapon["rounds_per_minute"],
 		"magazine": weapon["magazine"],

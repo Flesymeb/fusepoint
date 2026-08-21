@@ -6,6 +6,11 @@ signal roster_event_committed(event: Dictionary)
 
 const ENEMY_SCENE := preload("res://scenes/enemy_agent.tscn")
 const REGION_ORDER: Array[StringName] = [&"alpha", &"bravo", &"charlie"]
+const ACTOR_CAPSULE_RADIUS := 0.4
+const RESERVATION_CLEARANCE := 0.6
+const MIN_RESERVATION_SEPARATION := ACTOR_CAPSULE_RADIUS * 2.0 + RESERVATION_CLEARANCE
+const RESERVATION_RING_RADII := [1.5, 2.25, 3.0, 4.0, 5.5, 7.0, 9.0]
+const RESERVATION_ANGLE_STEPS := 16
 const ROSTER := [
 	{"id":"rift-a-01","region":"alpha","role":"defender","slot":"alpha_core","route_pressure":false,"offset":Vector3(-1,0,-1)},
 	{"id":"rift-a-02","region":"alpha","role":"approach","slot":"alpha_west_lane","route_pressure":true,"offset":Vector3(-8,0,5)},
@@ -48,6 +53,9 @@ var _last_progression_signature := ""
 var diagnostic_mode := &"player"
 var _diagnostic_camera: Camera3D
 var _diagnostic_actor_index := 0
+var reservation_transaction_state := &"pending"
+var reservation_failure: Dictionary = {}
+var reservation_minimum_distance := INF
 
 @onready var player: Node3D = get_node(player_path) as Node3D
 @onready var mission_controller: Node = get_node(mission_controller_path)
@@ -56,9 +64,10 @@ var _diagnostic_actor_index := 0
 
 func _ready() -> void:
 	await _wait_for_navigation()
-	_instantiate_roster()
-	_update_region_activation()
-	roster_initialized = enemies.size() == 18
+	var reservation_succeeded := _instantiate_roster()
+	roster_initialized = reservation_succeeded and enemies.size() == 18
+	if roster_initialized:
+		_update_region_activation()
 	var summary := _summary()
 	roster_ready.emit(summary)
 	if not roster_initialized:
@@ -138,37 +147,79 @@ func _wait_for_navigation() -> void:
 	push_warning("Enemy roster timed out waiting for authored-map navigation.")
 
 
-func _instantiate_roster() -> void:
+func _instantiate_roster() -> bool:
 	var nav_map: RID = navigation_region.get_navigation_map()
-	var placed_positions: Array[Vector3] = []
-	for index in ROSTER.size():
-		var source: Dictionary = ROSTER[index]
-		var entry := source.duplicate(true)
-		entry["index"] = index
-		entry["difficulty"] = FPSCombatEnemy.Difficulty.MEDIUM if index < 8 else FPSCombatEnemy.Difficulty.HARD
+	var reservation_plan := _build_reservation_plan(nav_map)
+	if reservation_plan.size() != ROSTER.size():
+		reservation_transaction_state = &"rejected"
+		push_error("Enemy reservation transaction rejected: %s" % reservation_failure)
+		return false
+	reservation_transaction_state = &"committed"
+	for reservation: Dictionary in reservation_plan:
+		var entry: Dictionary = reservation["entry"]
+		var projected: Vector3 = reservation["projected"]
+		entry["reserved_position"] = projected
 		var agent := ENEMY_SCENE.instantiate() as FusepointEnemyAgent
 		agent.name = String(entry["id"]).replace("-", "_")
 		agent.configure_roster_entry(entry, player)
 		var objective := _objective_for(StringName(entry["region"]))
-		var requested: Vector3 = objective.global_position - Vector3.UP * 1.2 + (entry["offset"] as Vector3)
-		var primary_projection: Vector3 = NavigationServer3D.map_get_closest_point(nav_map, requested)
-		var projected := _select_distinct_navigation_slot(nav_map, requested, primary_projection, placed_positions)
-		var used_separation_fallback := not projected.is_equal_approx(primary_projection)
-		placed_positions.append(projected)
 		agent.global_position = projected + Vector3.UP * 0.04
 		agent.look_at(objective.global_position, Vector3.UP)
 		add_child(agent)
 		agent.authoritative_enemy_event.connect(_on_enemy_event)
 		enemies[agent.stable_id] = agent
+	return enemies.size() == ROSTER.size()
+
+
+func _build_reservation_plan(nav_map: RID) -> Array[Dictionary]:
+	var placed_positions: Array[Vector3] = []
+	var plan: Array[Dictionary] = []
+	slot_projection_reports.clear()
+	reservation_failure.clear()
+	reservation_minimum_distance = INF
+	for index in ROSTER.size():
+		var source: Dictionary = ROSTER[index]
+		var entry := source.duplicate(true)
+		entry["index"] = index
+		entry["difficulty"] = FPSCombatEnemy.Difficulty.MEDIUM if index < 8 else FPSCombatEnemy.Difficulty.HARD
+		var objective := _objective_for(StringName(entry["region"]))
+		var requested: Vector3 = objective.global_position - Vector3.UP * 1.2 + (entry["offset"] as Vector3)
+		var primary_projection: Vector3 = NavigationServer3D.map_get_closest_point(nav_map, requested)
+		var selection := _select_distinct_navigation_slot(nav_map, requested, primary_projection, placed_positions)
+		if selection.get("valid", false) != true:
+			reservation_failure = {
+				"id": String(entry["id"]),
+				"slot": String(entry["slot"]),
+				"requested": requested,
+				"primary_projection": primary_projection,
+				"nearest_neighbor_distance": float(selection.get("nearest_neighbor_distance", 0.0)),
+				"required_separation": MIN_RESERVATION_SEPARATION,
+				"search_attempts": int(selection.get("search_attempts", 0)),
+			}
+			slot_projection_reports.append(reservation_failure.duplicate(true))
+			return []
+		var projected: Vector3 = selection["projected"]
+		var used_separation_fallback := not projected.is_equal_approx(primary_projection)
+		var nearest_distance := _nearest_reserved_distance(projected, placed_positions)
+		var nearest_distance_report := -1.0 if placed_positions.is_empty() else nearest_distance
+		if not placed_positions.is_empty():
+			reservation_minimum_distance = minf(reservation_minimum_distance, nearest_distance)
+		placed_positions.append(projected)
 		slot_projection_reports.append({
-			"id": agent.stable_id,
-			"slot": agent.route_slot,
+			"id": StringName(entry["id"]),
+			"slot": StringName(entry["slot"]),
 			"requested": requested,
+			"primary_projection": primary_projection,
 			"projected": projected,
 			"projection_distance": requested.distance_to(projected),
+			"nearest_reserved_distance": nearest_distance_report,
+			"required_separation": MIN_RESERVATION_SEPARATION,
+			"search_attempts": int(selection["search_attempts"]),
 			"navigation_slot_bound": true,
 			"separation_fallback": used_separation_fallback,
 		})
+		plan.append({"entry": entry, "projected": projected})
+	return plan
 
 
 func _select_distinct_navigation_slot(
@@ -176,30 +227,60 @@ func _select_distinct_navigation_slot(
 	requested: Vector3,
 	primary: Vector3,
 	placed_positions: Array[Vector3],
-) -> Vector3:
+) -> Dictionary:
+	var search_attempts := 1
 	if _is_separated_slot(primary, placed_positions):
-		return primary
-	var best := primary
+		return {
+			"valid": true,
+			"projected": primary,
+			"nearest_neighbor_distance": -1.0 if placed_positions.is_empty() else _nearest_reserved_distance(primary, placed_positions),
+			"search_attempts": search_attempts,
+		}
+	var best := Vector3.INF
 	var best_score := INF
-	for radius: float in [1.5, 2.25, 3.0, 4.0]:
-		for step: int in 8:
-			var angle := TAU * float(step) / 8.0
-			var sample := requested + Vector3(cos(angle) * radius, 0.0, sin(angle) * radius)
-			var projected := NavigationServer3D.map_get_closest_point(nav_map, sample)
-			if projected.distance_to(sample) > 2.0 or not _is_separated_slot(projected, placed_positions):
-				continue
-			var score := requested.distance_to(projected)
-			if score < best_score:
-				best = projected
-				best_score = score
-	return best
+	var nearest_rejected := _nearest_reserved_distance(primary, placed_positions)
+	var search_centers: Array[Vector3] = [primary, requested]
+	for center: Vector3 in search_centers:
+		for radius: float in RESERVATION_RING_RADII:
+			for step: int in RESERVATION_ANGLE_STEPS:
+				search_attempts += 1
+				var angle := TAU * float(step) / float(RESERVATION_ANGLE_STEPS)
+				var sample := center + Vector3(cos(angle) * radius, 0.0, sin(angle) * radius)
+				var projected := NavigationServer3D.map_get_closest_point(nav_map, sample)
+				var nearest_distance := _nearest_reserved_distance(projected, placed_positions)
+				nearest_rejected = maxf(nearest_rejected, nearest_distance)
+				if projected.distance_to(sample) > 2.5 or nearest_distance < MIN_RESERVATION_SEPARATION:
+					continue
+				var score := requested.distance_to(projected) + projected.distance_to(sample) * 0.25
+				if score < best_score:
+					best = projected
+					best_score = score
+	if best != Vector3.INF:
+		return {
+			"valid": true,
+			"projected": best,
+			"nearest_neighbor_distance": _nearest_reserved_distance(best, placed_positions),
+			"search_attempts": search_attempts,
+		}
+	return {
+		"valid": false,
+		"projected": primary,
+		"nearest_neighbor_distance": nearest_rejected,
+		"search_attempts": search_attempts,
+	}
 
 
 func _is_separated_slot(candidate: Vector3, placed_positions: Array[Vector3]) -> bool:
+	return _nearest_reserved_distance(candidate, placed_positions) >= MIN_RESERVATION_SEPARATION
+
+
+func _nearest_reserved_distance(candidate: Vector3, placed_positions: Array[Vector3]) -> float:
+	if placed_positions.is_empty():
+		return INF
+	var nearest := INF
 	for placed: Vector3 in placed_positions:
-		if candidate.distance_to(placed) < 1.4:
-			return false
-	return true
+		nearest = minf(nearest, candidate.distance_to(placed))
+	return nearest
 
 
 func _update_region_activation() -> void:
@@ -355,6 +436,10 @@ func _summary() -> Dictionary:
 		alive_count += 1 if enemy.is_alive() else 0
 		actor_states.append(enemy.authoritative_snapshot())
 	return {
+		"allocation_state": reservation_transaction_state,
+		"allocation_minimum_distance": reservation_minimum_distance,
+		"allocation_required_separation": MIN_RESERVATION_SEPARATION,
+		"allocation_failure": reservation_failure,
 		"ready": roster_initialized,
 		"stable_identity_count": enemies.size(),
 		"region_counts": region_counts,
@@ -367,6 +452,10 @@ func _summary() -> Dictionary:
 		"restore_applied_actor_count": restore_applied_actor_count,
 		"last_restore_receipt": last_restore_receipt,
 		"slot_projection_reports": slot_projection_reports,
+		"reservation_transaction_state": reservation_transaction_state,
+		"reservation_failure": reservation_failure,
+		"reservation_required_separation": MIN_RESERVATION_SEPARATION,
+		"reservation_minimum_distance": reservation_minimum_distance,
 		"unique_slot_count": _unique_slot_count(),
 		"actors": actor_states,
 		"last_event": roster_events.back() if not roster_events.is_empty() else {},

@@ -26,6 +26,7 @@ var _restore_in_progress := false
 var _restored_epoch := 0
 var _restore_quiescent := false
 var _restore_readiness := &"ordinary"
+var reserved_position := Vector3.ZERO
 
 
 func _ready() -> void:
@@ -59,6 +60,7 @@ func configure_roster_entry(entry: Dictionary, target_node: Node3D) -> void:
 	route_slot = StringName(entry["slot"])
 	route_pressure = entry["route_pressure"] == true
 	roster_index = int(entry["index"])
+	reserved_position = entry.get("reserved_position", global_position)
 	tactical_random_seed = 17041 + roster_index * 131
 	difficulty = int(entry.get("difficulty", Difficulty.MEDIUM))
 	target_group = &"player"
@@ -151,6 +153,7 @@ func authoritative_snapshot() -> Dictionary:
 		"route_slot": route_slot,
 		"route_pressure": route_pressure,
 		"roster_index": roster_index,
+		"reserved_position": reserved_position,
 		"active": mission_active,
 		"alive": is_alive(),
 		"transform": global_transform,
@@ -208,6 +211,10 @@ func apply_checkpoint_snapshot(saved: Dictionary, epoch: int) -> bool:
 		return false
 	if StringName(saved.get("region", region_id)) != region_id or StringName(saved.get("role", tactical_role)) != tactical_role or StringName(saved.get("route_slot", route_slot)) != route_slot:
 		push_error("Restore roster binding mismatch for %s" % stable_id)
+		return false
+	var saved_reserved: Vector3 = saved.get("reserved_position", reserved_position)
+	if not saved_reserved.is_equal_approx(reserved_position):
+		push_error("Restore reservation mismatch for %s" % stable_id)
 		return false
 	global_transform = saved.get("transform", global_transform)
 	velocity = Vector3.ZERO
