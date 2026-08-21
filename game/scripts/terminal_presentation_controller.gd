@@ -449,6 +449,7 @@ func _synth_blast(duration: float, frequency: float, gain: float) -> AudioStream
 
 
 func snapshot() -> Dictionary:
+	var victory_state := victory_sequence.snapshot()
 	return {
 		"family_id": FAMILY_ID,
 		"active": active,
@@ -466,6 +467,12 @@ func snapshot() -> Dictionary:
 		"duplicate_event_count": duplicate_event_count,
 		"camera_position": camera.global_position if camera != null else Vector3.ZERO,
 		"victory_avatar_visible": victory_avatar.visible,
+		"victory_phase": String(victory_state.get("phase", &"idle")),
+		"victory_phase_serial": victory_state.get("phase_serial", 0),
+		"victory_pullback_weight": victory_state.get("pullback_weight", 0.0),
+		"victory_orbit_weight": victory_state.get("orbit_weight", 0.0),
+		"victory_camera_transform": victory_state.get("camera_transform", Transform3D.IDENTITY),
+		"victory_animation": victory_state.get("avatar_animation", {}),
 		"restore_epoch": _restore_epoch,
 		"reduced_camera_motion": _applied_reduced_motion,
 		"screen_shake_enabled": _applied_screen_shake,

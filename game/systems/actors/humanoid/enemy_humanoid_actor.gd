@@ -473,14 +473,17 @@ func skin_catalog() -> Array[Dictionary]:
 
 func get_component_state() -> Dictionary:
 	var player: AnimationPlayer = _source_players.get(_active_library)
+	var animation_position := player.current_animation_position if player != null else 0.0
+	var animation_length := player.current_animation_length if player != null else 0.0
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
 		"animation_library": _active_library,
 		"mode": "clip_browser" if _custom_preview else "semantic_state",
 		"animation": _custom_clip if _custom_preview else String(STATE_CLIPS[current_state]["clip"]),
-		"animation_position_seconds": player.current_animation_position if player != null else 0.0,
-		"animation_length_seconds": player.current_animation_length if player != null else 0.0,
+		"animation_position_seconds": animation_position,
+		"animation_length_seconds": animation_length,
+		"animation_normalized_time": clampf(animation_position / animation_length, 0.0, 1.0) if animation_length > 0.0 else 0.0,
 		"animation_playing": player != null and player.is_playing(),
 		"locomotion_playback_scale": _locomotion_playback_scale,
 		"state_change_count": _state_change_count,

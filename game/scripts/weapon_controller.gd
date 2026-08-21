@@ -955,6 +955,7 @@ func _record_input_edge(
 func _mcp_state() -> Dictionary:
 	var weapon := _current_weapon()
 	var audit := _visible_rig_audit()
+	var recoil: Dictionary = feedback.call(&"recoil_state") if feedback.has_method(&"recoil_state") else {}
 	var profile: FPSViewmodelProfile = viewmodel.call(&"current_profile") as FPSViewmodelProfile
 	var target_position := viewmodel.position
 	var target_scale := viewmodel.scale
@@ -985,6 +986,14 @@ func _mcp_state() -> Dictionary:
 		"viewmodel_target_position": target_position,
 		"viewmodel_target_scale": target_scale,
 		"viewmodel_position_error": viewmodel.position.distance_to(target_position),
+		"recoil_phase": recoil.get("phase", &"unavailable"),
+		"recoil_shot_serial": recoil.get("shot_serial", 0),
+		"recoil_peak_serial": recoil.get("peak_serial", 0),
+		"recoil_current_position_offset": recoil.get("current_position_offset", Vector3.ZERO),
+		"recoil_current_rotation_offset_degrees": recoil.get("current_rotation_offset_degrees", Vector3.ZERO),
+		"recoil_baseline_position_error": recoil.get("baseline_position_error", 0.0),
+		"recoil_baseline_rotation_error_degrees": recoil.get("baseline_rotation_error_degrees", 0.0),
+		"recoil_recovery_complete": recoil.get("recovery_complete", true),
 		"fire_mode": weapon["fire_mode"],
 		"rounds_per_minute": weapon["rounds_per_minute"],
 		"magazine": weapon["magazine"],

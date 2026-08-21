@@ -53,6 +53,11 @@ var _roster_event_sequence := 0
 var _last_progression_signature := ""
 var progression_receipts: Array[Dictionary] = []
 var _progression_receipt_sequence := 0
+var qualification_run_id := "encounter-run-000001"
+var qualification_event_sequence := 0
+var qualification_actors: Dictionary = {}
+var qualification_regions: Dictionary = {}
+var qualification_region_milestones: Array[Dictionary] = []
 var diagnostic_mode := &"player"
 var _diagnostic_camera: Camera3D
 var _diagnostic_actor_index := 0
@@ -70,6 +75,7 @@ func _ready() -> void:
 	var reservation_succeeded := _instantiate_roster()
 	roster_initialized = reservation_succeeded and enemies.size() == 18
 	if roster_initialized:
+		_initialize_qualification_ledger()
 		_update_region_activation()
 	var summary := _summary()
 	roster_ready.emit(summary)
@@ -304,6 +310,7 @@ func _update_region_activation() -> void:
 	activation_sequence += 1
 	for enemy: FusepointEnemyAgent in enemies.values():
 		enemy.set_mission_active(enemy.region_id == active_region, activation_sequence)
+	_record_region_milestone(active_region)
 	_commit_roster_event(&"region_activated", {"region": active_region, "sequence": activation_sequence})
 
 
@@ -402,6 +409,10 @@ func commit_restore_epoch(epoch: int) -> Dictionary:
 	}
 	for enemy: FusepointEnemyAgent in enemies.values():
 		_append_progression_receipt(&"restored", enemy, {
+			"restore_epoch": epoch,
+			"restore_committed": true,
+		})
+		_update_qualification_actor(&"checkpoint_restored", enemy, {
 			"restore_epoch": epoch,
 			"restore_committed": true,
 		})
@@ -540,6 +551,7 @@ func _on_enemy_event(event: Dictionary) -> void:
 	var enemy := enemies.get(actor_id) as FusepointEnemyAgent
 	if enemy != null:
 		_append_progression_receipt(StringName(event.get("kind", &"enemy_event")), enemy, event)
+		_update_qualification_actor(StringName(event.get("kind", &"enemy_event")), enemy, event)
 	_commit_roster_event(&"enemy_event", event)
 	if event.get("kind", &"") != &"action_changed" and mission_controller.has_method(&"report_enemy_event"):
 		mission_controller.call(&"report_enemy_event", event)
@@ -559,6 +571,8 @@ func _commit_roster_event(kind: StringName, payload: Dictionary) -> void:
 
 
 func _summary() -> Dictionary:
+	_refresh_qualification_live_state()
+	var qualification := _qualification_summary()
 	var region_counts := {&"alpha": 0, &"bravo": 0, &"charlie": 0}
 	var route_pressure_counts := {&"alpha": 0, &"bravo": 0, &"charlie": 0}
 	var active_count := 0
@@ -597,6 +611,12 @@ func _summary() -> Dictionary:
 		"actors": actor_states,
 		"progression_receipt_count": progression_receipts.size(),
 		"progression_receipts": progression_receipts,
+		"qualification_run_id": qualification.get("run_id", ""),
+		"qualification_event_sequence": qualification.get("event_sequence", 0),
+		"qualification_actor_count": qualification.get("bounded_actor_count", 0),
+		"qualification_complete_actor_count": qualification.get("complete_actor_count", 0),
+		"qualification_region_milestone_count": qualification_region_milestones.size(),
+		"qualification_ledger": qualification,
 		"last_event": roster_events.back() if not roster_events.is_empty() else {},
 		"diagnostic_mode": diagnostic_mode,
 	}
@@ -615,6 +635,151 @@ func _progression_signature() -> String:
 	var alpha_secured := StringName((points.get(&"alpha", {}) as Dictionary).get("state", &"held_rift")) == &"secured_aegis"
 	var bravo_secured := StringName((points.get(&"bravo", {}) as Dictionary).get("state", &"held_rift")) == &"secured_aegis"
 	return "%s:%s" % [alpha_secured, bravo_secured]
+
+
+func _initialize_qualification_ledger() -> void:
+	qualification_event_sequence = 0
+	qualification_actors.clear()
+	qualification_regions.clear()
+	qualification_region_milestones.clear()
+	for region_id in REGION_ORDER:
+		qualification_regions[region_id] = {
+			"region": region_id,
+			"activated": false,
+			"activation_count": 0,
+			"first_activation_sequence": 0,
+			"latest_activation_sequence": 0,
+			"active_actor_ids": [],
+		}
+	for enemy: FusepointEnemyAgent in enemies.values():
+		qualification_actors[enemy.stable_id] = {
+			"actor_id": enemy.stable_id,
+			"region": enemy.region_id,
+			"role": enemy.tactical_role,
+			"route_slot": enemy.route_slot,
+			"roster_index": enemy.roster_index,
+			"route_pressure": enemy.route_pressure,
+			"activation_sequences": [],
+			"event_counts": {},
+			"state_coverage": {
+				"perception": false,
+				"navigation": false,
+				"aim": false,
+				"fire": false,
+				"reload": false,
+				"hurt": false,
+				"death": false,
+				"blocked_fire": false,
+			},
+			"first_event_sequence": 0,
+			"last_event_sequence": 0,
+			"latest": {},
+		}
+
+
+func _record_region_milestone(region_id: StringName) -> void:
+	var active_ids: Array[StringName] = []
+	for enemy: FusepointEnemyAgent in enemies.values():
+		if enemy.mission_active:
+			active_ids.append(enemy.stable_id)
+			var actor: Dictionary = qualification_actors.get(enemy.stable_id, {})
+			var sequences: Array = actor.get("activation_sequences", [])
+			if not sequences.has(activation_sequence):
+				sequences.append(activation_sequence)
+			actor["activation_sequences"] = sequences
+	active_ids.sort()
+	var region: Dictionary = qualification_regions.get(region_id, {})
+	region["activated"] = true
+	region["activation_count"] = int(region.get("activation_count", 0)) + 1
+	region["first_activation_sequence"] = activation_sequence if int(region.get("first_activation_sequence", 0)) == 0 else region["first_activation_sequence"]
+	region["latest_activation_sequence"] = activation_sequence
+	region["active_actor_ids"] = active_ids.duplicate()
+	qualification_regions[region_id] = region
+	qualification_region_milestones.append({
+		"region": region_id,
+		"activation_sequence": activation_sequence,
+		"active_count": active_ids.size(),
+		"active_actor_ids": active_ids,
+		"monotonic_event_sequence": qualification_event_sequence,
+	})
+	while qualification_region_milestones.size() > REGION_ORDER.size() * 4:
+		qualification_region_milestones.pop_front()
+
+
+func _update_qualification_actor(kind: StringName, enemy: FusepointEnemyAgent, source_event: Dictionary = {}) -> void:
+	if not qualification_actors.has(enemy.stable_id):
+		return
+	qualification_event_sequence += 1
+	var actor: Dictionary = qualification_actors[enemy.stable_id]
+	var snapshot := enemy.authoritative_snapshot()
+	var coverage: Dictionary = actor["state_coverage"]
+	var action := StringName(snapshot.get("action", &"idle"))
+	var block_reason := StringName(snapshot.get("fire_block_reason", &"unknown"))
+	coverage["perception"] = bool(coverage["perception"]) or snapshot.get("target_visible", false) == true
+	coverage["navigation"] = bool(coverage["navigation"]) or action in [&"search", &"patrol", &"chase", &"reposition", &"strafe", &"flank"] or not (snapshot.get("navigation_velocity", Vector3.ZERO) as Vector3).is_zero_approx()
+	coverage["aim"] = bool(coverage["aim"]) or action in [&"aim", &"fire"]
+	coverage["fire"] = bool(coverage["fire"]) or kind == &"shot_resolved" or not String(snapshot.get("shot_event_id", "")).is_empty()
+	coverage["reload"] = bool(coverage["reload"]) or kind in [&"reload_started", &"reload_finished"] or action == &"reload"
+	coverage["hurt"] = bool(coverage["hurt"]) or kind == &"player_hit" or action == &"hurt"
+	coverage["death"] = bool(coverage["death"]) or kind == &"died" or action in [&"dead", &"death"]
+	coverage["blocked_fire"] = bool(coverage["blocked_fire"]) or block_reason not in [&"none", &"no_target", &"attack_cooldown"]
+	var event_counts: Dictionary = actor["event_counts"]
+	event_counts[kind] = int(event_counts.get(kind, 0)) + 1
+	actor["first_event_sequence"] = qualification_event_sequence if int(actor["first_event_sequence"]) == 0 else actor["first_event_sequence"]
+	actor["last_event_sequence"] = qualification_event_sequence
+	actor["event_counts"] = event_counts
+	actor["state_coverage"] = coverage
+	actor["latest"] = _qualification_live_fields(snapshot, source_event)
+
+
+func _refresh_qualification_live_state() -> void:
+	for enemy: FusepointEnemyAgent in enemies.values():
+		if not qualification_actors.has(enemy.stable_id):
+			continue
+		var actor: Dictionary = qualification_actors[enemy.stable_id]
+		actor["latest"] = _qualification_live_fields(enemy.authoritative_snapshot(), {})
+
+
+func _qualification_live_fields(snapshot: Dictionary, source_event: Dictionary) -> Dictionary:
+	var health_state: Dictionary = snapshot.get("health", {})
+	return {
+		"active": snapshot.get("active", false),
+		"alive": snapshot.get("alive", false),
+		"action": snapshot.get("action", &"idle"),
+		"target_visible": snapshot.get("target_visible", false),
+		"navigation_velocity": snapshot.get("navigation_velocity", Vector3.ZERO),
+		"nearest_neighbor_distance": snapshot.get("nearest_neighbor_distance", -1.0),
+		"grounded_occupancy": snapshot.get("grounded_occupancy", false),
+		"avoidance_enabled": snapshot.get("avoidance_enabled", false),
+		"fire_block_reason": snapshot.get("fire_block_reason", &"unknown"),
+		"ammo": snapshot.get("ammo", 0),
+		"health": health_state.get("current", 0.0),
+		"shot_event_id": snapshot.get("shot_event_id", ""),
+		"activation_sequence": snapshot.get("activation_sequence", 0),
+		"restore_epoch": snapshot.get("restore_epoch", 0),
+		"source_event_id": source_event.get("event_id", ""),
+	}
+
+
+func _qualification_summary() -> Dictionary:
+	var complete_actor_count := 0
+	for actor: Dictionary in qualification_actors.values():
+		var coverage: Dictionary = actor.get("state_coverage", {})
+		var complete := true
+		for state_id in ["perception", "navigation", "aim", "fire", "reload", "hurt", "death", "blocked_fire"]:
+			complete = complete and coverage.get(state_id, false) == true
+		actor["coverage_complete"] = complete
+		complete_actor_count += 1 if complete else 0
+	return {
+		"run_id": qualification_run_id,
+		"event_sequence": qualification_event_sequence,
+		"bounded_actor_count": qualification_actors.size(),
+		"complete_actor_count": complete_actor_count,
+		"regions": qualification_regions,
+		"region_milestones": qualification_region_milestones,
+		"actors": qualification_actors,
+		"checkpoint_preserves_coverage": true,
+	}
 
 
 func _append_progression_receipt(kind: StringName, enemy: FusepointEnemyAgent, source_event: Dictionary = {}) -> void:

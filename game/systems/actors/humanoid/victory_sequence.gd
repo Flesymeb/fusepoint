@@ -21,6 +21,11 @@ var _headline: Label
 var _summary: Label
 var _accent: ColorRect
 var _sequence_tween: Tween
+var _phase := &"idle"
+var _phase_serial := 0
+var _pullback_weight := 0.0
+var _orbit_weight := 0.0
+var _overlay_weight := 0.0
 
 
 func _ready() -> void:
@@ -41,13 +46,18 @@ func begin(camera: Camera3D, avatar: EnemyHumanoidActor, summary := "MISSION COM
 	_start_transform = _camera.global_transform
 	_reveal_center = _avatar.global_position + Vector3(0.0, 1.05, 0.0)
 	_rear_position = _avatar.global_position + _avatar.global_basis * Vector3(0.0, 1.45, -rear_distance)
+	_set_phase(&"pullback")
+	_pullback_weight = 0.0
+	_orbit_weight = 0.0
+	_overlay_weight = 0.0
 	sequence_started.emit()
 	_sequence_tween = create_tween()
 	_sequence_tween.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 	_sequence_tween.tween_method(_pull_camera_back, 0.0, 1.0, pullback_seconds)
+	_sequence_tween.tween_callback(_set_phase.bind(&"orbit"))
 	_sequence_tween.tween_method(_orbit_camera, 0.0, 1.0, orbit_seconds)
 	_sequence_tween.parallel().tween_method(_reveal_overlay, 0.0, 1.0, orbit_seconds)
-	_sequence_tween.tween_callback(camera_reveal_complete.emit)
+	_sequence_tween.tween_callback(_finish_reveal)
 	return true
 
 
@@ -62,16 +72,22 @@ func reset_sequence(restore_camera := true) -> void:
 	_headline.modulate.a = 0.0
 	_summary.modulate.a = 0.0
 	_accent.color.a = 0.0
+	_set_phase(&"idle")
+	_pullback_weight = 0.0
+	_orbit_weight = 0.0
+	_overlay_weight = 0.0
 	_camera = null
 	_avatar = null
 
 
 func _pull_camera_back(weight: float) -> void:
+	_pullback_weight = weight
 	var position := _safe_camera_position(_start_transform.origin.lerp(_rear_position, weight))
 	_camera.global_transform = _look_transform(position)
 
 
 func _orbit_camera(weight: float) -> void:
+	_orbit_weight = weight
 	var rear_angle := -PI * 0.5
 	var front_angle := PI * 0.42
 	var angle := lerpf(rear_angle, front_angle, weight)
@@ -102,9 +118,36 @@ func _look_transform(position: Vector3) -> Transform3D:
 
 
 func _reveal_overlay(weight: float) -> void:
+	_overlay_weight = weight
 	_headline.modulate.a = weight
 	_summary.modulate.a = weight
 	_accent.color.a = weight * 0.9
+
+
+func _set_phase(next_phase: StringName) -> void:
+	if _phase == next_phase:
+		return
+	_phase = next_phase
+	_phase_serial += 1
+
+
+func _finish_reveal() -> void:
+	_set_phase(&"reveal_complete")
+	camera_reveal_complete.emit()
+
+
+func snapshot() -> Dictionary:
+	return {
+		"active": _camera != null and _avatar != null,
+		"phase": _phase,
+		"phase_serial": _phase_serial,
+		"pullback_weight": _pullback_weight,
+		"orbit_weight": _orbit_weight,
+		"overlay_weight": _overlay_weight,
+		"camera_transform": _camera.global_transform if _camera != null else Transform3D.IDENTITY,
+		"avatar_visible": _avatar.visible if _avatar != null else false,
+		"avatar_animation": _avatar.get_component_state() if _avatar != null else {},
+	}
 
 
 func _build_overlay() -> void:

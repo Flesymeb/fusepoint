@@ -146,6 +146,7 @@ func is_contesting(objective_position: Vector3, radius: float) -> bool:
 
 func authoritative_snapshot() -> Dictionary:
 	var combat := snapshot()
+	var presentation_state := _presentation_actor.get_component_state() if _presentation_actor != null else {}
 	return {
 		"id": stable_id,
 		"region": region_id,
@@ -180,6 +181,12 @@ func authoritative_snapshot() -> Dictionary:
 		"cleanup_hidden": cleanup_hidden,
 		"presentation_bound": _presentation_actor != null,
 		"presentation_state": _presentation_actor.state_name() if _presentation_actor != null else "inactive",
+		"presentation": presentation_state,
+		"animation_name": presentation_state.get("animation", ""),
+		"animation_position_seconds": presentation_state.get("animation_position_seconds", 0.0),
+		"animation_normalized_time": presentation_state.get("animation_normalized_time", 0.0),
+		"animation_playing": presentation_state.get("animation_playing", false),
+		"animation_state_change_count": presentation_state.get("state_change_count", 0),
 		"binding_accepted": _presentation_actor.binding_report.get("accepted", false) == true if _presentation_actor != null else false,
 		"restore_epoch": _restore_epoch,
 		"restored_epoch": _restored_epoch,

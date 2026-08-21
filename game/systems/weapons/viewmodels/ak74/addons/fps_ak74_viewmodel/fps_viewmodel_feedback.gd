@@ -37,6 +37,13 @@ var _fire_audio_tween: Tween
 var _fire_recoil_tween: Tween
 var _reload_mount_tween: Tween
 var _fire_visual_until := 0.0
+var _recoil_baseline_position := Vector3.ZERO
+var _recoil_baseline_rotation_degrees := Vector3.ZERO
+var _recoil_baseline_valid := false
+var _recoil_phase := &"settled"
+var _recoil_shot_serial := 0
+var _recoil_peak_serial := 0
+var _recoil_recovery_complete := true
 
 
 func _ready() -> void:
@@ -85,8 +92,7 @@ func stop_feedback() -> void:
 		_muzzle_flash_tween.kill()
 	if _fire_audio_tween != null and _fire_audio_tween.is_valid():
 		_fire_audio_tween.kill()
-	if _fire_recoil_tween != null and _fire_recoil_tween.is_valid():
-		_fire_recoil_tween.kill()
+	_stop_fire_recoil()
 	movement_state = &"idle"
 	for player in [fire_audio, auto_fire_audio, reload_audio, switch_audio, aim_audio, inspect_audio, walk_audio, run_audio]:
 		_stop_audio(player)
@@ -261,6 +267,12 @@ func _stop_fire_audio() -> void:
 func _stop_fire_recoil() -> void:
 	if _fire_recoil_tween != null and _fire_recoil_tween.is_valid():
 		_fire_recoil_tween.kill()
+	var mount := _viewmodel_mount()
+	if mount != null and _recoil_baseline_valid:
+		mount.position = _recoil_baseline_position
+		mount.rotation_degrees = _recoil_baseline_rotation_degrees
+	_recoil_phase = &"settled"
+	_recoil_recovery_complete = true
 
 
 func _play_reload_mount_offset() -> void:
@@ -294,29 +306,86 @@ func _play_fire_recoil(auto_fire: bool) -> void:
 	var mount := _viewmodel_mount()
 	if mount == null:
 		return
-	_stop_fire_recoil()
+	if not _recoil_baseline_valid:
+		_recoil_baseline_position = mount.position
+		_recoil_baseline_rotation_degrees = mount.rotation_degrees
+		_recoil_baseline_valid = true
+	if _fire_recoil_tween != null and _fire_recoil_tween.is_valid():
+		_fire_recoil_tween.kill()
 	var kick_scale := 0.65 if auto_fire else 1.0
 	var start_position := mount.position
 	var start_rotation := mount.rotation_degrees
-	var kick_position := start_position + Vector3(0.0, 0.0, -fire_recoil_back_distance * kick_scale)
-	var kick_rotation := start_rotation + Vector3(
+	var kick_position := _recoil_baseline_position + Vector3(0.0, 0.0, -fire_recoil_back_distance * kick_scale)
+	var kick_rotation := _recoil_baseline_rotation_degrees + Vector3(
 		-fire_recoil_pitch_degrees * kick_scale,
 		(randf() * 2.0 - 1.0) * fire_recoil_yaw_degrees * kick_scale,
 		(randf() * 2.0 - 1.0) * fire_recoil_roll_degrees * kick_scale,
 	)
-	_fire_recoil_tween = create_tween().set_parallel(true)
+	_recoil_shot_serial += 1
+	_recoil_phase = &"impulse"
+	_recoil_recovery_complete = false
+	_fire_recoil_tween = create_tween()
 	_fire_recoil_tween.set_trans(Tween.TRANS_QUAD)
 	_fire_recoil_tween.set_ease(Tween.EASE_OUT)
-	_fire_recoil_tween.tween_property(mount, "position", kick_position, fire_recoil_out_seconds)
-	_fire_recoil_tween.tween_property(mount, "rotation_degrees", kick_rotation, fire_recoil_out_seconds)
-	_fire_recoil_tween.chain().tween_interval(fire_recoil_hold_seconds)
-	_fire_recoil_tween.tween_callback(func() -> void:
-		var recoil_reset := create_tween().set_parallel(true)
-		recoil_reset.set_trans(Tween.TRANS_SINE)
-		recoil_reset.set_ease(Tween.EASE_IN)
-		recoil_reset.tween_property(mount, "position", start_position, fire_recoil_return_seconds)
-		recoil_reset.tween_property(mount, "rotation_degrees", start_rotation, fire_recoil_return_seconds)
+	_fire_recoil_tween.tween_method(
+		_apply_recoil_pose.bind(mount, start_position, start_rotation, kick_position, kick_rotation),
+		0.0,
+		1.0,
+		fire_recoil_out_seconds,
 	)
+	_fire_recoil_tween.tween_callback(_mark_recoil_peak)
+	_fire_recoil_tween.tween_interval(fire_recoil_hold_seconds)
+	_fire_recoil_tween.tween_callback(_mark_recoil_recovery)
+	_fire_recoil_tween.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	_fire_recoil_tween.tween_method(
+		_apply_recoil_pose.bind(mount, kick_position, kick_rotation, _recoil_baseline_position, _recoil_baseline_rotation_degrees),
+		0.0,
+		1.0,
+		fire_recoil_return_seconds,
+	)
+	_fire_recoil_tween.tween_callback(_finish_recoil.bind(mount))
+
+
+func _apply_recoil_pose(weight: float, mount: Node3D, from_position: Vector3, from_rotation: Vector3, to_position: Vector3, to_rotation: Vector3) -> void:
+	if not is_instance_valid(mount):
+		return
+	mount.position = from_position.lerp(to_position, weight)
+	mount.rotation_degrees = from_rotation.lerp(to_rotation, weight)
+
+
+func _mark_recoil_peak() -> void:
+	_recoil_peak_serial += 1
+	_recoil_phase = &"peak_hold"
+
+
+func _mark_recoil_recovery() -> void:
+	_recoil_phase = &"recovery"
+
+
+func _finish_recoil(mount: Node3D) -> void:
+	if is_instance_valid(mount):
+		mount.position = _recoil_baseline_position
+		mount.rotation_degrees = _recoil_baseline_rotation_degrees
+	_recoil_phase = &"settled"
+	_recoil_recovery_complete = true
+
+
+func recoil_state() -> Dictionary:
+	var mount := _viewmodel_mount()
+	var current_position := mount.position if mount != null else Vector3.ZERO
+	var current_rotation := mount.rotation_degrees if mount != null else Vector3.ZERO
+	return {
+		"phase": _recoil_phase,
+		"shot_serial": _recoil_shot_serial,
+		"peak_serial": _recoil_peak_serial,
+		"current_position_offset": current_position - _recoil_baseline_position,
+		"current_rotation_offset_degrees": current_rotation - _recoil_baseline_rotation_degrees,
+		"baseline_position": _recoil_baseline_position,
+		"baseline_rotation_degrees": _recoil_baseline_rotation_degrees,
+		"baseline_position_error": current_position.distance_to(_recoil_baseline_position),
+		"baseline_rotation_error_degrees": current_rotation.distance_to(_recoil_baseline_rotation_degrees),
+		"recovery_complete": _recoil_recovery_complete,
+	}
 
 
 func _play_audio_with_timeout(player: AudioStreamPlayer, pitch_base: float, pitch_spread: float, timeout_seconds: float) -> void:
