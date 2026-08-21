@@ -172,7 +172,7 @@ func _on_navigation_bake_finished() -> void:
 			break
 		if (
 			topology_binding_report.get("failure_reason", &"") == &"spawn_alpha_route_budget_unavailable"
-			and int(deployment_anchor_selection.get("candidate_count", 0)) > 0
+			and int(deployment_anchor_selection.get("evaluated_pair_count", 0)) > 0
 		):
 			break
 	navigation_ready = topology_ready
@@ -199,6 +199,8 @@ func _bind_product_anchors() -> bool:
 		projected["charlie"],
 		player,
 	)
+	if deployment_anchor_selection.get("accepted", false) == true:
+		projected["alpha"] = deployment_anchor_selection["alpha_position"]
 	projected["spawn"] = deployment_anchor_selection.get(
 		"position",
 		NavigationServer3D.map_get_closest_point(nav_map, Vector3.ZERO),
@@ -228,11 +230,11 @@ func _bind_product_anchors() -> bool:
 	)
 	var spawn_to_a_length := _path_length(edges["spawn_to_a"])
 	var predicted_effective_seconds := spawn_to_a_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED
-	var route_budget_accepted: bool = (
-		deployment_anchor_selection.get("accepted", false) == true
-		and predicted_effective_seconds >= ROUTE_MIN_EFFECTIVE_SECONDS
-		and predicted_effective_seconds <= ROUTE_MAX_EFFECTIVE_SECONDS
-	)
+	# Prediction ranks a provisional native anchor pair only. The RouteProbe's
+	# fresh ordinary-input first-overlap receipt is the acceptance authority.
+	var route_pair_provisional_accepted: bool = deployment_anchor_selection.get("accepted", false) == true
+	var predicted_within_budget := predicted_effective_seconds >= ROUTE_MIN_EFFECTIVE_SECONDS and predicted_effective_seconds <= ROUTE_MAX_EFFECTIVE_SECONDS
+	var route_budget_accepted := false
 	var anchor_validation := {}
 	if player != null:
 		for id in projected:
@@ -249,7 +251,7 @@ func _bind_product_anchors() -> bool:
 	# Preserve the last accepted topology when the intact authored navigation has
 	# no compliant spawn/Alpha pair. The report keeps the route-budget failure
 	# explicit without disabling deployment, combat, or lifecycle foundations.
-	var transaction_accepted: bool = connected and all_anchors_valid and all_routes_clear and bool(first_escape.get("accepted", false))
+	var transaction_accepted: bool = route_pair_provisional_accepted and connected and all_anchors_valid and all_routes_clear and bool(first_escape.get("accepted", false))
 	if transaction_accepted:
 		$Alpha.global_position = projected["alpha"] + Vector3.UP * 1.2
 		$Bravo.global_position = projected["bravo"] + Vector3.UP * 1.2
@@ -258,7 +260,7 @@ func _bind_product_anchors() -> bool:
 			var first_corner := _first_meaningful_corner(edges["spawn_to_a"], projected["spawn"])
 			player.call(&"bind_deployment_to_walkable", projected["spawn"] + Vector3.UP * 0.9, first_corner + Vector3.UP * 0.9)
 	var failure_reason := &""
-	if not route_budget_accepted:
+	if not route_pair_provisional_accepted:
 		failure_reason = &"spawn_alpha_route_budget_unavailable"
 	elif not connected:
 		failure_reason = &"route_disconnected"
@@ -268,6 +270,8 @@ func _bind_product_anchors() -> bool:
 		failure_reason = &"route_capsule_blocked"
 	elif not bool(first_escape.get("accepted", false)):
 		failure_reason = &"first_escape_blocked"
+	else:
+		failure_reason = &"spawn_alpha_route_budget_pending_observed_input"
 	topology_binding_report = {
 		"datum": "authored_standoff_navigation_map",
 		"hints": hints,
@@ -287,8 +291,11 @@ func _bind_product_anchors() -> bool:
 		"deployment_anchor_selection": deployment_anchor_selection.duplicate(true),
 		"spawn_to_alpha_route_length": snappedf(spawn_to_a_length, 0.01),
 		"predicted_effective_seconds": snappedf(predicted_effective_seconds, 0.01),
+		"predicted_within_budget": predicted_within_budget,
 		"route_budget_seconds": Vector2(ROUTE_MIN_EFFECTIVE_SECONDS, ROUTE_MAX_EFFECTIVE_SECONDS),
 		"route_budget_accepted": route_budget_accepted,
+		"route_budget_acceptance_authority": &"route_probe_first_legal_alpha_overlap",
+		"route_pair_provisional_accepted": route_pair_provisional_accepted,
 		"anchor_validation": anchor_validation.duplicate(true),
 		"capsule_clearance": route_clearance.duplicate(true),
 		"first_escape": first_escape.duplicate(true),
@@ -304,7 +311,7 @@ func _bind_product_anchors() -> bool:
 
 func _select_deployment_anchor(
 	nav_map: RID,
-	alpha_position: Vector3,
+	alpha_hint: Vector3,
 	bravo_position: Vector3,
 	charlie_position: Vector3,
 	player: CharacterBody3D,
@@ -313,15 +320,12 @@ func _select_deployment_anchor(
 		return {"accepted": false, "failure_reason": &"player_missing"}
 	var navigation_mesh := navigation_region.navigation_mesh
 	var vertices := navigation_mesh.get_vertices()
-	var candidates: Array[Dictionary] = []
+	var anchors: Array[Dictionary] = []
 	var minimum_route_length := INF
 	var maximum_route_length := 0.0
 	var minimum_position := Vector3.ZERO
 	var maximum_position := Vector3.ZERO
 	var has_navigation_bounds := false
-	var progression_direction := bravo_position - alpha_position
-	progression_direction.y = 0.0
-	progression_direction = progression_direction.normalized()
 	for polygon_index in navigation_mesh.get_polygon_count():
 		var polygon := navigation_mesh.get_polygon(polygon_index)
 		if polygon.is_empty():
@@ -338,15 +342,7 @@ func _select_deployment_anchor(
 			minimum_position = centroid
 			maximum_position = centroid
 			has_navigation_bounds = true
-		if absf(centroid.y - alpha_position.y) > 0.75:
-			continue
-		var spawn_side := centroid - alpha_position
-		spawn_side.y = 0.0
-		if spawn_side.dot(progression_direction) >= -5.0:
-			continue
-		if centroid.distance_to(bravo_position) <= alpha_position.distance_to(bravo_position):
-			continue
-		if centroid.distance_to(charlie_position) <= alpha_position.distance_to(charlie_position):
+		if absf(centroid.y - bravo_position.y) > 0.75:
 			continue
 		var validation: Dictionary = player.call(
 			&"validate_recovery_destination",
@@ -355,41 +351,77 @@ func _select_deployment_anchor(
 		)
 		if validation.get("accepted", false) != true:
 			continue
-		var raw_path := NavigationServer3D.map_get_path(nav_map, centroid, alpha_position, true)
-		if raw_path.size() < 2:
-			continue
-		var route_length := _path_length(raw_path)
-		minimum_route_length = minf(minimum_route_length, route_length)
-		maximum_route_length = maxf(maximum_route_length, route_length)
-		var predicted_seconds := route_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED
-		var sightline_blocked := _is_alpha_sightline_blocked(centroid, alpha_position, player)
-		candidates.append({
+		anchors.append({
 			"polygon_index": polygon_index,
 			"source_centroid": centroid,
-			"position": raw_path[0],
-			"raw_path": raw_path,
-			"raw_path_length": route_length,
-			"direct_distance": centroid.distance_to(alpha_position),
-			"predicted_effective_seconds": predicted_seconds,
-			"sightline_blocked": sightline_blocked,
-			"score": absf(predicted_seconds - ROUTE_TARGET_EFFECTIVE_SECONDS) + (0.0 if sightline_blocked else 100.0),
+			"position": NavigationServer3D.map_get_closest_point(nav_map, centroid),
 			"occupancy": validation,
 		})
-	candidates.sort_custom(_route_candidate_before)
+	# The previous search fixed Alpha and could see only a 29 m spawn radius.
+	# Search both product-owned anchors across the intact low-street navigation
+	# surface; authored geometry, navigation, collision and B/C remain untouched.
+	var alpha_candidates: Array[Dictionary] = anchors.duplicate(true)
+	alpha_candidates.sort_custom(_alpha_candidate_before.bind(bravo_position, alpha_hint))
+	var raw_pairs: Array[Dictionary] = []
+	var evaluated_pair_count := 0
+	for alpha_index in mini(alpha_candidates.size(), 48):
+		var alpha_candidate: Dictionary = alpha_candidates[alpha_index]
+		var alpha_position: Vector3 = alpha_candidate["position"]
+		if alpha_position.distance_to(bravo_position) <= 10.0 or alpha_position.distance_to(charlie_position) <= 10.0:
+			continue
+		var alpha_to_bravo := NavigationServer3D.map_get_path(nav_map, alpha_position, bravo_position, true)
+		if alpha_to_bravo.size() < 2:
+			continue
+		var spawn_candidates: Array[Dictionary] = anchors.duplicate(true)
+		spawn_candidates.sort_custom(_spawn_candidate_before.bind(alpha_position))
+		for spawn_index in mini(spawn_candidates.size(), 72):
+			evaluated_pair_count += 1
+			var spawn_candidate: Dictionary = spawn_candidates[spawn_index]
+			var spawn_position: Vector3 = spawn_candidate["position"]
+			if spawn_position.distance_to(alpha_position) < ROUTE_MIN_EFFECTIVE_SECONDS * CALIBRATED_EFFECTIVE_ROUTE_SPEED * 0.62:
+				continue
+			var raw_path := NavigationServer3D.map_get_path(nav_map, spawn_position, alpha_position, true)
+			if raw_path.size() < 2:
+				continue
+			var route_length := _path_length(raw_path)
+			minimum_route_length = minf(minimum_route_length, route_length)
+			maximum_route_length = maxf(maximum_route_length, route_length)
+			var predicted_seconds := route_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED
+			# The intact map's measured native navigation diameter is slightly
+			# below the old linear pace estimate. Keep prediction diagnostic and
+			# admit the longest native pairs for ordinary-input qualification.
+			if route_length < ROUTE_MIN_EFFECTIVE_SECONDS * CALIBRATED_EFFECTIVE_ROUTE_SPEED * 0.88 or predicted_seconds > ROUTE_MAX_EFFECTIVE_SECONDS:
+				continue
+			var sightline_blocked := _is_alpha_sightline_blocked(spawn_position, alpha_position, player)
+			if not sightline_blocked:
+				continue
+			raw_pairs.append({
+				"polygon_index": int(spawn_candidate["polygon_index"]),
+				"alpha_polygon_index": int(alpha_candidate["polygon_index"]),
+				"source_centroid": spawn_candidate["source_centroid"],
+				"position": raw_path[0],
+				"alpha_position": raw_path[raw_path.size() - 1],
+				"alpha_source_centroid": alpha_candidate["source_centroid"],
+				"raw_path": raw_path,
+				"raw_path_length": route_length,
+				"alpha_to_bravo_length": _path_length(alpha_to_bravo),
+				"direct_distance": spawn_position.distance_to(alpha_position),
+				"predicted_effective_seconds": predicted_seconds,
+				"sightline_blocked": true,
+				"score": absf(predicted_seconds - ROUTE_TARGET_EFFECTIVE_SECONDS),
+				"occupancy": spawn_candidate["occupancy"],
+				"alpha_occupancy": alpha_candidate["occupancy"],
+			})
+	raw_pairs.sort_custom(_route_candidate_before)
 	var inspected_count := 0
-	for candidate in candidates:
+	for candidate in raw_pairs:
 		if inspected_count >= 32:
 			break
 		inspected_count += 1
-		var predicted_seconds := float(candidate["predicted_effective_seconds"])
-		if predicted_seconds < ROUTE_MIN_EFFECTIVE_SECONDS or predicted_seconds > ROUTE_MAX_EFFECTIVE_SECONDS:
-			continue
-		if candidate.get("sightline_blocked", false) != true:
-			continue
 		var repaired_path := _build_capsule_clear_route(candidate["raw_path"], player, nav_map)
 		var repaired_length := _path_length(repaired_path)
 		var repaired_seconds := repaired_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED
-		if repaired_seconds < ROUTE_MIN_EFFECTIVE_SECONDS or repaired_seconds > ROUTE_MAX_EFFECTIVE_SECONDS:
+		if repaired_length < ROUTE_MIN_EFFECTIVE_SECONDS * CALIBRATED_EFFECTIVE_ROUTE_SPEED * 0.88 or repaired_seconds > ROUTE_MAX_EFFECTIVE_SECONDS:
 			continue
 		var clearance := _route_clearance_for_path(repaired_path, player)
 		var first_escape := _first_escape_validation(repaired_path, player)
@@ -402,7 +434,9 @@ func _select_deployment_anchor(
 		selected["predicted_effective_seconds"] = repaired_seconds
 		selected["clearance"] = clearance
 		selected["first_escape"] = first_escape
-		selected["candidate_count"] = candidates.size()
+		selected["candidate_count"] = anchors.size()
+		selected["pair_candidate_count"] = raw_pairs.size()
+		selected["evaluated_pair_count"] = evaluated_pair_count
 		selected["inspected_count"] = inspected_count
 		selected["navigation_route_length_range"] = Vector2(
 			0.0 if is_inf(minimum_route_length) else minimum_route_length,
@@ -415,8 +449,10 @@ func _select_deployment_anchor(
 		return selected
 	return {
 		"accepted": false,
-		"failure_reason": &"no_collision_backed_route_within_budget",
-		"candidate_count": candidates.size(),
+		"failure_reason": &"no_collision_backed_spawn_alpha_pair_within_budget",
+		"candidate_count": anchors.size(),
+		"pair_candidate_count": raw_pairs.size(),
+		"evaluated_pair_count": evaluated_pair_count,
 		"inspected_count": inspected_count,
 		"navigation_route_length_range": Vector2(
 			0.0 if is_inf(minimum_route_length) else minimum_route_length,
@@ -427,6 +463,26 @@ func _select_deployment_anchor(
 			maximum_position - minimum_position if has_navigation_bounds else Vector3.ZERO,
 		),
 	}
+
+
+func _alpha_candidate_before(a: Dictionary, b: Dictionary, bravo_position: Vector3, alpha_hint: Vector3) -> bool:
+	var a_position: Vector3 = a["position"]
+	var b_position: Vector3 = b["position"]
+	var a_score := a_position.distance_to(bravo_position) + a_position.distance_to(alpha_hint) * 0.15
+	var b_score := b_position.distance_to(bravo_position) + b_position.distance_to(alpha_hint) * 0.15
+	if is_equal_approx(a_score, b_score):
+		return int(a["polygon_index"]) < int(b["polygon_index"])
+	return a_score > b_score
+
+
+func _spawn_candidate_before(a: Dictionary, b: Dictionary, alpha_position: Vector3) -> bool:
+	var a_position: Vector3 = a["position"]
+	var b_position: Vector3 = b["position"]
+	var a_distance := a_position.distance_to(alpha_position)
+	var b_distance := b_position.distance_to(alpha_position)
+	if is_equal_approx(a_distance, b_distance):
+		return int(a["polygon_index"]) < int(b["polygon_index"])
+	return a_distance > b_distance
 
 
 func _route_candidate_before(a: Dictionary, b: Dictionary) -> bool:

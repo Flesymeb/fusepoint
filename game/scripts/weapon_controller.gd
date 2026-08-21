@@ -72,6 +72,14 @@ var _ads_history: Array[Dictionary] = []
 var _viewmodel_ads_settled := false
 var _ads_transition_complete := true
 var _ads_transition_serial := 0
+var _product_recoil_tween: Tween
+var _product_recoil_mount: Node3D
+var _product_recoil_baseline_position := Vector3.ZERO
+var _product_recoil_baseline_rotation_degrees := Vector3.ZERO
+var _product_recoil_phase := &"settled"
+var _product_recoil_shot_serial := 0
+var _product_recoil_peak_serial := 0
+var _product_recoil_recovery_complete := true
 
 
 func _ready() -> void:
@@ -91,6 +99,7 @@ func _ready() -> void:
 
 func _finish_ready() -> void:
 	await get_tree().process_frame
+	_capture_product_recoil_baseline(true)
 	_ready_for_combat = true
 	_sync_hud()
 	weapon_state_changed.emit(_mcp_state())
@@ -319,6 +328,7 @@ func _try_submit_shot() -> Dictionary:
 	_action_until = _now() + 0.07
 	_recovery_until = _now() + float(weapon["recovery_seconds"])
 	feedback.call(&"trigger_fire", weapon["fire_mode"] == FIRE_MODE_AUTO)
+	_trigger_product_recoil(weapon["fire_mode"] == FIRE_MODE_AUTO)
 	_present_shot_result(receipt)
 	shot_resolved.emit(receipt.duplicate(true))
 	weapon_state_changed.emit(_mcp_state())
@@ -499,6 +509,8 @@ func _equip_weapon(weapon_id: StringName) -> void:
 
 
 func _on_viewmodel_weapon_changed(weapon_id: StringName, _weapon_index: int) -> void:
+	_cancel_product_recoil()
+	_capture_product_recoil_baseline(true)
 	_equipped_id = weapon_id
 	_pending_equipped_id = &""
 	_action_state = &"hip"
@@ -537,6 +549,9 @@ func _cancel_action(next_state: StringName) -> void:
 	_reload_kind = &"none"
 	if _inspect_tween != null and _inspect_tween.is_valid():
 		_inspect_tween.kill()
+	if feedback.has_method(&"stop_feedback"):
+		feedback.call(&"stop_feedback")
+	_cancel_product_recoil()
 	viewmodel.rotation_degrees = Vector3.ZERO
 	_request_viewmodel_aim(false, true)
 	_action_state = next_state
@@ -580,6 +595,116 @@ func _fresh_weapon_data() -> Dictionary:
 
 func _fire_interval() -> float:
 	return 60.0 / float(_current_weapon()["rounds_per_minute"])
+
+
+func _capture_product_recoil_baseline(force := false) -> bool:
+	var mount := viewmodel.get("model_mount") as Node3D
+	if mount == null:
+		return false
+	if force or mount != _product_recoil_mount:
+		_product_recoil_mount = mount
+		_product_recoil_baseline_position = mount.position
+		_product_recoil_baseline_rotation_degrees = mount.rotation_degrees
+	return true
+
+
+func _trigger_product_recoil(auto_fire: bool) -> void:
+	# The materialized component retains its authored feedback implementation.
+	# Fusepoint owns cadence/lifecycle authority, so cancel the component-local
+	# tween before its first frame and coordinate recoil from one stable product
+	# baseline instead of promoting a displaced pose to the next shot origin.
+	if feedback.has_method(&"_stop_fire_recoil"):
+		feedback.call(&"_stop_fire_recoil")
+	if not _capture_product_recoil_baseline():
+		return
+	if _product_recoil_tween != null and _product_recoil_tween.is_valid():
+		_product_recoil_tween.kill()
+	var mount := _product_recoil_mount
+	var kick_scale := 0.65 if auto_fire else 1.0
+	var start_position := mount.position
+	var start_rotation := mount.rotation_degrees
+	var kick_position := _product_recoil_baseline_position + Vector3(
+		0.0,
+		0.0,
+		-float(feedback.get("fire_recoil_back_distance")) * kick_scale,
+	)
+	var kick_rotation := _product_recoil_baseline_rotation_degrees + Vector3(
+		-float(feedback.get("fire_recoil_pitch_degrees")) * kick_scale,
+		(randf() * 2.0 - 1.0) * float(feedback.get("fire_recoil_yaw_degrees")) * kick_scale,
+		(randf() * 2.0 - 1.0) * float(feedback.get("fire_recoil_roll_degrees")) * kick_scale,
+	)
+	_product_recoil_shot_serial += 1
+	_product_recoil_phase = &"impulse"
+	_product_recoil_recovery_complete = false
+	_product_recoil_tween = create_tween()
+	_product_recoil_tween.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_product_recoil_tween.tween_method(
+		_apply_product_recoil_pose.bind(mount, start_position, start_rotation, kick_position, kick_rotation),
+		0.0,
+		1.0,
+		float(feedback.get("fire_recoil_out_seconds")),
+	)
+	_product_recoil_tween.tween_callback(_mark_product_recoil_peak)
+	_product_recoil_tween.tween_interval(float(feedback.get("fire_recoil_hold_seconds")))
+	_product_recoil_tween.tween_callback(_mark_product_recoil_recovery)
+	_product_recoil_tween.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	_product_recoil_tween.tween_method(
+		_apply_product_recoil_pose.bind(mount, kick_position, kick_rotation, _product_recoil_baseline_position, _product_recoil_baseline_rotation_degrees),
+		0.0,
+		1.0,
+		float(feedback.get("fire_recoil_return_seconds")),
+	)
+	_product_recoil_tween.tween_callback(_finish_product_recoil.bind(mount))
+
+
+func _apply_product_recoil_pose(weight: float, mount: Node3D, from_position: Vector3, from_rotation: Vector3, to_position: Vector3, to_rotation: Vector3) -> void:
+	if not is_instance_valid(mount) or mount != _product_recoil_mount:
+		return
+	mount.position = from_position.lerp(to_position, weight)
+	mount.rotation_degrees = from_rotation.lerp(to_rotation, weight)
+
+
+func _mark_product_recoil_peak() -> void:
+	_product_recoil_peak_serial += 1
+	_product_recoil_phase = &"peak_hold"
+
+
+func _mark_product_recoil_recovery() -> void:
+	_product_recoil_phase = &"recovery"
+
+
+func _finish_product_recoil(mount: Node3D) -> void:
+	if is_instance_valid(mount) and mount == _product_recoil_mount:
+		mount.position = _product_recoil_baseline_position
+		mount.rotation_degrees = _product_recoil_baseline_rotation_degrees
+	_product_recoil_phase = &"settled"
+	_product_recoil_recovery_complete = true
+
+
+func _cancel_product_recoil() -> void:
+	if _product_recoil_tween != null and _product_recoil_tween.is_valid():
+		_product_recoil_tween.kill()
+	_product_recoil_tween = null
+	if is_instance_valid(_product_recoil_mount):
+		_product_recoil_mount.position = _product_recoil_baseline_position
+		_product_recoil_mount.rotation_degrees = _product_recoil_baseline_rotation_degrees
+	_product_recoil_phase = &"settled"
+	_product_recoil_recovery_complete = true
+
+
+func _product_recoil_state() -> Dictionary:
+	var current_position := _product_recoil_mount.position if is_instance_valid(_product_recoil_mount) else Vector3.ZERO
+	var current_rotation := _product_recoil_mount.rotation_degrees if is_instance_valid(_product_recoil_mount) else Vector3.ZERO
+	return {
+		"phase": _product_recoil_phase,
+		"shot_serial": _product_recoil_shot_serial,
+		"peak_serial": _product_recoil_peak_serial,
+		"current_position_offset": current_position - _product_recoil_baseline_position,
+		"current_rotation_offset_degrees": current_rotation - _product_recoil_baseline_rotation_degrees,
+		"baseline_position_error": current_position.distance_to(_product_recoil_baseline_position),
+		"baseline_rotation_error_degrees": current_rotation.distance_to(_product_recoil_baseline_rotation_degrees),
+		"recovery_complete": _product_recoil_recovery_complete,
+	}
 
 
 func _current_weapon() -> Dictionary:
@@ -821,6 +946,7 @@ func reset_transient_state_for_restore() -> void:
 		hud_result.text = ""
 	shot_feedback.reset_feedback()
 	_clear_live_impacts()
+	_cancel_product_recoil()
 	_transient_reset_complete = true
 
 
@@ -955,7 +1081,7 @@ func _record_input_edge(
 func _mcp_state() -> Dictionary:
 	var weapon := _current_weapon()
 	var audit := _visible_rig_audit()
-	var recoil: Dictionary = feedback.call(&"recoil_state") if feedback.has_method(&"recoil_state") else {}
+	var recoil: Dictionary = _product_recoil_state()
 	var profile: FPSViewmodelProfile = viewmodel.call(&"current_profile") as FPSViewmodelProfile
 	var target_position := viewmodel.position
 	var target_scale := viewmodel.scale
