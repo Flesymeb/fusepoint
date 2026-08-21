@@ -1,0 +1,17 @@
+{
+  "name": "fusepoint_opening_final",
+  "fps": 12,
+  "frames_dir": "frames",
+  "spritesheet": "spritesheet.png",
+  "preview_gif": "preview.gif",
+  "godot_preview": "godot_preview",
+  "provider": "bailian-i2v",
+  "model": "wan2.7-i2v-2026-04-25",
+  "prompt": "continue this exact realistic industrial military base shot as a restrained opening cinematic, slow steady forward dolly toward the illuminated rocket converter, wet concrete reflecting cyan and amber practical lights, cranes and pipes remain structurally stable, smoke plume drifts slowly, small controlled ignition grows inside the circular converter in the final second, grounded tactical photorealism, no scene cut, no people, no logos, no text, no subtitles, no interface, no watermark",
+  "task_id": "6ed8d9c3-1af1-43f1-ab8c-f9442cfa2e70",
+  "source_video": "source.mp4",
+  "video_url_expires": true,
+  "chroma": "none",
+  "frame_count": 60,
+  "asset_kind": "environment"
+}

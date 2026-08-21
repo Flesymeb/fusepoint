@@ -1,0 +1,17 @@
+{
+  "name": "fusepoint_opening_daylight",
+  "fps": 12,
+  "frames_dir": "frames",
+  "spritesheet": "spritesheet.png",
+  "preview_gif": "preview.gif",
+  "godot_preview": "godot_preview",
+  "provider": "bailian-t2v",
+  "model": "wanx2.1-t2v-turbo",
+  "prompt": "bright clear late-morning daylight cinematic of a realistic military industrial rocket maintenance base, blue sky with sunlit concrete, converter hall, pipes, cranes, wet ground and subtle smoke, strong natural daylight and readable shadows, restrained cyan safety beacons and amber warning lights, slow stable forward camera move through the service yard toward a red-lit converter, grounded tactical photorealism matching a modern FPS map, no night, no dusk, no people, no characters, no logos, no text, no subtitles, no interface, no watermark, one continuous 16:9 shot",
+  "task_id": "7e7880f2-54d0-4129-9475-d3cc63bcad85",
+  "source_video": "source.mp4",
+  "video_url_expires": true,
+  "chroma": "none",
+  "frame_count": 64,
+  "asset_kind": "environment"
+}

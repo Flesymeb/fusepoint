@@ -1,0 +1,17 @@
+{
+  "request_id": "ca26f43d-522e-9363-a66d-45a749b0e356",
+  "output": {
+    "task_id": "7e7880f2-54d0-4129-9475-d3cc63bcad85",
+    "task_status": "SUCCEEDED",
+    "submit_time": "2026-08-22 02:07:48.439",
+    "scheduled_time": "2026-08-22 02:07:48.480",
+    "end_time": "2026-08-22 02:08:16.855",
+    "orig_prompt": "bright clear late-morning daylight cinematic of a realistic military industrial rocket maintenance base, blue sky with sunlit concrete, converter hall, pipes, cranes, wet ground and subtle smoke, strong natural daylight and readable shadows, restrained cyan safety beacons and amber warning lights, slow stable forward camera move through the service yard toward a red-lit converter, grounded tactical photorealism matching a modern FPS map, no night, no dusk, no people, no characters, no logos, no text, no subtitles, no interface, no watermark, one continuous 16:9 shot",
+    "video_url": "https://dashscope-result-wlcb-acdr-1.oss-cn-wulanchabu-acdr-1.aliyuncs.com/1d/79/20260822/ad0627fd/7e7880f2-54d0-4129-9475-d3cc63bcad85.mp4?Expires=1787422096&OSSAccessKeyId=LTAI5tKPD3TMqf2Lna1fASuh&Signature=LkpJdfu%2BpdewPELkpMjpByzCsDs%3D"
+  },
+  "usage": {
+    "video_duration": 5,
+    "video_ratio": "832*480",
+    "video_count": 1
+  }
+}

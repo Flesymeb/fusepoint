@@ -1,0 +1,19 @@
+{
+  "request_id": "2c0aee22-cf9b-98f1-a563-feaa9c685b77",
+  "output": {
+    "task_id": "6ed8d9c3-1af1-43f1-ab8c-f9442cfa2e70",
+    "task_status": "SUCCEEDED",
+    "submit_time": "2026-08-22 02:06:16.646",
+    "scheduled_time": "2026-08-22 02:06:16.701",
+    "end_time": "2026-08-22 02:06:49.502",
+    "orig_prompt": "continue this exact realistic industrial military base shot as a restrained opening cinematic, slow steady forward dolly toward the illuminated rocket converter, wet concrete reflecting cyan and amber practical lights, cranes and pipes remain structurally stable, smoke plume drifts slowly, small controlled ignition grows inside the circular converter in the final second, grounded tactical photorealism, no scene cut, no people, no logos, no text, no subtitles, no interface, no watermark",
+    "video_url": "https://dashscope-a717.oss-accelerate.aliyuncs.com/1d/12/20260822/26ad5d64/19526157-metadata_user_930847c20eb02018.mp4?Expires=1787422008&OSSAccessKeyId=LTAI5tJjG6wsHad1Sf7iezX4&Signature=XTI7rMRMmVNi3t8o3GzAOaR3mLk%3D"
+  },
+  "usage": {
+    "duration": 5,
+    "input_video_duration": 0,
+    "output_video_duration": 5,
+    "video_count": 1,
+    "SR": 720
+  }
+}

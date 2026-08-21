@@ -26,6 +26,10 @@ var _measurement_generation := 0
 var _measurement_source := &"initial_ready"
 var _first_movement: Dictionary = {}
 var _completion_result: Dictionary = {}
+var _route_milestones: Array[Dictionary] = []
+var _capture_receipts: Array[Dictionary] = []
+var _last_capture_signature := ""
+var _run_epoch := 0
 
 
 func _ready() -> void:
@@ -38,6 +42,9 @@ func _ready() -> void:
 	var arena := get_node_or_null(arena_path)
 	if arena != null and arena.has_signal("walkable_topology_bound"):
 		arena.connect("walkable_topology_bound", Callable(self, "_on_topology_bound"))
+	var mission := get_tree().get_first_node_in_group(&"mission_controller")
+	if mission != null and mission.has_signal(&"mission_event_committed"):
+		mission.connect(&"mission_event_committed", Callable(self, "_on_mission_event"))
 	_reset_trace(&"initial_ready")
 
 
@@ -59,6 +66,9 @@ func _reset_trace(source: StringName = &"spawn_reset") -> void:
 	route_samples.clear()
 	_first_movement.clear()
 	_completion_result.clear()
+	_route_milestones.clear()
+	_capture_receipts.clear()
+	_last_capture_signature = ""
 	_measurement_source = source
 	_measurement_generation += 1
 	if player != null:
@@ -66,13 +76,14 @@ func _reset_trace(source: StringName = &"spawn_reset") -> void:
 		_last_player_position = player.global_position
 		var player_state: Dictionary = player.call(&"_mcp_state")
 		_measurement_generation = int(player_state.get("deployment_generation", _measurement_generation))
+	var mission := get_tree().get_first_node_in_group(&"mission_controller")
+	_run_epoch = int(mission.get("run_epoch")) if mission != null else 0
+	_append_route_milestone(&"generation_reset", {"source": source})
 
 
 func _physics_process(delta: float) -> void:
 	var player := get_node_or_null(player_path) as CharacterBody3D
 	if player == null:
-		return
-	if not _completion_result.is_empty():
 		return
 	total_elapsed_seconds += delta
 	if player.is_on_floor():
@@ -91,6 +102,7 @@ func _physics_process(delta: float) -> void:
 				"elapsed_seconds": snappedf(maxf(total_elapsed_seconds - delta, 0.0), 0.001),
 				"position": player.global_position,
 			}
+			_append_route_milestone(&"first_movement", _first_movement)
 		effective_traversal_seconds += delta
 		path_length_traveled += horizontal_displacement
 	_last_player_position = player.global_position
@@ -100,6 +112,80 @@ func _physics_process(delta: float) -> void:
 		_sample_clock = 0.0
 		_append_sample(player, horizontal_speed)
 	_latch_first_legal_alpha_overlap(player)
+	_update_authoritative_capture_receipt(player)
+	_update_progress_milestones(player)
+
+
+func _on_mission_event(event: Dictionary) -> void:
+	var kind := StringName(event.get("kind", &""))
+	if kind in [&"deployment_started", &"checkpoint_restored"]:
+		_reset_trace(kind)
+	elif kind in [&"capture_started", &"capture_progress", &"capture_contested", &"capture_interrupted", &"capture_completed"]:
+		_append_capture_receipt(kind, event)
+
+
+func _append_route_milestone(kind: StringName, payload: Dictionary = {}) -> void:
+	var receipt := payload.duplicate(true)
+	receipt["event_id"] = "run-%06d:route-g%04d:%s:%03d" % [_run_epoch, _measurement_generation, kind, _route_milestones.size() + 1]
+	receipt["kind"] = kind
+	receipt["run_epoch"] = _run_epoch
+	receipt["measurement_generation"] = _measurement_generation
+	receipt["committed_frame"] = Engine.get_process_frames()
+	receipt["committed_at_usec"] = Time.get_ticks_usec()
+	_route_milestones.append(receipt)
+	while _route_milestones.size() > 32:
+		_route_milestones.pop_front()
+
+
+func _append_capture_receipt(kind: StringName, payload: Dictionary) -> void:
+	var receipt := payload.duplicate(true)
+	receipt["kind"] = kind
+	receipt["run_epoch"] = _run_epoch
+	receipt["measurement_generation"] = _measurement_generation
+	receipt["committed_frame"] = int(receipt.get("committed_frame", Engine.get_process_frames()))
+	receipt["committed_at_usec"] = int(receipt.get("committed_at_usec", Time.get_ticks_usec()))
+	_capture_receipts.append(receipt)
+	while _capture_receipts.size() > 32:
+		_capture_receipts.pop_front()
+
+
+func _update_authoritative_capture_receipt(player: CharacterBody3D) -> void:
+	var alpha := get_node_or_null(alpha_path) as Area3D
+	var mission := get_tree().get_first_node_in_group(&"mission_controller")
+	if alpha == null or mission == null:
+		return
+	var state: Dictionary = mission.call(&"objective_state_for", &"alpha")
+	var overlap := alpha.overlaps_body(player)
+	var progress_bucket := int(floor(float(state.get("progress", 0.0)) * 20.0))
+	var signature := "%s:%s:%d" % [overlap, String(state.get("state", &"unknown")), progress_bucket]
+	if signature == _last_capture_signature:
+		return
+	_last_capture_signature = signature
+	_append_capture_receipt(&"authoritative_alpha_sample", {
+		"event_id": "run-%06d:alpha-sample-g%04d:%03d" % [_run_epoch, _measurement_generation, _capture_receipts.size() + 1],
+		"overlap": overlap,
+		"legal": state.get("legal", false),
+		"progress": state.get("progress", 0.0),
+		"state": state.get("state", &"unknown"),
+		"owner": state.get("owner", &"unknown"),
+		"player_position": player.global_position,
+	})
+
+
+func _update_progress_milestones(player: CharacterBody3D) -> void:
+	if _first_movement.is_empty():
+		return
+	var route := _route_progress(player.global_position)
+	var ratio := float(route.get("progress_ratio", 0.0))
+	for milestone in [{"kind": &"early", "threshold": 0.08}, {"kind": &"middle", "threshold": 0.45}, {"kind": &"late", "threshold": 0.82}]:
+		var kind := StringName(milestone["kind"])
+		var already_recorded := _route_milestones.any(func(receipt: Dictionary) -> bool: return StringName(receipt.get("kind", &"")) == kind)
+		if not already_recorded and ratio >= float(milestone["threshold"]):
+			_append_route_milestone(kind, {
+				"player_position": player.global_position,
+				"route_progress": ratio,
+				"cross_track_distance": route.get("cross_track_distance", -1.0),
+			})
 
 
 func _latch_first_legal_alpha_overlap(player: CharacterBody3D) -> void:
@@ -130,6 +216,7 @@ func _latch_first_legal_alpha_overlap(player: CharacterBody3D) -> void:
 		"within_budget": effective_traversal_seconds >= EXPECTED_MIN_SECONDS and effective_traversal_seconds <= EXPECTED_MAX_SECONDS,
 		"latched": true,
 	}
+	_append_route_milestone(&"legal_alpha_overlap", _completion_result)
 
 
 func _update_collision_stall(player: CharacterBody3D, horizontal_speed: float, delta: float) -> void:
@@ -272,6 +359,7 @@ func _mcp_state() -> Dictionary:
 		"fixed_spawn": _fixed_spawn,
 		"measurement_generation": _measurement_generation,
 		"measurement_source": _measurement_source,
+		"run_epoch": _run_epoch,
 		"first_movement": _first_movement,
 		"completion_result": _completion_result,
 		"alpha_position": alpha.global_position,
@@ -297,4 +385,7 @@ func _mcp_state() -> Dictionary:
 		"collision_blocker": _last_blocker,
 		"objective_inside": objective_inside,
 		"bounded_samples": route_samples,
+		"route_milestones": _route_milestones,
+		"capture_receipts": _capture_receipts,
+		"causal_generation_bound": _route_milestones.all(func(receipt: Dictionary) -> bool: return int(receipt.get("measurement_generation", -1)) == _measurement_generation) and _capture_receipts.all(func(receipt: Dictionary) -> bool: return int(receipt.get("measurement_generation", -1)) == _measurement_generation),
 	}

@@ -1,0 +1,17 @@
+{
+  "name": "fusepoint_opening",
+  "fps": 12,
+  "frames_dir": "frames",
+  "spritesheet": "spritesheet.png",
+  "preview_gif": "preview.gif",
+  "godot_preview": "godot_preview",
+  "provider": "bailian-t2v",
+  "model": "wanx2.1-t2v-turbo",
+  "prompt": "cinematic realistic first-person military operation opening, abandoned industrial rocket maintenance base at cold dawn, wet concrete, cranes, pipes and converter hall, restrained cyan and amber practical lights, distant smoke and drifting embers, slow forward dolly through a secure breach toward a glowing reactor converter, tense grounded tactical atmosphere, high detail, no people close to camera, no logos, no text, no subtitles, no user interface, no watermark, one continuous shot, stable camera, 16:9 composition",
+  "task_id": "7002df8f-e09e-405f-b711-5f3ee681c4c9",
+  "source_video": "source.mp4",
+  "video_url_expires": true,
+  "chroma": "none",
+  "frame_count": 64,
+  "asset_kind": "environment"
+}

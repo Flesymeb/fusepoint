@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "asset_id": "fusepoint_opening_daylight_i2v",
+  "status": "provisionally_bound_pending_runtime_review",
+  "provider": "bailian-i2v",
+  "model": "wan2.7-i2v-2026-04-25",
+  "provider_task_id": "6460b7e8-eb91-4317-89f9-d5ecc38455ec",
+  "asset_kind": "environment",
+  "prompt": "bright clear late-morning daylight cinematic continuation of this realistic military industrial rocket maintenance base, preserve the blue sky, sunlit concrete, converter hall, pipes, cranes, wet ground, readable natural shadows, restrained cyan safety beacons and amber warning lights; slow stable forward camera move through the service yard toward the red-lit converter; grounded tactical photorealism matching a modern FPS map; no night, no dusk, no people, no characters, no logos, no text, no subtitles, no interface, no watermark, one continuous 16:9 shot",
+  "input_frames": [
+    {
+      "path": "../opening_fusepoint_daylight/frames/frame_000.png",
+      "sha256": "2378d63030b4ee2d98e9c6a9e0884c27fc731ba1dce020b822d2bd6d643a2a35"
+    },
+    {
+      "path": "../opening_fusepoint_daylight/frames/frame_063.png",
+      "sha256": "0f51796a5c3d763ee6865ebfff67f3ecdbe4afd350a5c6da2339e86b539ccf4d"
+    }
+  ],
+  "provider_output": {
+    "path": "source.mp4",
+    "sha256": "d9f644fbd0eae977e6985be8a80ae23af9b39b7282d60f2caca032c5b15a66a0",
+    "duration_seconds": 5.06,
+    "width": 1264,
+    "height": 728,
+    "frame_count": 60
+  },
+  "runtime_materialization": {
+    "path": "../../../../assets/cinematics/fusepoint_opening.ogv",
+    "sha256": "1529447bdd1cdeaa3c34abf3aa6920d402b58d8abd295f8d538374d61bfc6352",
+    "video_codec": "theora",
+    "audio_codec": "vorbis",
+    "looped_under_native_captions": true,
+    "minimum_presentation_seconds": 9.6
+  },
+  "provider_receipts": [
+    {
+      "path": "bailian_create_response.json",
+      "sha256": "32dd45ed6d610be6568be52e566c04c0455e8493cbc7cd30c8f9bdd77daaacbc"
+    },
+    {
+      "path": "bailian_task_response.json",
+      "sha256": "4834b8c78129e21b52550537fa7d5b291700c320f5b27353f668b56cf81c1a20"
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "612959f2ef8d8206e16122c699c16a7902342f7472e07a8107d9a2fd9e0c0f14"
+    }
+  ],
+  "selection_notes": "Chosen after contact-sheet review because its bright daylight, blue sky, wet industrial yard, cyan safety beacons, amber accents, and absence of baked text match the accepted environment baseline and Fusepoint visual hierarchy. Runtime acceptance remains subject to candidate-bound Godot playback evidence."
+}

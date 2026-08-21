@@ -162,8 +162,21 @@ func _on_roster_event(wrapper: Dictionary) -> void:
 	if kind not in JOINED_ENEMY_KINDS:
 		return
 	var row := _ensure_row(event_id, &"enemy_death" if kind == &"died" else &"enemy_%s" % kind)
+	var source_payload: Dictionary = enemy_event.get("payload", {})
 	row["source_actor"] = String(enemy_event.get("actor_id", ""))
-	row["source_weapon"] = String((enemy_event.get("payload", {}) as Dictionary).get("weapon_id", "rift_carbine"))
+	row["source_weapon"] = String(source_payload.get("weapon_id", "rift_carbine"))
+	if kind == &"shot_resolved":
+		row["ballistic_result"] = StringName(source_payload.get("result", &"unknown"))
+		row["surface"] = StringName(source_payload.get("surface_kind", &"unknown"))
+		row["target_path"] = String(source_payload.get("target_path", ""))
+		row["ammo_commit"] = int(source_payload.get("ammo_commit", 0))
+		row["damage_result"] = {
+			"committed": source_payload.get("applied", false) == true,
+			"amount": source_payload.get("damage", 0.0),
+			"health_before": source_payload.get("health_before", -1.0),
+			"health_after": source_payload.get("health_after", -1.0),
+		}
+		row["occlusion_result"] = StringName(source_payload.get("result", &"unknown"))
 	_set_channel(row, &"enemy_authority", enemy_event)
 	var actor: Dictionary = _enemy_snapshot(StringName(enemy_event.get("actor_id", &"")))
 	if not actor.is_empty():

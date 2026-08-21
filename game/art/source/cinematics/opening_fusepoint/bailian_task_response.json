@@ -1,0 +1,17 @@
+{
+  "request_id": "5226d412-46a7-90a4-a86f-ac929aa7d827",
+  "output": {
+    "task_id": "7002df8f-e09e-405f-b711-5f3ee681c4c9",
+    "task_status": "SUCCEEDED",
+    "submit_time": "2026-08-22 02:04:10.896",
+    "scheduled_time": "2026-08-22 02:04:10.955",
+    "end_time": "2026-08-22 02:04:39.584",
+    "orig_prompt": "cinematic realistic first-person military operation opening, abandoned industrial rocket maintenance base at cold dawn, wet concrete, cranes, pipes and converter hall, restrained cyan and amber practical lights, distant smoke and drifting embers, slow forward dolly through a secure breach toward a glowing reactor converter, tense grounded tactical atmosphere, high detail, no people close to camera, no logos, no text, no subtitles, no user interface, no watermark, one continuous shot, stable camera, 16:9 composition",
+    "video_url": "https://dashscope-result-wlcb-acdr-1.oss-cn-wulanchabu-acdr-1.aliyuncs.com/1d/c8/20260822/ad0627fd/7002df8f-e09e-405f-b711-5f3ee681c4c9.mp4?Expires=1787421879&OSSAccessKeyId=LTAI5tKPD3TMqf2Lna1fASuh&Signature=5bAnycfM5Crb8VOYTQpzey1soek%3D"
+  },
+  "usage": {
+    "video_duration": 5,
+    "video_ratio": "832*480",
+    "video_count": 1
+  }
+}

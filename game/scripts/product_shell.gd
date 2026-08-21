@@ -22,10 +22,11 @@ const BRIEFING_CAPTIONS: Array[String] = [
 	"RETAKE ALPHA. SECURE BRAVO.\nRECOVER BOTH DEFUSAL KEYS.",
 	"BREACH CHARLIE AND DISMANTLE THE DEVICE.\nSUPPORT IS NOT COMING.",
 ]
-const BRIEFING_BEAT_SECONDS := 2.4
+const BRIEFING_BEAT_SECONDS := 2.5
 const TRANSITION_HISTORY_LIMIT := 32
 const TERMINAL_RESULT_RECEIPT_LIMIT := 4
 const SAFE_AREA_RATIO := 0.05
+const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v2"
 const LIFECYCLE_TABLE := {
 	&"title": {"predecessors":[&"title",&"loadout",&"briefing",&"settings",&"pause",&"death_recovery",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/TitlePage/Menu/StartButton"},
 	&"loadout": {"predecessors":[&"title",&"briefing",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/LoadoutPage/Content/Weapons/AKButton"},
@@ -58,6 +59,7 @@ const LIFECYCLE_ACTIONS := {
 @onready var hud: CanvasLayer = get_node("../TacticalHUD")
 @onready var terminal: Node = get_node("../TerminalPresentation")
 @onready var damage_feedback: Node = get_node("../PlayerDamageFeedback")
+@onready var briefing_video: VideoStreamPlayer = $Root/Pages/BriefingPage/OpeningVideo
 
 var app_state := STATE_TITLE
 var _return_from_settings := STATE_TITLE
@@ -85,6 +87,9 @@ var _last_lifecycle_action_receipt: Dictionary = {}
 var _lifecycle_action_history: Array[Dictionary] = []
 var _observed_terminal_results: Dictionary = {}
 var _terminal_result_receipts: Array[Dictionary] = []
+var _opening_media_status := &"uninitialized"
+var _opening_completion_source := &""
+var _opening_completion_count := 0
 
 
 func _ready() -> void:
@@ -95,9 +100,12 @@ func _ready() -> void:
 	terminal.presentation_completed.connect(_on_terminal_presentation_completed)
 	damage_feedback.restore_feedback_completed.connect(_on_restore_feedback_completed)
 	settings_store.settings_applied.connect(_on_settings_applied)
+	root.resized.connect(_apply_responsive_layout)
+	briefing_video.finished.connect(_on_opening_video_finished)
 	_set_gameplay_enabled(false)
 	_load_settings_controls()
 	settings_store.apply_runtime()
+	_apply_responsive_layout.call_deferred()
 	_show_page(STATE_TITLE)
 
 
@@ -110,6 +118,7 @@ func _connect_controls() -> void:
 	$Root/Pages/LoadoutPage/Content/Actions/ConfirmButton.pressed.connect(_start_loading)
 	$Root/Pages/LoadoutPage/Content/Actions/BackButton.pressed.connect(_show_page.bind(STATE_TITLE))
 	$Root/Pages/BriefingPage/Actions/DeployButton.pressed.connect(_briefing_primary_action)
+	$Root/Pages/BriefingPage/Actions/PauseButton.pressed.connect(_toggle_opening_pause)
 	$Root/Pages/BriefingPage/Actions/BackButton.pressed.connect(_show_page.bind(STATE_LOADOUT))
 	$Root/Pages/PausePage/Menu/ResumeButton.pressed.connect(_resume_gameplay)
 	$Root/Pages/PausePage/Menu/SettingsButton.pressed.connect(_open_settings_from.bind(STATE_PAUSE))
@@ -172,6 +181,9 @@ func _show_page(state: StringName, reason := &"page_change", authority := &"shel
 	if rule.is_empty() or not (previous_state in (rule.get("predecessors", []) as Array)) or StringName(rule.get("authority", &"")) != authority:
 		_record_transition_rejection(reason, &"illegal_lifecycle_edge")
 		return false
+	if previous_state == STATE_BRIEFING and state != STATE_BRIEFING:
+		briefing_video.stop()
+		briefing_video.visible = false
 	var focused_before := get_viewport().gui_get_focus_owner()
 	if focused_before != null and previous_state != STATE_GAMEPLAY:
 		_focus_by_state[previous_state] = focused_before.get_path()
@@ -188,6 +200,7 @@ func _show_page(state: StringName, reason := &"page_change", authority := &"shel
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		_focus_first_button.call_deferred()
 	_commit_transition(previous_state, state, reason)
+	_apply_responsive_layout.call_deferred()
 	return true
 
 
@@ -259,14 +272,29 @@ func _start_briefing() -> void:
 	_briefing_caption_index = -1
 	_briefing_complete = false
 	_deployment_requested = false
+	_opening_completion_source = &""
+	_opening_completion_count = 0
 	$Root/Pages/BriefingPage/Error.text = ""
 	var deploy_button := $Root/Pages/BriefingPage/Actions/DeployButton as Button
+	var pause_button := $Root/Pages/BriefingPage/Actions/PauseButton as Button
 	deploy_button.text = "SKIP BRIEFING  ▶"
 	deploy_button.disabled = false
+	pause_button.text = "Ⅱ  PAUSE"
+	pause_button.disabled = briefing_video.stream == null
+	if briefing_video.stream != null:
+		_opening_media_status = &"playing"
+		briefing_video.visible = true
+		briefing_video.paused = false
+		briefing_video.play()
+	else:
+		_opening_media_status = &"matched_still_fallback"
+		briefing_video.visible = false
 	_update_briefing(0.0)
 
 
 func _update_briefing(delta: float) -> void:
+	if briefing_video.stream != null and briefing_video.paused:
+		return
 	_briefing_elapsed += maxf(delta, 0.0)
 	var next_index := mini(int(_briefing_elapsed / BRIEFING_BEAT_SECONDS), BRIEFING_CAPTIONS.size() - 1)
 	if next_index != _briefing_caption_index:
@@ -285,14 +313,37 @@ func _briefing_primary_action() -> void:
 	_deploy()
 
 
+func _toggle_opening_pause() -> void:
+	if app_state != STATE_BRIEFING or _briefing_complete or briefing_video.stream == null:
+		return
+	briefing_video.paused = not briefing_video.paused
+	_opening_media_status = &"paused" if briefing_video.paused else &"playing"
+	($Root/Pages/BriefingPage/Actions/PauseButton as Button).text = "▶  RESUME" if briefing_video.paused else "Ⅱ  PAUSE"
+
+
 func _complete_briefing(skipped: bool) -> void:
 	if _briefing_complete:
 		return
 	_briefing_complete = true
+	_opening_completion_count += 1
+	_opening_completion_source = &"skip" if skipped else &"video_finished" if _opening_media_status == &"finished" else &"timed_caption_complete"
+	if briefing_video.is_playing():
+		briefing_video.stop()
+	($Root/Pages/BriefingPage/Actions/PauseButton as Button).disabled = true
 	if skipped:
 		_briefing_skip_count += 1
+		_opening_media_status = &"skipped"
+	elif _opening_media_status != &"matched_still_fallback":
+		_opening_media_status = &"completed"
 	$Root/Pages/BriefingPage/Copy.text = "MISSION PACKAGE SYNCHRONIZED\nAUTHORIZE DEPLOYMENT WHEN READY."
 	$Root/Pages/BriefingPage/Actions/DeployButton.text = "AUTHORIZE DEPLOYMENT  ▶"
+
+
+func _on_opening_video_finished() -> void:
+	if app_state != STATE_BRIEFING or _briefing_complete:
+		return
+	_opening_media_status = &"finished"
+	_complete_briefing(false)
 
 
 func _deploy() -> void:
@@ -382,12 +433,13 @@ func apply_accessibility_settings(values: Dictionary) -> void:
 	_screen_shake = values.get("screen_shake", true) == true
 	$Root/Pages/BriefingPage/Copy.add_theme_font_size_override("font_size", _applied_subtitle_size)
 	_apply_readability_scale(root, _applied_ui_scale)
+	_apply_responsive_layout.call_deferred()
 	if hud.has_method(&"apply_accessibility_settings"):
 		hud.call(&"apply_accessibility_settings", values)
 
 
 func _apply_readability_scale(scope: Node, requested_scale: float) -> void:
-	var multiplier := 1.0 + (requested_scale - 1.0) * 0.22
+	var multiplier := 1.0 + (requested_scale - 1.0) * 0.38
 	for node: Node in scope.find_children("*", "Control", true, false):
 		var control := node as Control
 		if not (control is Label or control is Button or control is CheckButton):
@@ -395,9 +447,52 @@ func _apply_readability_scale(scope: Node, requested_scale: float) -> void:
 		if not control.has_meta(&"fusepoint_base_font_size"):
 			control.set_meta(&"fusepoint_base_font_size", control.get_theme_font_size("font_size"))
 		var base_size := int(control.get_meta(&"fusepoint_base_font_size"))
-		if base_size <= 0 or base_size >= 34:
+		if base_size <= 0 or base_size >= 42:
 			continue
 		control.add_theme_font_size_override("font_size", maxi(base_size, int(round(base_size * multiplier))))
+
+
+func _set_rect(control_path: NodePath, rect: Rect2) -> void:
+	var control := get_node_or_null(control_path) as Control
+	if control == null:
+		return
+	control.position = rect.position
+	control.size = rect.size
+
+
+func _apply_responsive_layout() -> void:
+	var viewport := root.size
+	if viewport.x <= 0.0 or viewport.y <= 0.0:
+		return
+	var margin := Vector2(maxf(viewport.x * SAFE_AREA_RATIO, 32.0), maxf(viewport.y * SAFE_AREA_RATIO, 24.0))
+	var safe := Rect2(margin, viewport - margin * 2.0)
+	var expanded := _applied_ui_scale > 1.5
+	_set_rect(^"Root/Pages/TitlePage/Accent", Rect2(safe.position, Vector2(4.0, safe.size.y - 28.0)))
+	_set_rect(^"Root/Pages/TitlePage/Brand", Rect2(safe.position + Vector2(28.0, 24.0), Vector2(560.0, 212.0)))
+	_set_rect(^"Root/Pages/TitlePage/Menu", Rect2(safe.position + Vector2(24.0, 292.0), Vector2(430.0, 238.0)))
+	_set_rect(^"Root/Pages/TitlePage/Status", Rect2(safe.position + Vector2(28.0, safe.size.y - 64.0), Vector2(560.0, 58.0)))
+	_set_rect(^"Root/Pages/LoadoutPage/Header", Rect2(safe.position + Vector2(0.0, 4.0), Vector2(safe.size.x, 62.0)))
+	_set_rect(^"Root/Pages/LoadoutPage/Content", Rect2(safe.position + Vector2(0.0, 82.0), Vector2(620.0, safe.size.y - 88.0)))
+	_set_rect(^"Root/Pages/LoadoutPage/RoutePlate", Rect2(Vector2(safe.end.x - 448.0, safe.position.y + 82.0), Vector2(448.0, safe.size.y - 88.0)))
+	_set_rect(^"Root/Pages/LoadingPage/Title", Rect2(Vector2(safe.position.x, safe.end.y - 198.0), Vector2(840.0, 60.0)))
+	_set_rect(^"Root/Pages/LoadingPage/Detail", Rect2(Vector2(safe.position.x, safe.end.y - 130.0), Vector2(930.0, 64.0)))
+	_set_rect(^"Root/Pages/LoadingPage/Progress", Rect2(Vector2(safe.position.x, safe.end.y - 34.0), Vector2(safe.size.x * 0.82, 8.0)))
+	_set_rect(^"Root/Pages/BriefingPage/OpeningVideo", Rect2(Vector2(safe.position.x, safe.position.y + 62.0), Vector2(safe.size.x, safe.size.y - 210.0)))
+	_set_rect(^"Root/Pages/BriefingPage/Title", Rect2(safe.position, Vector2(safe.size.x, 58.0)))
+	_set_rect(^"Root/Pages/BriefingPage/Copy", Rect2(Vector2(safe.position.x + 12.0, safe.end.y - 194.0), Vector2(safe.size.x - 24.0, 86.0 if expanded else 98.0)))
+	_set_rect(^"Root/Pages/BriefingPage/Actions", Rect2(Vector2(safe.position.x, safe.end.y - 92.0), Vector2(660.0, 64.0)))
+	_set_rect(^"Root/Pages/BriefingPage/Error", Rect2(Vector2(safe.position.x + 684.0, safe.end.y - 82.0), Vector2(safe.size.x - 684.0, 44.0)))
+	_set_rect(^"Root/Pages/PausePage/Title", Rect2(safe.position + Vector2(16.0, 54.0), Vector2(560.0, 72.0)))
+	_set_rect(^"Root/Pages/PausePage/Menu", Rect2(safe.position + Vector2(16.0, 164.0), Vector2(420.0, 330.0)))
+	_set_rect(^"Root/Pages/SettingsPage/Title", Rect2(safe.position, Vector2(safe.size.x, 62.0)))
+	_set_rect(^"Root/Pages/SettingsPage/Settings", Rect2(safe.position + Vector2(24.0, 94.0), Vector2(minf(820.0, safe.size.x - 48.0), safe.size.y - 190.0)))
+	_set_rect(^"Root/Pages/SettingsPage/Actions", Rect2(Vector2(safe.position.x + 24.0, safe.end.y - 72.0), Vector2(520.0, 60.0)))
+	_set_rect(^"Root/Pages/DeathPage/Title", Rect2(safe.position + Vector2(16.0, 108.0), Vector2(safe.size.x - 32.0, 86.0)))
+	_set_rect(^"Root/Pages/DeathPage/Copy", Rect2(safe.position + Vector2(16.0, 222.0), Vector2(safe.size.x - 32.0, 100.0)))
+	_set_rect(^"Root/Pages/DeathPage/Menu", Rect2(Vector2(safe.position.x + 16.0, safe.end.y - 120.0), Vector2(720.0, 72.0)))
+	_set_rect(^"Root/Pages/ResultPage/Outcome", Rect2(safe.position + Vector2(16.0, 28.0), Vector2(safe.size.x - 32.0, 74.0)))
+	_set_rect(^"Root/Pages/ResultPage/Metrics", Rect2(safe.position + Vector2(16.0, 118.0), Vector2(safe.size.x - 32.0, safe.size.y - 244.0)))
+	_set_rect(^"Root/Pages/ResultPage/Menu", Rect2(Vector2(safe.position.x + 16.0, safe.end.y - 94.0), Vector2(820.0, 70.0)))
 
 
 func _cancel_settings() -> void:
@@ -564,6 +659,8 @@ func _layout_snapshot() -> Dictionary:
 				if not safe_rect.encloses(rect):
 					violations.append(str(control.get_path()))
 	return {
+		"contract_id": LAYOUT_CONTRACT_ID,
+		"applied_ui_scale": _applied_ui_scale,
 		"viewport_size": viewport_size,
 		"safe_margin": safe_margin,
 		"safe_rect": safe_rect,
@@ -689,6 +786,13 @@ func _mcp_state() -> Dictionary:
 		"briefing_caption_line_count": ($Root/Pages/BriefingPage/Copy as Label).text.count("\n") + 1,
 		"briefing_complete": _briefing_complete,
 		"briefing_skip_count": _briefing_skip_count,
+		"opening_media_status": _opening_media_status,
+		"opening_stream_bound": briefing_video.stream != null,
+		"opening_video_playing": briefing_video.is_playing(),
+		"opening_completion_source": _opening_completion_source,
+		"opening_completion_count": _opening_completion_count,
+		"opening_video_path": "res://assets/cinematics/fusepoint_opening.ogv",
+		"opening_receipt_path": "res://art/source/cinematics/opening_fusepoint_daylight_i2v/generation_receipt.json",
 		"deployment_requested": _deployment_requested,
 		"death_lock_remaining": _death_lock_remaining,
 		"active_recovery_epoch": _active_recovery_epoch,

@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://scripts/product_shell.gd" id="1_script"]
 [ext_resource type="Script" path="res://scripts/settings_store.gd" id="2_settings"]
@@ -9,6 +9,7 @@
 [ext_resource type="AudioStream" path="res://ui/shell/fps_menu_skin/audio/ui_focus.wav" id="7_focus"]
 [ext_resource type="AudioStream" path="res://ui/shell/fps_menu_skin/audio/ui_confirm.wav" id="8_confirm"]
 [ext_resource type="AudioStream" path="res://ui/shell/fps_menu_skin/audio/ui_back.wav" id="9_back"]
+[ext_resource type="VideoStream" path="res://assets/cinematics/fusepoint_opening.ogv" id="10_opening_video"]
 
 [sub_resource type="StyleBoxFlat" id="ProgressBackground"]
 bg_color = Color(0.015, 0.025, 0.03, 0.82)
@@ -359,6 +360,18 @@ texture = ExtResource("4_background")
 expand_mode = 1
 stretch_mode = 6
 modulate = Color(0.34, 0.42, 0.44, 1)
+[node name="OpeningVideo" type="VideoStreamPlayer" parent="Root/Pages/BriefingPage"]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+stream = ExtResource("10_opening_video")
+expand = true
+loop = true
 [node name="Shade" type="ColorRect" parent="Root/Pages/BriefingPage"]
 layout_mode = 1
 anchors_preset = 15
@@ -398,10 +411,14 @@ theme_override_constants/separation = 12
 custom_minimum_size = Vector2(300, 54)
 layout_mode = 2
 text = "SKIP BRIEFING  ▶"
+[node name="PauseButton" type="Button" parent="Root/Pages/BriefingPage/Actions"]
+custom_minimum_size = Vector2(150, 54)
+layout_mode = 2
+text = "Ⅱ  PAUSE"
 [node name="BackButton" type="Button" parent="Root/Pages/BriefingPage/Actions"]
 custom_minimum_size = Vector2(160, 54)
 layout_mode = 2
-text = "BACK"
+text = "◀  BACK"
 [node name="Error" type="Label" parent="Root/Pages/BriefingPage"]
 offset_left = 72.0
 offset_top = 640.0

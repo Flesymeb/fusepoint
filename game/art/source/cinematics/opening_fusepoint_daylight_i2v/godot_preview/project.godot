@@ -1,0 +1,9 @@
+config_version=5
+
+[application]
+config/name="fusepoint_opening_daylight_i2v Preview"
+run/main_scene="res://Main.tscn"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

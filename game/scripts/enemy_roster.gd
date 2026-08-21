@@ -49,6 +49,7 @@ var restore_in_progress := false
 var restore_applied_actor_count := 0
 var last_restore_receipt: Dictionary = {}
 var last_occupancy_receipt: Dictionary = {}
+var last_spawn_occupancy_receipt: Dictionary = {}
 var _roster_event_sequence := 0
 var _last_progression_signature := ""
 var progression_receipts: Array[Dictionary] = []
@@ -75,7 +76,16 @@ var last_run_epoch_receipt: Dictionary = {}
 func _ready() -> void:
 	await _wait_for_navigation()
 	var reservation_succeeded := _instantiate_roster()
-	roster_initialized = reservation_succeeded and enemies.size() == 18
+	# Give the scene tree and physics server one deterministic settlement boundary
+	# before any hostile AI can be activated.
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	last_spawn_occupancy_receipt = validate_restore_occupancy(player.global_position, false)
+	roster_initialized = (
+		reservation_succeeded
+		and enemies.size() == 18
+		and last_spawn_occupancy_receipt.get("accepted", false) == true
+	)
 	if roster_initialized:
 		_initialize_qualification_ledger()
 		_update_region_activation()
@@ -212,12 +222,15 @@ func _instantiate_roster() -> bool:
 		entry["reserved_position"] = projected
 		var agent := ENEMY_SCENE.instantiate() as FusepointEnemyAgent
 		agent.name = String(entry["id"]).replace("-", "_")
+		# Global transforms only become meaningful after the actor owns its final
+		# scene-tree parent. Keep the whole roster quiescent until the later
+		# occupancy transaction accepts every stable ID.
+		add_child(agent)
 		agent.configure_roster_entry(entry, player)
 		agent.set_run_epoch(run_epoch)
 		var objective := _objective_for(StringName(entry["region"]))
 		agent.global_position = projected + Vector3.UP * 0.04
 		agent.look_at(objective.global_position, Vector3.UP)
-		add_child(agent)
 		agent.authoritative_enemy_event.connect(_on_enemy_event)
 		enemies[agent.stable_id] = agent
 	return enemies.size() == ROSTER.size()
@@ -458,7 +471,7 @@ func commit_restore_epoch(epoch: int) -> Dictionary:
 	return last_restore_receipt.duplicate(true)
 
 
-func validate_restore_occupancy(player_position: Vector3) -> Dictionary:
+func validate_restore_occupancy(player_position: Vector3, require_active_layout := true) -> Dictionary:
 	var ids := {}
 	var positions: Array[Vector3] = []
 	var actor_receipts: Array[Dictionary] = []
@@ -502,22 +515,28 @@ func validate_restore_occupancy(player_position: Vector3) -> Dictionary:
 		)
 		ground_query.collide_with_areas = false
 		var grounded := not space_state.intersect_ray(ground_query).is_empty()
-		var clearance_shape := SphereShape3D.new()
-		clearance_shape.radius = 0.28
+		# Query the complete standing body volume, slightly inset from the authored
+		# floor contact so floor support is not mistaken for wall occupancy.
+		var clearance_shape := CapsuleShape3D.new()
+		clearance_shape.radius = ACTOR_CAPSULE_RADIUS * 0.92
+		clearance_shape.height = 1.70
 		var clearance_query := PhysicsShapeQueryParameters3D.new()
 		clearance_query.shape = clearance_shape
-		clearance_query.transform = Transform3D(Basis.IDENTITY, position + Vector3.UP * 0.9)
+		clearance_query.transform = Transform3D(Basis.IDENTITY, position + Vector3.UP * 0.94)
 		clearance_query.collision_mask = 1
 		clearance_query.exclude = actor_rids
 		clearance_query.collide_with_areas = false
-		var static_blockers := space_state.intersect_shape(clearance_query, 4)
+		clearance_query.collide_with_bodies = true
+		var static_blockers := space_state.intersect_shape(clearance_query, 8)
 		if (not grounded or navigation_error > 0.75 or not static_blockers.is_empty()) and failure_reason == &"":
 			failure_reason = &"actor_ground_or_static_occupancy_invalid"
 		actor_receipts.append({
 			"id": actor_id,
 			"position": position,
 			"grounded": grounded,
+			"floor_support": grounded,
 			"navigation_error": navigation_error,
+			"capsule_clear": static_blockers.is_empty(),
 			"static_blocker_count": static_blockers.size(),
 			"nearest_actor_distance": -1.0 if is_inf(nearest_actor) else nearest_actor,
 			"player_distance": player_distance,
@@ -528,7 +547,7 @@ func validate_restore_occupancy(player_position: Vector3) -> Dictionary:
 		failure_reason = &"hostile_capsule_overlap"
 	elif minimum_player_distance < 1.2:
 		failure_reason = &"player_hostile_separation_blocked"
-	elif active_count != expected_active_count or wrong_region_active_count > 0:
+	elif require_active_layout and (active_count != expected_active_count or wrong_region_active_count > 0):
 		failure_reason = &"active_region_binding_invalid"
 	var accepted := failure_reason == &""
 	return {
@@ -543,6 +562,9 @@ func validate_restore_occupancy(player_position: Vector3) -> Dictionary:
 		"expected_active_count": expected_active_count,
 		"active_count": active_count,
 		"wrong_region_active_count": wrong_region_active_count,
+		"active_layout_required": require_active_layout,
+		"settled_physics_frame": Engine.get_physics_frames(),
+		"run_epoch": run_epoch,
 		"actors": actor_receipts,
 	}
 
@@ -643,6 +665,7 @@ func _summary() -> Dictionary:
 		"restore_applied_actor_count": restore_applied_actor_count,
 		"last_restore_receipt": last_restore_receipt,
 		"last_occupancy_receipt": last_occupancy_receipt,
+		"last_spawn_occupancy_receipt": last_spawn_occupancy_receipt,
 		"slot_projection_reports": slot_projection_reports,
 		"reservation_transaction_state": reservation_transaction_state,
 		"reservation_failure": reservation_failure,
