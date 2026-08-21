@@ -582,7 +582,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0.12, 0.03, 0.025, 0.88)
+color = Color(0.08, 0.018, 0.014, 0.46)
 [node name="Title" type="Label" parent="Root/Pages/DeathPage"]
 offset_left = 370.0
 offset_top = 180.0
@@ -598,7 +598,7 @@ offset_left = 350.0
 offset_top = 270.0
 offset_right = 930.0
 offset_bottom = 340.0
-text = "Mission clock is locked during recovery.\nRestore the latest secured checkpoint without gaining time."
+text = "Mission clock is locked during recovery.\nRecovery origin is selected from authoritative mission state."
 horizontal_alignment = 1
 [node name="Menu" type="HBoxContainer" parent="Root/Pages/DeathPage"]
 offset_left = 380.0
@@ -609,7 +609,7 @@ theme_override_constants/separation = 14
 [node name="RestartButton" type="Button" parent="Root/Pages/DeathPage/Menu"]
 custom_minimum_size = Vector2(300, 52)
 layout_mode = 2
-text = "RESTART CHECKPOINT"
+text = "RECOVER MISSION"
 [node name="HomeButton" type="Button" parent="Root/Pages/DeathPage/Menu"]
 custom_minimum_size = Vector2(180, 52)
 layout_mode = 2

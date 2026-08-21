@@ -295,6 +295,10 @@ func _on_attack_resolved(report: Dictionary) -> void:
 	_commit_enemy_event(&"shot_resolved", event)
 
 
+func reset_shot_feedback() -> void:
+	_shot_feedback.reset_feedback()
+
+
 func _on_target_acquired_after_restore(_target: Node3D) -> void:
 	if _restored_epoch > 0 and not _restore_in_progress:
 		_restore_readiness = &"fresh_aim_window"

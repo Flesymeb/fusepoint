@@ -1,11 +1,28 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://systems/combat/core/fps_player_damage_feedback.gd" id="1_feedback"]
 [ext_resource type="Texture2D" path="res://systems/combat/core/assets/pain_hud.png" id="2_pain"]
 
+[sub_resource type="Shader" id="Shader_recovery_grade"]
+code = "shader_type canvas_item;\nuniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_linear;\nuniform float saturation : hint_range(0.0, 1.0) = 1.0;\nvoid fragment() {\n\tvec4 source = textureLod(screen_texture, SCREEN_UV, 0.0);\n\tfloat luminance = dot(source.rgb, vec3(0.2126, 0.7152, 0.0722));\n\tCOLOR = vec4(mix(vec3(luminance), source.rgb, saturation), source.a);\n}"
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_recovery_grade"]
+shader = SubResource("Shader_recovery_grade")
+shader_parameter/saturation = 1.0
+
 [node name="FPSPlayerDamageFeedback" type="CanvasLayer" groups=["mcp_watch"]]
 layer = 90
 script = ExtResource("1_feedback")
+
+[node name="DeathGrade" type="ColorRect" parent="."]
+unique_name_in_owner = true
+material = SubResource("ShaderMaterial_recovery_grade")
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
 
 [node name="PainOverlay" type="TextureRect" parent="."]
 unique_name_in_owner = true

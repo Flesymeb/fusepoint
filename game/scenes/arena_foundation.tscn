@@ -7,10 +7,10 @@
 [ext_resource type="Script" path="res://scripts/bomb_objective.gd" id="5_bomb"]
 
 [sub_resource type="ProceduralSkyMaterial" id="SkyMaterial_daylight"]
-sky_top_color = Color(0.12, 0.32, 0.58, 1)
-sky_horizon_color = Color(0.68, 0.82, 0.94, 1)
-ground_bottom_color = Color(0.12, 0.14, 0.13, 1)
-ground_horizon_color = Color(0.5, 0.55, 0.5, 1)
+sky_top_color = Color(0.18, 0.38, 0.62, 1)
+sky_horizon_color = Color(0.72, 0.84, 0.95, 1)
+ground_bottom_color = Color(0.18, 0.2, 0.19, 1)
+ground_horizon_color = Color(0.56, 0.6, 0.56, 1)
 sun_angle_max = 14.0
 
 [sub_resource type="Sky" id="Sky_daylight"]
@@ -20,12 +20,18 @@ radiance_size = 3
 [sub_resource type="Environment" id="Environment_daylight"]
 background_mode = 2
 sky = SubResource("Sky_daylight")
-background_energy_multiplier = 0.68
+background_energy_multiplier = 0.8
 ambient_light_source = 3
-ambient_light_energy = 0.58
-ambient_light_sky_contribution = 0.82
+ambient_light_energy = 0.75
+ambient_light_sky_contribution = 0.7
 reflected_light_source = 2
-tonemap_mode = 3
+tonemap_mode = 2
+tonemap_exposure = 1.0
+ssao_enabled = true
+ssao_radius = 1.2
+ssao_intensity = 1.3
+ssao_power = 1.5
+ssao_detail = 0.65
 
 [sub_resource type="NavigationMesh" id="NavigationMesh_arena"]
 agent_height = 1.8
@@ -116,7 +122,7 @@ environment = SubResource("Environment_daylight")
 [node name="Sun" type="DirectionalLight3D" parent="."]
 rotation_degrees = Vector3(-48, -32, 0)
 light_color = Color(1, 0.965, 0.9, 1)
-light_energy = 0.92
+light_energy = 1.35
 shadow_enabled = true
 directional_shadow_max_distance = 180.0
 shadow_bias = 0.025

@@ -51,6 +51,7 @@ var last_event: Dictionary = {}
 var deployment_commit_count := 0
 var enemy_restore_epoch := 0
 var checkpoint_restore_in_progress := false
+var recovery_input_locked := false
 var last_enemy_restore_receipt: Dictionary = {}
 var last_checkpoint_restore_receipt: Dictionary = {}
 
@@ -104,6 +105,7 @@ func _initialize_mission_state() -> void:
 	checkpoint_restore_count = 0
 	enemy_restore_epoch = 0
 	checkpoint_restore_in_progress = false
+	recovery_input_locked = false
 	last_enemy_restore_receipt.clear()
 	last_checkpoint_restore_receipt.clear()
 	terminal_commit_count = 0
@@ -470,67 +472,118 @@ func _commit_checkpoint(point_id: StringName) -> void:
 	})
 
 
-func request_checkpoint_restore() -> bool:
-	if mission_state != &"active_gameplay" or checkpoint_version <= 0 or checkpoint_snapshot.is_empty():
+func request_recovery() -> bool:
+	var recovery_source := &"checkpoint" if checkpoint_version > 0 else &"deployment"
+	var source_snapshot := checkpoint_snapshot if recovery_source == &"checkpoint" else deployment_snapshot
+	if mission_state != &"active_gameplay" or source_snapshot.is_empty():
+		_record_recovery_rejection(recovery_source, &"snapshot_unavailable_or_illegal")
 		return false
 	var time_before := remaining_time
-	var snapshot := checkpoint_snapshot.duplicate(true)
+	var snapshot := source_snapshot.duplicate(true)
 	if not _valid_checkpoint_snapshot(snapshot):
+		_record_recovery_rejection(recovery_source, &"snapshot_schema_invalid")
 		return false
 	if enemy_roster == null or not enemy_roster.has_method(&"begin_restore_epoch"):
+		_record_recovery_rejection(recovery_source, &"enemy_restore_unavailable")
 		return false
 	var rollback_snapshot := _build_snapshot()
-	var player_input_before: bool = player.get("gameplay_input_enabled") == true
-	var weapon_input_before: bool = weapon_controller.get("gameplay_input_enabled") == true
+	mission_state = &"recovery_restore"
 	player.call(&"set_gameplay_input_enabled", false)
 	weapon_controller.call(&"set_gameplay_input_enabled", false)
+	recovery_input_locked = true
 	enemy_restore_epoch = int(enemy_roster.call(&"begin_restore_epoch"))
 	if enemy_restore_epoch < 0:
-		player.call(&"set_gameplay_input_enabled", player_input_before)
-		weapon_controller.call(&"set_gameplay_input_enabled", weapon_input_before)
+		_record_recovery_rejection(recovery_source, &"enemy_restore_epoch_rejected")
 		return false
 	checkpoint_restore_in_progress = true
 	last_checkpoint_restore_receipt = {
+		"recovery_source": recovery_source,
+		"snapshot_version": int(snapshot.get("version", checkpoint_version)),
 		"checkpoint_version": checkpoint_version,
 		"restore_epoch": enemy_restore_epoch,
+		"restored_actor_count": 0,
 		"committed": false,
+		"rolled_back": false,
 		"transient_reset_complete": false,
 		"quiescent": true,
+		"input_locked": true,
 	}
 	_apply_checkpoint_snapshot(snapshot, minf(time_before, float(snapshot["remaining_time"])))
 	player.call(&"restore_checkpoint_state", snapshot["player_transform"], float(snapshot["player_health"]), enemy_restore_epoch)
 	weapon_controller.call(&"restore_weapon_state", snapshot["weapon_state"], enemy_restore_epoch)
 	if enemy_roster.call(&"apply_restore_snapshot", snapshot.get("enemy_roster", {}), enemy_restore_epoch) != true:
 		push_error("Enemy checkpoint restore epoch %d could not apply every actor snapshot" % enemy_restore_epoch)
-		return _fail_checkpoint_restore(&"enemy_snapshot_apply_failed", rollback_snapshot, enemy_restore_epoch)
+		return _fail_checkpoint_restore(&"enemy_snapshot_apply_failed", rollback_snapshot, enemy_restore_epoch, recovery_source)
 	last_enemy_restore_receipt = enemy_roster.call(&"commit_restore_epoch", enemy_restore_epoch)
-	if last_enemy_restore_receipt.is_empty():
+	if last_enemy_restore_receipt.is_empty() or int(last_enemy_restore_receipt.get("actor_count", 0)) != 18:
 		push_error("Enemy checkpoint restore epoch %d could not commit atomically" % enemy_restore_epoch)
-		return _fail_checkpoint_restore(&"enemy_commit_failed", rollback_snapshot, enemy_restore_epoch)
+		return _fail_checkpoint_restore(&"enemy_commit_incomplete", rollback_snapshot, enemy_restore_epoch, recovery_source)
 	_reset_transient_presentation(enemy_restore_epoch)
 	checkpoint_restore_in_progress = false
 	checkpoint_restore_count += 1
 	last_checkpoint_restore_receipt = {
+		"recovery_source": recovery_source,
+		"snapshot_version": int(snapshot.get("version", checkpoint_version)),
 		"checkpoint_version": int(snapshot.get("version", checkpoint_version)),
 		"restore_epoch": enemy_restore_epoch,
 		"restore_count": checkpoint_restore_count,
 		"restored_actor_count": int(last_enemy_restore_receipt.get("actor_count", 0)),
 		"transient_reset_complete": true,
 		"committed": true,
+		"rolled_back": false,
 		"quiescent": false,
+		"input_locked": true,
 	}
-	player.call(&"set_gameplay_input_enabled", player_input_before)
-	weapon_controller.call(&"set_gameplay_input_enabled", weapon_input_before)
 	_record_event(&"checkpoint_restored", last_checkpoint_restore_receipt.duplicate(true))
 	return true
 
 
+func request_checkpoint_restore() -> bool:
+	return request_recovery()
+
+
+func complete_recovery_handoff(epoch: int) -> bool:
+	if not recovery_input_locked or checkpoint_restore_in_progress:
+		return false
+	if not bool(last_checkpoint_restore_receipt.get("committed", false)) or int(last_checkpoint_restore_receipt.get("restore_epoch", -1)) != epoch:
+		return false
+	recovery_input_locked = false
+	mission_state = &"active_gameplay"
+	last_checkpoint_restore_receipt["input_locked"] = false
+	player.call(&"set_gameplay_input_enabled", true)
+	weapon_controller.call(&"set_gameplay_input_enabled", true)
+	_record_event(&"recovery_handoff_completed", {
+		"restore_epoch": epoch,
+		"recovery_source": last_checkpoint_restore_receipt.get("recovery_source", &"unknown"),
+		"input_locked": false,
+	})
+	return true
+
+
+func _record_recovery_rejection(source: StringName, reason: StringName) -> void:
+	recovery_input_locked = true
+	player.call(&"set_gameplay_input_enabled", false)
+	weapon_controller.call(&"set_gameplay_input_enabled", false)
+	last_checkpoint_restore_receipt = {
+		"recovery_source": source,
+		"snapshot_version": checkpoint_version,
+		"restore_epoch": enemy_restore_epoch,
+		"restored_actor_count": 0,
+		"committed": false,
+		"rolled_back": false,
+		"quiescent": true,
+		"input_locked": true,
+		"failure_reason": reason,
+	}
+	_record_event(&"recovery_rejected", last_checkpoint_restore_receipt.duplicate(true))
+
+
 func _valid_checkpoint_snapshot(snapshot: Dictionary) -> bool:
-	var required := ["capture_points", "committed_keys", "route_locks", "bomb_state", "bomb_stage_index", "bomb_completed", "remaining_time", "player_transform", "player_health", "weapon_state", "enemy_roster"]
+	var required := ["schema_version", "version", "mission_state", "capture_points", "committed_keys", "route_locks", "bomb_state", "bomb_stage_index", "bomb_completed", "remaining_time", "player_transform", "player_health", "weapon_state", "enemy_roster"]
 	for key: String in required:
 		if not snapshot.has(key):
 			return false
-	return (snapshot["enemy_roster"] as Dictionary).size() == 18
+	return int(snapshot["schema_version"]) == 2 and int(snapshot["version"]) >= 0 and (snapshot["enemy_roster"] as Dictionary).size() == 18
 
 
 func _apply_checkpoint_snapshot(snapshot: Dictionary, restored_remaining_time: float) -> void:
@@ -563,7 +616,7 @@ func _reset_transient_presentation(epoch: int) -> void:
 		terminal.call(&"reset_for_restore", epoch)
 
 
-func _fail_checkpoint_restore(reason: StringName, rollback_snapshot: Dictionary, epoch: int) -> bool:
+func _fail_checkpoint_restore(reason: StringName, rollback_snapshot: Dictionary, epoch: int, recovery_source := &"checkpoint") -> bool:
 	if enemy_roster != null and enemy_roster.has_method(&"abort_restore_epoch"):
 		last_enemy_restore_receipt = enemy_roster.call(&"abort_restore_epoch", epoch, rollback_snapshot.get("enemy_roster", {}), reason)
 	_apply_checkpoint_snapshot(rollback_snapshot, float(rollback_snapshot.get("remaining_time", remaining_time)))
@@ -571,13 +624,19 @@ func _fail_checkpoint_restore(reason: StringName, rollback_snapshot: Dictionary,
 	weapon_controller.call(&"restore_weapon_state", rollback_snapshot["weapon_state"], epoch)
 	_reset_transient_presentation(epoch)
 	checkpoint_restore_in_progress = false
+	recovery_input_locked = true
+	mission_state = &"recovery_failed"
 	last_checkpoint_restore_receipt = {
+		"recovery_source": recovery_source,
+		"snapshot_version": int(rollback_snapshot.get("version", checkpoint_version)),
 		"checkpoint_version": checkpoint_version,
 		"restore_epoch": epoch,
 		"restored_actor_count": int(last_enemy_restore_receipt.get("rollback_actor_count", 0)),
 		"transient_reset_complete": true,
 		"committed": false,
+		"rolled_back": true,
 		"quiescent": true,
+		"input_locked": true,
 		"failure_reason": reason,
 	}
 	return false
@@ -738,6 +797,7 @@ func _mcp_state() -> Dictionary:
 		"checkpoint_restore_count": checkpoint_restore_count,
 		"enemy_restore_epoch": enemy_restore_epoch,
 		"checkpoint_restore_in_progress": checkpoint_restore_in_progress,
+		"recovery_input_locked": recovery_input_locked,
 		"last_enemy_restore_receipt": last_enemy_restore_receipt,
 		"last_checkpoint_restore_receipt": last_checkpoint_restore_receipt,
 		"terminal_commit_count": terminal_commit_count,

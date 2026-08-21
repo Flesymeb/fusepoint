@@ -9,7 +9,9 @@ const STATE_GAMEPLAY := &"gameplay"
 const STATE_PAUSE := &"pause"
 const STATE_SETTINGS := &"settings"
 const STATE_DEATH := &"death_recovery"
+const STATE_RECOVERING := &"recovery_transition"
 const STATE_RESULT := &"result"
+const DEATH_LOCK_SECONDS := 3.0
 const BRIEFING_CAPTIONS: Array[String] = [
 	"11:40 — KESTREL RIDGE MILITARY BASE\nRIFT FRONT SIGNALS CONFIRMED INSIDE THE PERIMETER.",
 	"SECTOR C ROCKET MAINTENANCE BAY\nA FIVE-MINUTE DETONATION DEVICE IS ARMED.",
@@ -29,6 +31,7 @@ const SAFE_AREA_RATIO := 0.05
 @onready var roster: Node = get_node("../EnemyRoster")
 @onready var hud: CanvasLayer = get_node("../TacticalHUD")
 @onready var terminal: Node = get_node("../TerminalPresentation")
+@onready var damage_feedback: Node = get_node("../PlayerDamageFeedback")
 
 var app_state := STATE_TITLE
 var _return_from_settings := STATE_TITLE
@@ -49,6 +52,8 @@ var _focus_by_state: Dictionary = {}
 var _last_transition_receipt: Dictionary = {}
 var _transition_history: Array[Dictionary] = []
 var _last_transition_rejection := &""
+var _death_lock_remaining := 0.0
+var _active_recovery_epoch := 0
 
 
 func _ready() -> void:
@@ -56,6 +61,7 @@ func _ready() -> void:
 	_connect_controls()
 	player.player_died.connect(_on_player_died)
 	terminal.presentation_completed.connect(_on_terminal_presentation_completed)
+	damage_feedback.restore_feedback_completed.connect(_on_restore_feedback_completed)
 	settings_store.settings_applied.connect(_on_settings_applied)
 	_set_gameplay_enabled(false)
 	_load_settings_controls()
@@ -119,6 +125,13 @@ func _process(delta: float) -> void:
 			_show_page(STATE_BRIEFING)
 	elif app_state == STATE_BRIEFING and not _briefing_complete:
 		_update_briefing(delta)
+	elif app_state == STATE_DEATH and _death_lock_remaining > 0.0:
+		_death_lock_remaining = maxf(0.0, _death_lock_remaining - delta)
+		var recovery_button := $Root/Pages/DeathPage/Menu/RestartButton as Button
+		recovery_button.disabled = _death_lock_remaining > 0.0
+		recovery_button.text = "RECOVERY READY IN %.1f" % _death_lock_remaining if recovery_button.disabled else _recovery_button_text()
+		if not recovery_button.disabled:
+			recovery_button.grab_focus()
 
 
 func _show_page(state: StringName) -> void:
@@ -128,12 +141,12 @@ func _show_page(state: StringName) -> void:
 		_focus_by_state[previous_state] = focused_before.get_path()
 	_transition_serial += 1
 	app_state = state
-	pages.visible = state != STATE_GAMEPLAY
+	pages.visible = state not in [STATE_GAMEPLAY, STATE_RECOVERING]
 	for child in pages.get_children():
 		(child as Control).visible = child.name == _page_name(state)
 	if state == STATE_BRIEFING:
 		_start_briefing()
-	if state != STATE_GAMEPLAY:
+	if state not in [STATE_GAMEPLAY, STATE_RECOVERING]:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		_focus_first_button.call_deferred()
 	_commit_transition(previous_state, state, &"page_change")
@@ -148,6 +161,7 @@ func _page_name(state: StringName) -> String:
 		STATE_PAUSE: "PausePage",
 		STATE_SETTINGS: "SettingsPage",
 		STATE_DEATH: "DeathPage",
+		STATE_RECOVERING: "DeathPage",
 		STATE_RESULT: "ResultPage",
 	}.get(state, "TitlePage")
 
@@ -261,9 +275,10 @@ func _set_gameplay_enabled(enabled: bool) -> void:
 func _pause_gameplay() -> void:
 	if app_state != STATE_GAMEPLAY:
 		return
-	$Root/Pages/PausePage/Menu/RestartButton.visible = int(mission.get("checkpoint_version")) > 0
+	$Root/Pages/PausePage/Menu/RestartButton.visible = not (mission.get("deployment_snapshot") as Dictionary).is_empty() or int(mission.get("checkpoint_version")) > 0
 	player.call(&"set_gameplay_input_enabled", false)
 	weapon.call(&"set_gameplay_input_enabled", false)
+	roster.call(&"reset_transient_feedback")
 	get_tree().paused = true
 	_show_page(STATE_PAUSE)
 
@@ -344,16 +359,47 @@ func _on_player_died(_event: Dictionary) -> void:
 	if app_state != STATE_GAMEPLAY or StringName(mission.get("mission_state")) != &"active_gameplay":
 		return
 	get_tree().paused = true
+	player.call(&"enter_combat_death_lock")
 	player.call(&"set_gameplay_input_enabled", false)
 	weapon.call(&"set_gameplay_input_enabled", false)
-	$Root/Pages/DeathPage/Menu/RestartButton.visible = int(mission.get("checkpoint_version")) > 0
+	roster.call(&"reset_transient_feedback")
+	_death_lock_remaining = DEATH_LOCK_SECONDS
+	var recovery_button := $Root/Pages/DeathPage/Menu/RestartButton as Button
+	recovery_button.visible = true
+	recovery_button.disabled = true
+	recovery_button.text = "RECOVERY READY IN %.1f" % DEATH_LOCK_SECONDS
+	$Root/Pages/DeathPage/Copy.text = "Mission clock is locked during recovery.\n%s" % (
+		"Restore the latest secured checkpoint without gaining time." if int(mission.get("checkpoint_version")) > 0
+		else "Return to the deployment entry without gaining time."
+	)
 	_show_page(STATE_DEATH)
 
 
 func _restart_checkpoint() -> void:
-	if mission.call(&"request_checkpoint_restore") != true:
+	if app_state == STATE_DEATH and _death_lock_remaining > 0.0:
+		_record_transition_rejection(&"mission_recovery", &"death_lock_active")
+		return
+	if mission.call(&"request_recovery") != true:
 		_record_transition_rejection(&"checkpoint_restart", &"checkpoint_unavailable_or_illegal")
 		return
+	var receipt: Dictionary = mission.get("last_checkpoint_restore_receipt")
+	_active_recovery_epoch = int(receipt.get("restore_epoch", 0))
+	get_tree().paused = false
+	_set_gameplay_enabled(false)
+	_show_page(STATE_RECOVERING)
+
+
+func _recovery_button_text() -> String:
+	return "RECOVER DEPLOYMENT" if int(mission.get("checkpoint_version")) == 0 else "RESTART CHECKPOINT"
+
+
+func _on_restore_feedback_completed(epoch: int) -> void:
+	if app_state != STATE_RECOVERING or epoch != _active_recovery_epoch:
+		return
+	if mission.call(&"complete_recovery_handoff", epoch) != true:
+		_record_transition_rejection(&"recovery_handoff", &"restore_receipt_invalid")
+		return
+	_active_recovery_epoch = 0
 	get_tree().paused = false
 	_set_gameplay_enabled(true)
 	_show_page(STATE_GAMEPLAY)
@@ -446,6 +492,7 @@ func _layout_snapshot() -> Dictionary:
 
 func _return_home() -> void:
 	get_tree().paused = false
+	roster.call(&"reset_transient_feedback")
 	terminal.reset_presentation(true, true)
 	mission.call(&"reset_for_replay")
 	_set_gameplay_enabled(false)
@@ -454,6 +501,7 @@ func _return_home() -> void:
 
 func _replay() -> void:
 	get_tree().paused = false
+	roster.call(&"reset_transient_feedback")
 	terminal.reset_presentation(true, true)
 	mission.call(&"reset_for_replay")
 	_set_gameplay_enabled(false)
@@ -467,6 +515,7 @@ func _on_terminal_presentation_completed(_event_id: String, result: StringName) 
 
 func _show_result(result: StringName) -> void:
 	_set_gameplay_enabled(false)
+	roster.call(&"reset_transient_feedback")
 	var success := result == &"bomb_defused"
 	$Root/Pages/ResultPage/Outcome.text = "MISSION COMPLETE" if success else "MISSION FAILED"
 	$Root/Pages/ResultPage/Outcome.modulate = Color(0.2, 0.92, 0.82) if success else Color(1.0, 0.27, 0.18)
@@ -487,7 +536,7 @@ func _show_result(result: StringName) -> void:
 		int(components.get("deaths", 0)), int(components.get("checkpoint_restarts", 0)),
 		float(snapshot.get("fastest_success_delta", 0.0)), rank_text,
 	]
-	$Root/Pages/ResultPage/Menu/RestartButton.visible = not success and remaining > 0 and int(mission.get("checkpoint_version")) > 0
+	$Root/Pages/ResultPage/Menu/RestartButton.visible = not success and remaining > 0 and (not (mission.get("deployment_snapshot") as Dictionary).is_empty() or int(mission.get("checkpoint_version")) > 0)
 	_show_page(STATE_RESULT)
 
 
@@ -507,6 +556,9 @@ func _mcp_state() -> Dictionary:
 		"briefing_complete": _briefing_complete,
 		"briefing_skip_count": _briefing_skip_count,
 		"deployment_requested": _deployment_requested,
+		"death_lock_remaining": _death_lock_remaining,
+		"active_recovery_epoch": _active_recovery_epoch,
+		"recovery_source": (mission.get("last_checkpoint_restore_receipt") as Dictionary).get("recovery_source", &"none"),
 		"applied_ui_scale": _applied_ui_scale,
 		"applied_subtitle_size": _applied_subtitle_size,
 		"reduced_camera_motion": _reduced_camera_motion,

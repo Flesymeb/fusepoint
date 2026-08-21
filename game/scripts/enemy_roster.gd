@@ -81,6 +81,11 @@ func _process(_delta: float) -> void:
 		_update_region_activation()
 
 
+func reset_transient_feedback() -> void:
+	for enemy: FusepointEnemyAgent in enemies.values():
+		enemy.reset_shot_feedback()
+
+
 func _unhandled_key_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F10:
 		_toggle_overhead_camera()

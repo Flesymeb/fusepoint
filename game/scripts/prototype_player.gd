@@ -54,6 +54,7 @@ var _last_damage_event: Dictionary = {}
 var gameplay_input_enabled := true
 var terminal_locked := false
 var terminal_event_id := ""
+var combat_death_locked := false
 var _deployment_collision_layer := 1
 var _deployment_collision_mask := 1
 var restore_epoch := 0
@@ -429,7 +430,7 @@ func bind_deployment_to_walkable(walkable_position: Vector3, look_target := Vect
 
 
 func set_gameplay_input_enabled(enabled: bool) -> void:
-	gameplay_input_enabled = enabled and not terminal_locked
+	gameplay_input_enabled = enabled and not terminal_locked and not combat_death_locked
 	velocity = Vector3.ZERO
 	if gameplay_input_enabled:
 		_capture_mouse()
@@ -455,9 +456,21 @@ func enter_terminal_lock(event_id: String) -> bool:
 	return true
 
 
+func enter_combat_death_lock() -> void:
+	combat_death_locked = true
+	gameplay_input_enabled = false
+	velocity = Vector3.ZERO
+	collision_layer = 0
+	collision_mask = 0
+	if collision_shape != null:
+		collision_shape.set_deferred(&"disabled", true)
+	_release_mouse()
+
+
 func exit_terminal_lock() -> void:
 	terminal_locked = false
 	terminal_event_id = ""
+	combat_death_locked = false
 	collision_layer = _deployment_collision_layer
 	collision_mask = _deployment_collision_mask
 	if collision_shape != null:
@@ -494,6 +507,7 @@ func _mcp_state() -> Dictionary:
 		"gameplay_input_enabled": gameplay_input_enabled,
 		"terminal_locked": terminal_locked,
 		"terminal_event_id": terminal_event_id,
+		"combat_death_locked": combat_death_locked,
 		"restore_epoch": restore_epoch,
 		"reduced_camera_motion": reduced_camera_motion,
 		"screen_shake_enabled": screen_shake_enabled,

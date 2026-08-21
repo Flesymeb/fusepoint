@@ -165,6 +165,12 @@ func _layout_snapshot() -> Dictionary:
 
 func reset_transient_feedback_for_restore(epoch: int) -> void:
 	_restore_epoch = maxi(_restore_epoch, epoch)
+	if player != null:
+		_update_player_state()
+	if weapon != null:
+		_update_weapon_state()
+	if mission != null:
+		_update_mission_state()
 	_story_active = false
 	_story_elapsed = 99.0
 	narrative.visible = false
