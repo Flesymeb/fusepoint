@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="PackedScene" path="res://scenes/arena_foundation.tscn" id="1_arena"]
 [ext_resource type="Script" path="res://scripts/prototype_player.gd" id="2_player"]
@@ -10,6 +10,7 @@
 [ext_resource type="PackedScene" path="res://scenes/product_shell.tscn" id="9_shell"]
 [ext_resource type="PackedScene" path="res://systems/combat/core/fps_player_damage_feedback.tscn" id="10_damage_feedback"]
 [ext_resource type="PackedScene" path="res://scenes/terminal_presentation.tscn" id="11_terminal"]
+[ext_resource type="PackedScene" path="res://scenes/mission_feedback_controller.tscn" id="12_mission_feedback"]
 
 [sub_resource type="CapsuleShape3D" id="Shape_player"]
 radius = 0.4
@@ -74,6 +75,9 @@ hud_keys_path = NodePath("../MissionHUD/Root/TopPanel/VBox/TimerRow/Keys")
 hud_progress_path = NodePath("../MissionHUD/Root/TopPanel/VBox/Progress")
 hud_prompt_path = NodePath("../MissionHUD/Root/Prompt")
 hud_event_path = NodePath("../MissionHUD/Root/Event")
+
+[node name="MissionFeedbackController" parent="." instance=ExtResource("12_mission_feedback")]
+mission_path = NodePath("../MissionController")
 
 [node name="EnemyRoster" type="Node3D" parent="." groups=["enemy_roster", "mcp_watch"]]
 script = ExtResource("7_roster")

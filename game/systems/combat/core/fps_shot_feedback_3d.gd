@@ -33,6 +33,9 @@ var _metal_impact_audio: AudioStreamWAV
 var _concrete_impact_audio: AudioStreamWAV
 var _near_miss_audio: AudioStreamWAV
 var _last_presentation: Dictionary = {}
+var _variant_use_counts := {0: 0, 1: 0, 2: 0, 3: 0}
+var _culled_effect_count := 0
+var _local_impact_suppression_count := 0
 
 
 func _ready() -> void:
@@ -61,23 +64,48 @@ func show_shot(event: Dictionary) -> bool:
 	var tracer_color := enemy_tracer_color if source_team == &"enemy" else player_tracer_color
 	var result := StringName(event.get("result", &"hit" if bool(event.get("hit", false)) else &"miss"))
 	var surface := StringName(event.get("surface_kind", &"character" if result == &"hit" else &"air"))
+	var local_player_hit := _is_local_player_hit(event, source_team, result, surface)
+	var variant_index := (presented_event_count - 1) % 4
+	_variant_use_counts[variant_index] = int(_variant_use_counts.get(variant_index, 0)) + 1
+	var trace_clip := _clip_trace_endpoint_for_camera(from, to, local_player_hit)
+	var trace_to: Vector3 = trace_clip.get("endpoint", to)
 	var roles: Array[StringName] = [&"compact_muzzle", &"near_miss" if result == &"miss" else &"bounded_tracer", &"spatial_report_audio"]
-	_spawn_muzzle(from, direction, tracer_color, event)
-	_spawn_tracer(from, to, tracer_color, event, result)
-	if result in [&"hit", &"blocked"]:
+	_spawn_muzzle(from, direction, tracer_color, event, variant_index)
+	_spawn_tracer(from, trace_to, tracer_color, event, result, variant_index)
+	var world_impact_suppressed := false
+	var suppression_reason := &""
+	if local_player_hit:
+		world_impact_suppressed = true
+		suppression_reason = &"local_player_camera_near_plane"
+		_local_impact_suppression_count += 1
+		roles.append(&"local_player_directional_damage")
+		roles.append(&"local_player_body_or_armor_audio")
+	elif result in [&"hit", &"blocked"]:
 		_spawn_impact(to, event)
 		roles.append(&"character_hit" if surface == &"character" else &"metal_sparks" if surface == &"metal" else &"concrete_dust")
 		roles.append(&"surface_impact_audio")
-	_spawn_audio(from, to, result, surface, source_team)
+	_spawn_audio(from, to, result, surface, source_team, local_player_hit)
 	_last_presentation = {
 		"shot_id": shot_id,
 		"source_actor": String(event.get("actor_id", event.get("source_path", ""))),
 		"source_weapon": String(event.get("weapon_id", "")),
 		"result": result,
 		"surface": surface,
+		"target_path": String(event.get("target_path", "")),
+		"ammo_commit": int(event.get("ammo_commit", 0)),
+		"damage_applied": event.get("applied", false) == true,
+		"occlusion_outcome": result,
 		"muzzle_position": from,
 		"hit_position": to,
+		"trace_endpoint": trace_to,
+		"trace_camera_clip": trace_clip,
+		"local_player_hit": local_player_hit,
+		"world_impact_suppressed": world_impact_suppressed,
+		"suppression_reason": suppression_reason,
 		"roles": roles,
+		"variant_index": variant_index,
+		"effect_lifetimes": {"muzzle": muzzle_seconds, "tracer": tracer_seconds, "impact": 0.0 if world_impact_suppressed else impact_seconds},
+		"concurrency": {"active": active_effect_count, "limit": max_active_effects, "culled_total": _culled_effect_count},
 		"presentation_count": presented_event_count,
 		"duplicate_count": duplicate_event_count,
 	}
@@ -111,6 +139,11 @@ func snapshot() -> Dictionary:
 		"active_effects": _active_effect_snapshot(),
 		"max_active_effects": max_active_effects,
 		"max_tracer_length": max_tracer_length,
+		"runtime_variant_count": 4,
+		"variant_use_counts": _variant_use_counts,
+		"max_single_variant_share": _max_variant_share(),
+		"culled_effect_count": _culled_effect_count,
+		"local_impact_suppression_count": _local_impact_suppression_count,
 		"variant_roles": [&"compact_muzzle", &"bounded_tracer", &"near_miss", &"character_hit", &"metal_sparks", &"concrete_dust"],
 	}
 
@@ -122,13 +155,13 @@ func _remember_event(shot_id: String) -> void:
 		_observed_ids.erase(_observed_order.pop_front())
 
 
-func _spawn_muzzle(position: Vector3, direction: Vector3, color: Color, event: Dictionary) -> void:
+func _spawn_muzzle(position: Vector3, direction: Vector3, color: Color, event: Dictionary, variant_index: int) -> void:
 	var root := Node3D.new()
 	root.name = "Muzzle_%s" % _safe_id(event)
 	var core := MeshInstance3D.new()
 	var core_mesh := SphereMesh.new()
-	core_mesh.radius = 0.045
-	core_mesh.height = 0.09
+	core_mesh.radius = 0.038 + 0.004 * float(variant_index)
+	core_mesh.height = 0.08 + 0.01 * float(variant_index % 2)
 	core_mesh.radial_segments = 10
 	core_mesh.rings = 5
 	core_mesh.material = _energy_material(Color(1.0, 0.87, 0.5, 0.96), 7.5)
@@ -138,7 +171,7 @@ func _spawn_muzzle(position: Vector3, direction: Vector3, color: Color, event: D
 	var flame_mesh := CylinderMesh.new()
 	flame_mesh.top_radius = 0.008
 	flame_mesh.bottom_radius = 0.035
-	flame_mesh.height = 0.18
+	flame_mesh.height = 0.15 + 0.025 * float(variant_index)
 	flame_mesh.radial_segments = 8
 	flame_mesh.material = _energy_material(color, 5.2)
 	flame.mesh = flame_mesh
@@ -153,7 +186,7 @@ func _spawn_muzzle(position: Vector3, direction: Vector3, color: Color, event: D
 	tween.finished.connect(_retire_effect.bind(root))
 
 
-func _spawn_tracer(from: Vector3, to: Vector3, color: Color, event: Dictionary, result: StringName) -> void:
+func _spawn_tracer(from: Vector3, to: Vector3, color: Color, event: Dictionary, result: StringName, variant_index: int) -> void:
 	var delta := to - from
 	var distance := delta.length()
 	if distance <= 0.02:
@@ -166,7 +199,7 @@ func _spawn_tracer(from: Vector3, to: Vector3, color: Color, event: Dictionary, 
 	var role := &"near_miss" if result == &"miss" else &"bounded_tracer"
 	tracer.name = "%s_%s" % [String(role).to_pascal_case(), _safe_id(event)]
 	var mesh := CylinderMesh.new()
-	mesh.top_radius = 0.0065 if StringName(event.get("source_team", &"player")) == &"enemy" else 0.005
+	mesh.top_radius = (0.0058 + 0.0005 * float(variant_index)) if StringName(event.get("source_team", &"player")) == &"enemy" else 0.005
 	mesh.bottom_radius = mesh.top_radius
 	mesh.height = visible_length
 	mesh.radial_segments = 6
@@ -196,15 +229,14 @@ func _spawn_impact(position: Vector3, event: Dictionary) -> void:
 	var impact_role := &"character_hit" if surface == &"character" else &"metal_sparks" if surface == &"metal" else &"concrete_dust"
 	_add_effect(root, impact_role, impact_seconds)
 	root.global_position = position
-	var near_player_hit := surface == &"character" and StringName(event.get("source_team", &"player")) == &"enemy"
 	var normal: Vector3 = event.get("hit_normal", Vector3.UP)
 	if not normal.is_zero_approx():
 		root.global_basis = _basis_from_up(normal)
 	# Assign scale after the orientation basis; setting global_basis replaces scale.
-	root.scale = Vector3.ONE * (0.035 if near_player_hit else 1.0)
+	root.scale = Vector3.ONE
 	impact_spawned.emit(event, root)
 	var tween := root.create_tween().set_parallel(true)
-	var target_scale := 0.08 if near_player_hit else (0.82 if surface == &"character" else 1.05)
+	var target_scale := 0.82 if surface == &"character" else 1.05
 	tween.tween_property(root, "scale", Vector3.ONE * target_scale, impact_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tween.tween_property(root, "rotation:y", root.rotation.y + 0.8, impact_seconds)
 	tween.finished.connect(_retire_effect.bind(root))
@@ -264,11 +296,11 @@ func _build_concrete_impact(root: Node3D) -> void:
 		root.add_child(chip)
 
 
-func _spawn_audio(muzzle_position: Vector3, impact_position: Vector3, result: StringName, surface: StringName, source_team: StringName) -> void:
+func _spawn_audio(muzzle_position: Vector3, impact_position: Vector3, result: StringName, surface: StringName, source_team: StringName, local_player_hit: bool) -> void:
 	_spawn_audio_cue(muzzle_position, _get_shot_audio(), &"spatial_report_audio", -5.0 if source_team == &"enemy" else -7.0, 0.92 if source_team == &"enemy" else 1.06)
 	if result == &"miss":
 		_spawn_audio_cue(impact_position, _get_near_miss_audio(), &"near_miss_audio", -10.0, 1.0)
-	elif result in [&"hit", &"blocked"]:
+	elif result in [&"hit", &"blocked"] and not local_player_hit:
 		var stream := _get_character_impact_audio() if surface == &"character" else _get_metal_impact_audio() if surface == &"metal" else _get_concrete_impact_audio()
 		_spawn_audio_cue(impact_position, stream, &"surface_impact_audio", -8.0, 1.0)
 
@@ -291,6 +323,7 @@ func _spawn_audio_cue(position: Vector3, stream: AudioStreamWAV, role: StringNam
 
 func _add_effect(effect: Node3D, role: StringName, lifetime: float) -> void:
 	while _active_effects.size() >= max_active_effects:
+		_culled_effect_count += 1
 		_retire_effect(_active_effects.front())
 	var target := get_tree().current_scene
 	if target == null:
@@ -322,6 +355,45 @@ func _active_effect_snapshot() -> Array[Dictionary]:
 			"lifetime_seconds": float(effect.get_meta(&"effect_lifetime_seconds", 0.0)),
 		})
 	return result
+
+
+func _is_local_player_hit(event: Dictionary, source_team: StringName, result: StringName, surface: StringName) -> bool:
+	if source_team != &"enemy" or result != &"hit" or surface != &"character":
+		return false
+	var target_path := NodePath(String(event.get("target_path", "")))
+	var target := get_node_or_null(target_path) if not target_path.is_empty() else null
+	return target != null and (target.is_in_group(&"player") or target.is_in_group(&"fps_player"))
+
+
+func _clip_trace_endpoint_for_camera(from: Vector3, to: Vector3, force_clip: bool) -> Dictionary:
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		return {"endpoint": to, "clipped": false, "reason": &"camera_unavailable"}
+	var original_clearance := to.distance_to(camera.global_position)
+	var safe_clearance := maxf(0.7, camera.near * 12.0)
+	if not force_clip or original_clearance >= safe_clearance:
+		return {"endpoint": to, "clipped": false, "camera_clearance": original_clearance, "required_clearance": safe_clearance}
+	var direction := from.direction_to(to)
+	if direction.is_zero_approx():
+		direction = -camera.global_basis.z
+	var clipped_endpoint := camera.global_position - direction * safe_clearance
+	return {
+		"endpoint": clipped_endpoint,
+		"clipped": true,
+		"reason": &"local_player_near_plane_guard",
+		"camera_clearance": clipped_endpoint.distance_to(camera.global_position),
+		"required_clearance": safe_clearance,
+	}
+
+
+func _max_variant_share() -> float:
+	var total := 0
+	var maximum := 0
+	for variant_index in _variant_use_counts:
+		var count := int(_variant_use_counts[variant_index])
+		total += count
+		maximum = maxi(maximum, count)
+	return 0.0 if total <= 0 else float(maximum) / float(total)
 
 
 func _energy_material(color: Color, energy: float) -> StandardMaterial3D:

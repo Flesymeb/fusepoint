@@ -4,6 +4,8 @@ signal walkable_topology_bound(report: Dictionary)
 
 const EXPECTED_SOURCE_SHA256 := "6298ee68eb4df52d4fe8bdd332a1813492de600f595c214ef934f35fd3ee3e1a"
 const EXPECTED_WORLD_EXTENTS := Vector3(217.404864, 24.222379, 232.932841)
+const NAVIGATION_SOURCE_GROUP := &"fusepoint_structural_navigation_source"
+const DECORATIVE_COLLISION_TOKENS: Array[String] = ["decal", "2year"]
 
 @onready var map_wrapper: Node3D = $NavigationRegion3D/AuthoredEnvironmentWrapper
 @onready var map_instance: Node3D = $NavigationRegion3D/AuthoredEnvironmentWrapper/StandoffArena
@@ -22,6 +24,11 @@ var navigation_polygon_count := 0
 var topology_binding_report: Dictionary = {}
 var route_corner_chains: Dictionary = {}
 var route_clearance: Dictionary = {}
+var topology_ready := false
+var collision_source_counts := {"selected": 0, "excluded": 0}
+var collision_source_triangles := {"selected": 0, "excluded": 0}
+var selected_collision_sources: Array[String] = []
+var excluded_collision_sources: Array[String] = []
 
 
 func _ready() -> void:
@@ -87,8 +94,19 @@ func _build_map_collision() -> void:
 		var mesh_instance := node as MeshInstance3D
 		if mesh_instance.mesh == null:
 			continue
+		var source_path := String(mesh_instance.get_path())
+		var source_faces := mesh_instance.mesh.get_faces()
+		var triangle_count := source_faces.size() / 3
+		if not _is_structural_collision_source(mesh_instance):
+			collision_source_counts["excluded"] = int(collision_source_counts["excluded"]) + 1
+			collision_source_triangles["excluded"] = int(collision_source_triangles["excluded"]) + triangle_count
+			excluded_collision_sources.append(source_path)
+			continue
+		collision_source_counts["selected"] = int(collision_source_counts["selected"]) + 1
+		collision_source_triangles["selected"] = int(collision_source_triangles["selected"]) + triangle_count
+		selected_collision_sources.append(source_path)
 		var to_collision := collision_inverse * mesh_instance.global_transform
-		for vertex in mesh_instance.mesh.get_faces():
+		for vertex in source_faces:
 			faces.append(to_collision * vertex)
 	if faces.size() < 3:
 		push_error("Standoff Arena exposed no usable mesh faces for collision.")
@@ -99,15 +117,32 @@ func _build_map_collision() -> void:
 	collision_shape.name = "AuthoredMapConcaveCollision"
 	collision_shape.shape = shape
 	map_collision.add_child(collision_shape)
+	map_collision.add_to_group(NAVIGATION_SOURCE_GROUP)
 	collision_triangle_count = faces.size() / 3
 	collision_ready = true
-	print("Arena collision built from %d triangles." % collision_triangle_count)
+	print("Arena structural collision built from %d triangles across %d selected sources; %d decorative sources excluded." % [collision_triangle_count, collision_source_counts["selected"], collision_source_counts["excluded"]])
+
+
+func _is_structural_collision_source(mesh_instance: MeshInstance3D) -> bool:
+	# The imported scene is partitioned by material. Decal partitions are visual
+	# overlays with very large or coplanar faces, not opaque walkable structure.
+	var source_name := String(mesh_instance.name).to_lower()
+	for token in DECORATIVE_COLLISION_TOKENS:
+		if token in source_name:
+			return false
+	return mesh_instance.visible
 
 
 func _start_navigation_bake() -> void:
 	if navigation_region.navigation_mesh == null:
 		push_error("Arena NavigationRegion3D has no NavigationMesh resource.")
 		return
+	# Bake from the isolated structural collider only. Parsing the visible GLB
+	# again would reintroduce the excluded decal partitions into navigation.
+	navigation_region.navigation_mesh.geometry_parsed_geometry_type = NavigationMesh.PARSED_GEOMETRY_STATIC_COLLIDERS
+	navigation_region.navigation_mesh.geometry_source_geometry_mode = NavigationMesh.SOURCE_GEOMETRY_GROUPS_EXPLICIT
+	navigation_region.navigation_mesh.geometry_source_group_name = NAVIGATION_SOURCE_GROUP
+	navigation_region.navigation_mesh.geometry_collision_mask = map_collision.collision_layer
 	navigation_bake_started = true
 	navigation_region.bake_navigation_mesh(true)
 
@@ -126,8 +161,11 @@ func _on_navigation_bake_finished() -> void:
 		await get_tree().physics_frame
 		NavigationServer3D.map_force_update(navigation_region.get_navigation_map())
 		if _bind_product_anchors():
+			topology_ready = true
 			break
-	navigation_ready = true
+	navigation_ready = topology_ready
+	if not topology_ready:
+		push_warning("Arena navigation baked, but transactional anchor binding did not become valid.")
 
 
 func _bind_product_anchors() -> bool:
@@ -165,11 +203,24 @@ func _bind_product_anchors() -> bool:
 		and projected["alpha"].distance_to(projected["bravo"]) > 10.0
 		and projected["bravo"].distance_to(projected["charlie"]) > 10.0
 	)
-	if connected:
+	var anchor_validation := {}
+	if player != null:
+		for id in projected:
+			var target: Transform3D = Transform3D(player.global_basis, projected[id] + Vector3.UP * 0.9)
+			anchor_validation[id] = player.call(&"validate_recovery_destination", target, [])
+	else:
+		anchor_validation["spawn"] = {"accepted": false, "failure_reason": &"player_missing"}
+	var all_anchors_valid: bool = anchor_validation.size() == projected.size()
+	for id in anchor_validation:
+		all_anchors_valid = all_anchors_valid and anchor_validation[id].get("accepted", false) == true
+	route_clearance = _validate_route_clearance(player) if connected else {}
+	var all_routes_clear: bool = connected and _all_routes_clear(route_clearance)
+	var first_escape: Dictionary = _first_escape_validation(edges["spawn_to_a"], player) if connected else {"accepted": false, "failure_reason": &"route_disconnected"}
+	var transaction_accepted: bool = connected and all_anchors_valid and all_routes_clear and bool(first_escape.get("accepted", false))
+	if transaction_accepted:
 		$Alpha.global_position = projected["alpha"] + Vector3.UP * 1.2
 		$Bravo.global_position = projected["bravo"] + Vector3.UP * 1.2
 		$Charlie.global_position = projected["charlie"] + Vector3.UP * 1.2
-		route_clearance = _validate_route_clearance(player)
 		if player != null and player.has_method(&"bind_deployment_to_walkable"):
 			var first_corner := _first_meaningful_corner(edges["spawn_to_a"], projected["spawn"])
 			player.call(&"bind_deployment_to_walkable", projected["spawn"] + Vector3.UP * 0.9, first_corner + Vector3.UP * 0.9)
@@ -189,12 +240,42 @@ func _bind_product_anchors() -> bool:
 			"b_to_c": edges["b_to_c"].size(),
 		},
 		"ordered_corners": route_corner_chains.duplicate(true),
+		"anchor_validation": anchor_validation.duplicate(true),
 		"capsule_clearance": route_clearance.duplicate(true),
+		"first_escape": first_escape.duplicate(true),
 		"all_edges_connected": connected,
-		"anchors_applied": connected,
+		"all_anchors_valid": all_anchors_valid,
+		"all_routes_clear": all_routes_clear,
+		"anchors_applied": transaction_accepted,
+		"failure_reason": &"" if transaction_accepted else &"route_disconnected" if not connected else &"anchor_occupancy_rejected" if not all_anchors_valid else &"route_capsule_blocked" if not all_routes_clear else &"first_escape_blocked",
 	}
 	walkable_topology_bound.emit(topology_binding_report.duplicate(true))
-	return connected
+	return transaction_accepted
+
+
+func _all_routes_clear(report: Dictionary) -> bool:
+	for leg_id in [&"spawn_to_a", &"a_to_b", &"b_to_c"]:
+		if report.get(leg_id, {}).get("clear", false) != true:
+			return false
+	return true
+
+
+func _first_escape_validation(path: PackedVector3Array, player: CharacterBody3D) -> Dictionary:
+	if path.size() < 2:
+		return {"accepted": false, "failure_reason": &"route_missing"}
+	var origin := path[0]
+	var first_corner := _first_meaningful_corner(path, origin)
+	var horizontal := first_corner - origin
+	horizontal.y = 0.0
+	if horizontal.length() < 0.6:
+		return {"accepted": false, "failure_reason": &"first_segment_too_short"}
+	var escape_target := origin + horizontal.normalized() * minf(horizontal.length(), 1.25)
+	var diagnostic := _route_segment_diagnostic(origin, escape_target, player)
+	diagnostic["accepted"] = float(diagnostic.get("safe_fraction", 0.0)) >= 0.985
+	diagnostic["from"] = origin
+	diagnostic["to"] = escape_target
+	diagnostic["failure_reason"] = &"" if diagnostic["accepted"] else &"first_segment_capsule_blocked"
+	return diagnostic
 
 
 func _first_meaningful_corner(path: PackedVector3Array, origin: Vector3) -> Vector3:
@@ -244,6 +325,10 @@ func _build_capsule_clear_route(path: PackedVector3Array, player: CharacterBody3
 
 
 func _route_segment_safe_fraction(from: Vector3, to: Vector3, player: CharacterBody3D) -> float:
+	return float(_route_segment_diagnostic(from, to, player).get("safe_fraction", 0.0))
+
+
+func _route_segment_diagnostic(from: Vector3, to: Vector3, player: CharacterBody3D) -> Dictionary:
 	var capsule := CapsuleShape3D.new()
 	capsule.radius = 0.39
 	capsule.height = 1.72
@@ -258,7 +343,26 @@ func _route_segment_safe_fraction(from: Vector3, to: Vector3, player: CharacterB
 	if player != null:
 		query.exclude = [player.get_rid()]
 	var cast := get_world_3d().direct_space_state.cast_motion(query)
-	return float(cast[0]) if cast.size() >= 1 else 0.0
+	var safe_fraction := float(cast[0]) if cast.size() >= 1 else 0.0
+	var diagnostic := {"safe_fraction": safe_fraction, "blocker": {}}
+	if safe_fraction >= 0.999:
+		return diagnostic
+	var probe := PhysicsShapeQueryParameters3D.new()
+	probe.shape = capsule
+	probe.transform = Transform3D(Basis.IDENTITY, from + Vector3.UP * 0.9 + (to - from) * minf(1.0, safe_fraction + 0.015))
+	probe.margin = 0.015
+	probe.collision_mask = query.collision_mask
+	probe.collide_with_areas = false
+	probe.collide_with_bodies = true
+	probe.exclude = query.exclude
+	var blockers := get_world_3d().direct_space_state.intersect_shape(probe, 4)
+	if not blockers.is_empty():
+		var collider: Variant = blockers[0].get("collider", null)
+		diagnostic["blocker"] = {
+			"collider_path": String(collider.get_path()) if collider is Node else String(collider),
+			"collider_id": int(blockers[0].get("collider_id", 0)),
+		}
+	return diagnostic
 
 
 func _validate_route_clearance(player: CharacterBody3D) -> Dictionary:
@@ -269,13 +373,15 @@ func _validate_route_clearance(player: CharacterBody3D) -> Dictionary:
 		for index in range(1, path.size()):
 			var from := path[index - 1] + Vector3.UP * 0.9
 			var to := path[index] + Vector3.UP * 0.9
-			var safe_fraction := _route_segment_safe_fraction(path[index - 1], path[index], player)
+			var diagnostic := _route_segment_diagnostic(path[index - 1], path[index], player)
+			var safe_fraction := float(diagnostic.get("safe_fraction", 0.0))
 			if safe_fraction < 0.985:
 				blocked_segments.append({
 					"segment": index - 1,
 					"from": from,
 					"to": to,
 					"safe_fraction": safe_fraction,
+					"blocker": diagnostic.get("blocker", {}),
 				})
 		report[leg_id] = {
 			"clear": blocked_segments.is_empty(),
@@ -304,10 +410,15 @@ func _mcp_state() -> Dictionary:
 		"material_slot_count": material_slot_count,
 		"collision_ready": collision_ready,
 		"collision_triangle_count": collision_triangle_count,
+		"collision_source_counts": collision_source_counts,
+		"collision_source_triangles": collision_source_triangles,
+		"selected_collision_sources": selected_collision_sources,
+		"excluded_collision_sources": excluded_collision_sources,
 		"navigation_bake_started": navigation_bake_started,
 		"navigation_ready": navigation_ready,
 		"navigation_vertex_count": navigation_vertex_count,
 		"navigation_polygon_count": navigation_polygon_count,
+		"topology_ready": topology_ready,
 		"ground_datum_y": 0.0,
 		"topology_binding": topology_binding_report,
 		"route_corner_chains": route_corner_chains,

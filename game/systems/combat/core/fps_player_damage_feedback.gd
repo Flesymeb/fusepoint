@@ -43,6 +43,7 @@ var camera_response_active := false
 var death_kind := &"none"
 var restore_transition_active := false
 var recovery_saturation := 1.0
+var observed_audio_role := &"none"
 
 var _player: Node
 var _camera: Camera3D
@@ -57,6 +58,8 @@ var _restore_tween: Tween
 var _applied_reduced_motion := false
 var _applied_screen_shake := true
 var _restore_epoch := 0
+var _body_hit_audio: AudioStreamPlayer
+var _armor_hit_audio: AudioStreamPlayer
 
 
 func _ready() -> void:
@@ -66,6 +69,8 @@ func _ready() -> void:
 	if _camera != null:
 		_camera_rest_position = _camera.position
 		_camera_rest_rotation = _camera.rotation
+	_body_hit_audio = _make_feedback_audio(&"BodyHitAudio", _synth_hit_sound(0.15, 112.0, 0.32, 0.42), -7.0)
+	_armor_hit_audio = _make_feedback_audio(&"ArmorHitAudio", _synth_hit_sound(0.11, 720.0, 0.38, 0.16), -9.0)
 	reset_feedback(true)
 	if not player_path.is_empty():
 		bind_player(get_node_or_null(player_path))
@@ -117,6 +122,11 @@ func show_damage(event: Dictionary) -> void:
 	var persistent := pow(1.0 - health_ratio, 1.7) * low_health_max_alpha
 	observed_direction_radians = _direction_to_source(event.get("source_position", null))
 	observed_direction = _direction_name(observed_direction_radians)
+	observed_audio_role = &"body_hit_audio" if observed_severity in [&"heavy", &"critical"] else &"armor_hit_audio"
+	var selected_audio := _body_hit_audio if observed_audio_role == &"body_hit_audio" else _armor_hit_audio
+	if selected_audio != null:
+		selected_audio.pitch_scale = 0.92 if observed_severity == &"critical" else 1.0
+		selected_audio.play()
 	_configure_direction_arc(observed_direction_radians, peak)
 	pain_overlay.modulate = Color(1.0, 1.0, 1.0, peak)
 	damage_arc.modulate = Color.WHITE
@@ -182,6 +192,11 @@ func reset_feedback(clear_event_history := false) -> void:
 		observed_direction = &"none"
 		observed_severity = &"none"
 		observed_severity_ratio = 0.0
+		observed_audio_role = &"none"
+	if _body_hit_audio != null:
+		_body_hit_audio.stop()
+	if _armor_hit_audio != null:
+		_armor_hit_audio.stop()
 	if pain_overlay != null:
 		pain_overlay.modulate = Color(1.0, 1.0, 1.0, 0.0)
 	if damage_arc != null:
@@ -231,6 +246,8 @@ func snapshot() -> Dictionary:
 		"observed_direction_radians": observed_direction_radians,
 		"observed_severity": observed_severity,
 		"observed_severity_ratio": observed_severity_ratio,
+		"observed_audio_role": observed_audio_role,
+		"selected_channel_roles": [&"directional_edge_arc", &"bounded_pain_vignette", observed_audio_role],
 		"feedback_alpha": maxf(pain_overlay.modulate.a, damage_arc.modulate.a * damage_arc.default_color.a) if pain_overlay != null and damage_arc != null else 0.0,
 		"feedback_lifetime_remaining": feedback_lifetime_remaining,
 		"camera_response_active": camera_response_active,
@@ -255,6 +272,40 @@ func _direction_to_source(source_position: Variant) -> float:
 		return 0.0
 	var local_direction := _camera.global_transform.basis.inverse() * to_source.normalized()
 	return atan2(local_direction.x, -local_direction.z)
+
+
+func _make_feedback_audio(node_name: StringName, stream: AudioStreamWAV, volume_db: float) -> AudioStreamPlayer:
+	var player := AudioStreamPlayer.new()
+	player.name = node_name
+	player.stream = stream
+	player.volume_db = volume_db
+	add_child(player)
+	return player
+
+
+func _synth_hit_sound(duration: float, frequency: float, tone_gain: float, noise_gain: float) -> AudioStreamWAV:
+	const MIX_RATE := 22050
+	var sample_count := int(MIX_RATE * duration)
+	var bytes := PackedByteArray()
+	bytes.resize(sample_count * 2)
+	for sample_index in sample_count:
+		var t := float(sample_index) / float(MIX_RATE)
+		var progress := float(sample_index) / float(sample_count)
+		var decay := pow(1.0 - progress, 2.4)
+		var tone := sin(TAU * frequency * t) * tone_gain
+		var noise_seed := float(((sample_index * 1664525 + 1013904223) >> 16) & 0x7fff) / 32767.0
+		var value := clampf((tone + (noise_seed * 2.0 - 1.0) * noise_gain) * decay, -1.0, 1.0)
+		var pcm := int(value * 32767.0)
+		if pcm < 0:
+			pcm += 65536
+		bytes[sample_index * 2] = pcm & 0xff
+		bytes[sample_index * 2 + 1] = (pcm >> 8) & 0xff
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = MIX_RATE
+	stream.stereo = false
+	stream.data = bytes
+	return stream
 
 
 func _direction_name(angle: float) -> StringName:

@@ -9,6 +9,7 @@ signal player_died(event: Dictionary)
 @export var walk_speed := 4.5
 @export var sprint_speed := 7.2
 @export var crouch_speed := 2.4
+@export var prone_speed := 1.15
 @export var ground_acceleration := 24.0
 @export var ground_deceleration := 28.0
 @export var air_acceleration := 8.0
@@ -17,8 +18,17 @@ signal player_died(event: Dictionary)
 @export_group("Stance")
 @export var standing_height := 1.8
 @export var crouching_height := 1.2
+@export var prone_height := 0.65
+@export var standing_radius := 0.4
+@export var crouching_radius := 0.4
+@export var prone_radius := 0.28
 @export var standing_eye_height := 0.62
 @export var crouching_eye_height := 0.22
+@export var prone_eye_height := -0.43
+@export var auto_step_enabled := true
+@export var max_step_height := 0.45
+@export var step_forward_distance := 0.2
+@export var step_down_snap := 0.35
 
 @export_group("Camera")
 @export var mouse_sensitivity := 0.0022
@@ -66,6 +76,12 @@ var _look_history: Array[Dictionary] = []
 var _deployment_reset_count := 0
 var _last_deployment_reset_receipt: Dictionary = {}
 var _last_restore_receipt: Dictionary = {}
+var _base_camera_fov := 76.0
+var _blocked_seconds := 0.0
+var _unstuck_cooldown := 0.0
+var _last_stuck_diagnostic: Dictionary = {}
+var _auto_step_count := 0
+var _last_step_height := 0.0
 
 
 func _ready() -> void:
@@ -75,10 +91,14 @@ func _ready() -> void:
 	health = max_health
 	_deployment_collision_layer = collision_layer
 	_deployment_collision_mask = collision_mask
-	_standing_clearance_shape.radius = 0.4
+	_standing_clearance_shape.radius = standing_radius
 	_standing_clearance_shape.height = standing_height
-	floor_snap_length = 0.25
+	_base_camera_fov = camera.fov
+	floor_snap_length = step_down_snap
+	floor_constant_speed = true
 	floor_stop_on_slope = true
+	safe_margin = 0.03
+	max_slides = 8
 	_capture_mouse()
 
 
@@ -142,7 +162,13 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity.y -= _gravity * delta
 
-	move_and_slide()
+	var horizontal_motion := Vector3(velocity.x, 0.0, velocity.z) * delta
+	var step_motion := horizontal_motion
+	if not desired_direction.is_zero_approx():
+		step_motion = desired_direction * maxf(horizontal_motion.length(), step_forward_distance)
+	if not _try_step_up(step_motion):
+		move_and_slide()
+	_update_ground_recovery(delta, desired_direction)
 	_update_authoritative_state(was_on_floor, input_vector, sprinting, delta)
 
 
@@ -193,6 +219,8 @@ func _apply_look_delta(yaw_delta: float, pitch_delta: float, source: StringName,
 
 
 func _get_target_speed(sprinting: bool) -> float:
+	if _stance == "prone":
+		return prone_speed
 	if _stance == "crouched":
 		return crouch_speed
 	if sprinting:
@@ -201,32 +229,52 @@ func _get_target_speed(sprinting: bool) -> float:
 
 
 func _update_stance() -> void:
+	if Input.is_action_pressed("prone"):
+		if _stance != "prone":
+			_set_posture(&"prone")
+		_stand_clearance = _can_stand()
+		return
 	if Input.is_action_pressed("crouch"):
 		if _stance != "crouched":
-			_set_stance(true)
+			_set_posture(&"crouched")
 		_stand_clearance = _can_stand()
 		return
 
 	_stand_clearance = _can_stand()
-	if _stance == "crouched" and _stand_clearance:
-		_set_stance(false)
+	if _stance != "standing" and _stand_clearance:
+		_set_posture(&"standing")
 
 
 func _set_stance(crouched: bool) -> void:
+	_set_posture(&"crouched" if crouched else &"standing")
+
+
+func _set_posture(next_posture: StringName) -> void:
 	var capsule := collision_shape.shape as CapsuleShape3D
-	if crouched:
-		_stance = "crouched"
-		capsule.height = crouching_height
-		collision_shape.position.y = -(standing_height - crouching_height) * 0.5
-	else:
-		_stance = "standing"
-		capsule.height = standing_height
-		collision_shape.position.y = 0.0
+	var target_height := standing_height
+	var target_radius := standing_radius
+	match next_posture:
+		&"prone":
+			target_height = prone_height
+			target_radius = prone_radius
+		&"crouched":
+			target_height = crouching_height
+			target_radius = crouching_radius
+		_:
+			next_posture = &"standing"
+	if target_height > capsule.height and not _can_expand_to(target_height, target_radius):
+		return
+	capsule.height = maxf(target_height, target_radius * 2.0 + 0.02)
+	capsule.radius = target_radius
+	collision_shape.position.y = -(standing_height - target_height) * 0.5
+	_stance = String(next_posture)
 
 
 func _update_camera_height(delta: float) -> void:
-	var target_height := crouching_eye_height if _stance == "crouched" else standing_eye_height
+	var target_height := prone_eye_height if _stance == "prone" else crouching_eye_height if _stance == "crouched" else standing_eye_height
+	var target_fov := _base_camera_fov - (4.0 if _stance == "prone" else 2.0 if _stance == "crouched" else 0.0)
 	head.position.y = move_toward(head.position.y, target_height, stance_camera_speed * delta)
+	camera.fov = move_toward(camera.fov, target_fov, stance_camera_speed * 4.0 * delta)
 
 
 func _camera_height_above_feet() -> float:
@@ -237,14 +285,99 @@ func _camera_height_above_feet() -> float:
 func _can_stand() -> bool:
 	if _stance == "standing":
 		return true
+	return _can_expand_to(standing_height, standing_radius)
+
+
+func _can_expand_to(target_height: float, target_radius: float) -> bool:
 	var query := PhysicsShapeQueryParameters3D.new()
-	query.shape = _standing_clearance_shape
-	query.transform = Transform3D(global_transform.basis, global_position + Vector3.UP * 0.02)
+	var target_shape := CapsuleShape3D.new()
+	target_shape.height = maxf(target_height, target_radius * 2.0 + 0.02)
+	target_shape.radius = target_radius
+	query.shape = target_shape
+	var center_offset := -(standing_height - target_height) * 0.5
+	query.transform = Transform3D(global_transform.basis, global_position + Vector3.UP * (center_offset + 0.02))
 	query.collision_mask = collision_mask
 	query.exclude = [get_rid()]
 	query.collide_with_areas = false
 	query.collide_with_bodies = true
 	return get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty()
+
+
+func _try_step_up(horizontal_motion: Vector3) -> bool:
+	if not auto_step_enabled or _stance == "prone" or not is_on_floor() or velocity.y > 0.01:
+		return false
+	if horizontal_motion.length_squared() < 0.000001 or not test_move(global_transform, horizontal_motion):
+		return false
+	var up_motion := Vector3.UP * max_step_height
+	if test_move(global_transform, up_motion):
+		return false
+	var raised_transform := global_transform
+	raised_transform.origin += up_motion
+	if test_move(raised_transform, horizontal_motion):
+		return false
+	var raised_forward := raised_transform
+	raised_forward.origin += horizontal_motion
+	var parameters := PhysicsTestMotionParameters3D.new()
+	parameters.from = raised_forward
+	parameters.motion = Vector3.DOWN * (max_step_height + safe_margin * 2.0)
+	parameters.margin = safe_margin
+	var result := PhysicsTestMotionResult3D.new()
+	if not PhysicsServer3D.body_test_motion(get_rid(), parameters, result) or result.get_collision_count() == 0:
+		return false
+	if result.get_collision_normal().dot(Vector3.UP) < 0.5:
+		return false
+	var step_height := max_step_height + result.get_travel().y
+	if step_height <= safe_margin or step_height > max_step_height + safe_margin:
+		return false
+	raised_forward.origin += result.get_travel()
+	global_transform = raised_forward
+	velocity.y = 0.0
+	_auto_step_count += 1
+	_last_step_height = step_height
+	return true
+
+
+func _update_ground_recovery(delta: float, desired_direction: Vector3) -> void:
+	_unstuck_cooldown = maxf(0.0, _unstuck_cooldown - delta)
+	var horizontal_speed := Vector2(get_real_velocity().x, get_real_velocity().z).length()
+	if desired_direction.is_zero_approx() or not is_on_floor() or get_slide_collision_count() == 0 or horizontal_speed > 0.08:
+		_blocked_seconds = 0.0
+		return
+	_blocked_seconds += delta
+	_last_stuck_diagnostic = {
+		"position": global_position,
+		"requested_direction": desired_direction,
+		"horizontal_speed": horizontal_speed,
+		"blocked_seconds": _blocked_seconds,
+		"slide_contacts": _slide_contact_snapshot(),
+	}
+	if _blocked_seconds < 0.65 or _unstuck_cooldown > 0.0:
+		return
+	var side := desired_direction.cross(Vector3.UP).normalized()
+	for offset in [side * 0.10, -side * 0.10, -desired_direction * 0.10]:
+		if not test_move(global_transform, offset):
+			global_position += offset
+			velocity.x = 0.0
+			velocity.z = 0.0
+			_last_stuck_diagnostic["recovery_offset"] = offset
+			_last_stuck_diagnostic["recovered"] = true
+			_blocked_seconds = 0.0
+			_unstuck_cooldown = 1.25
+			return
+	_last_stuck_diagnostic["recovered"] = false
+
+
+func _slide_contact_snapshot() -> Array[Dictionary]:
+	var contacts: Array[Dictionary] = []
+	for index in get_slide_collision_count():
+		var collision := get_slide_collision(index)
+		var collider: Variant = collision.get_collider()
+		contacts.append({
+			"collider_path": String(collider.get_path()) if collider is Node else String(collider),
+			"normal": collision.get_normal(),
+			"position": collision.get_position(),
+		})
+	return contacts
 
 
 func _update_authoritative_state(was_on_floor: bool, input_vector: Vector2, sprinting: bool, delta: float) -> void:
@@ -316,6 +449,8 @@ func _reset_to_spawn(source: StringName = &"mission_setup") -> void:
 	health = max_health
 	_damage_commits.clear()
 	_last_damage_event.clear()
+	_last_stuck_diagnostic.clear()
+	_blocked_seconds = 0.0
 	_set_stance(false)
 	head.position.y = standing_eye_height
 	_capture_mouse()
@@ -370,12 +505,15 @@ func reset_transient_state_for_restore() -> void:
 	terminal_locked = false
 	terminal_event_id = ""
 	velocity = Vector3.ZERO
+	_last_stuck_diagnostic.clear()
+	_blocked_seconds = 0.0
 
 
 func apply_accessibility_settings(values: Dictionary) -> void:
 	reduced_camera_motion = values.get("reduced_camera_motion", false) == true
 	screen_shake_enabled = values.get("screen_shake", true) == true
-	camera.fov = clampf(float(values.get("fov", camera.fov)), 65.0, 95.0)
+	_base_camera_fov = clampf(float(values.get("fov", camera.fov)), 65.0, 95.0)
+	camera.fov = _base_camera_fov
 
 
 func _restore_movement_state(target_transform: Transform3D, target_health: float) -> void:
@@ -573,6 +711,9 @@ func _mcp_state() -> Dictionary:
 		"camera_fov": camera.fov,
 		"collision_height": (collision_shape.shape as CapsuleShape3D).height,
 		"spawn_position": _spawn_transform.origin,
+		"deployment_reset_count": _deployment_reset_count,
+		"last_deployment_reset_receipt": _last_deployment_reset_receipt,
+		"last_restore_receipt": _last_restore_receipt,
 		"pitch_limit_degrees": pitch_limit_degrees,
 		"locomotion_mode": _locomotion_mode,
 		"stance": _stance,
@@ -582,6 +723,15 @@ func _mcp_state() -> Dictionary:
 		"jump_available": is_on_floor() and _stance == "standing",
 		"landing_active": _landing_time_left > 0.0,
 		"stand_clearance": _stand_clearance,
+		"posture_height": (collision_shape.shape as CapsuleShape3D).height,
+		"posture_radius": (collision_shape.shape as CapsuleShape3D).radius,
+		"auto_step_enabled": auto_step_enabled,
+		"max_step_height": max_step_height,
+		"auto_step_count": _auto_step_count,
+		"last_step_height": _last_step_height,
+		"blocked_seconds": _blocked_seconds,
+		"last_stuck_diagnostic": _last_stuck_diagnostic,
+		"slide_contacts": _slide_contact_snapshot(),
 		"health": health,
 		"max_health": max_health,
 		"damage_commit_count": _damage_commits.size(),
@@ -596,7 +746,4 @@ func _mcp_state() -> Dictionary:
 		"look_input_authority": &"player_raw_input_and_physics_stick",
 		"look_input_count": _look_input_serial,
 		"last_look_receipt": _last_look_receipt,
-		"deployment_reset_count": _deployment_reset_count,
-		"last_deployment_reset_receipt": _last_deployment_reset_receipt,
-		"last_restore_receipt": _last_restore_receipt,
 	}
