@@ -59,6 +59,9 @@ var _media_started := false
 var _flash_tween: Tween
 var _edge_tween: Tween
 var _tactical_hud: Node
+var _applied_reduced_motion := false
+var _applied_screen_shake := true
+var _restore_epoch := 0
 
 
 func _ready() -> void:
@@ -245,6 +248,16 @@ func reset_presentation(clear_event_cache := true, restore_camera := true) -> vo
 		_observed_event_ids.clear()
 
 
+func reset_for_restore(epoch: int) -> void:
+	_restore_epoch = maxi(_restore_epoch, epoch)
+	reset_presentation(true, true)
+
+
+func apply_accessibility_settings(values: Dictionary) -> void:
+	_applied_reduced_motion = values.get("reduced_camera_motion", false) == true
+	_applied_screen_shake = values.get("screen_shake", true) == true
+
+
 func _clear_overlay() -> void:
 	flash_overlay.color.a = 0.0
 	red_edge.modulate.a = 0.0
@@ -391,7 +404,7 @@ func _settings() -> Dictionary:
 
 
 func _motion_scale() -> float:
-	return 0.35 if _settings().get("reduced_camera_motion", false) == true else 1.0
+	return 0.35 if _applied_reduced_motion else 1.0
 
 
 func _flash_scale() -> float:
@@ -453,6 +466,9 @@ func snapshot() -> Dictionary:
 		"duplicate_event_count": duplicate_event_count,
 		"camera_position": camera.global_position if camera != null else Vector3.ZERO,
 		"victory_avatar_visible": victory_avatar.visible,
+		"restore_epoch": _restore_epoch,
+		"reduced_camera_motion": _applied_reduced_motion,
+		"screen_shake_enabled": _applied_screen_shake,
 	}
 
 

@@ -285,6 +285,27 @@ func commit_restore_epoch(epoch: int) -> Dictionary:
 	return last_restore_receipt.duplicate(true)
 
 
+func abort_restore_epoch(epoch: int, rollback_snapshot: Dictionary, reason: StringName) -> Dictionary:
+	if epoch != restore_epoch:
+		return {}
+	var rollback_count := 0
+	for id: StringName in enemies:
+		var actor_snapshot: Dictionary = rollback_snapshot.get(id, rollback_snapshot.get(String(id), {}))
+		if not actor_snapshot.is_empty() and (enemies[id] as FusepointEnemyAgent).abort_checkpoint_restore(actor_snapshot, epoch):
+			rollback_count += 1
+	restore_in_progress = false
+	restore_applied_actor_count = 0
+	last_restore_receipt = {
+		"restore_epoch": epoch,
+		"actor_count": enemies.size(),
+		"rollback_actor_count": rollback_count,
+		"committed": false,
+		"quiescent": true,
+		"failure_reason": reason,
+	}
+	return last_restore_receipt.duplicate(true)
+
+
 func restore_all(saved: Dictionary) -> Dictionary:
 	var epoch := begin_restore_epoch()
 	if epoch < 0 or not apply_restore_snapshot(saved, epoch):

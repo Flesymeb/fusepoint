@@ -61,6 +61,8 @@ var _input_edge_serial := 0
 var _last_input_receipt: Dictionary = {}
 var _input_history: Array[Dictionary] = []
 var _combat_clock_seconds := 0.0
+var _restore_epoch := 0
+var _transient_reset_complete := false
 
 
 func _ready() -> void:
@@ -698,27 +700,42 @@ func snapshot_weapon_state() -> Dictionary:
 	}
 
 
-func restore_weapon_state(snapshot: Dictionary) -> void:
+func restore_weapon_state(snapshot: Dictionary, epoch := 0) -> void:
 	var serial_before := _shot_serial
-	var shot_commits_before := _shot_commits.duplicate(true)
-	var shot_history_before := _shot_history.duplicate(true)
-	var last_shot_before := _last_shot.duplicate(true)
-	var impact_commits_before := _impact_commits.duplicate(true)
-	var impact_history_before := _impact_history.duplicate(true)
+	_restore_epoch = maxi(_restore_epoch, epoch)
+	_transient_reset_complete = false
 	_cancel_action(&"hip")
 	_weapons = snapshot.get("weapons", _fresh_weapon_data()).duplicate(true)
 	_equipped_id = StringName(snapshot.get("equipped_id", &"ak74m"))
 	_pending_equipped_id = &""
 	_ads_held = false
 	_shot_serial = maxi(serial_before, int(snapshot.get("shot_serial", 0)))
-	_shot_commits = shot_commits_before
-	_shot_history.assign(shot_history_before)
-	_last_shot = last_shot_before
-	_impact_commits = impact_commits_before
-	_impact_history.assign(impact_history_before)
-	_clear_live_impacts()
+	reset_transient_state_for_restore()
 	viewmodel.call(&"equip_weapon_id", _equipped_id, true)
 	weapon_state_changed.emit(_mcp_state())
+
+
+func reset_transient_state_for_restore() -> void:
+	_cancel_queued_fire_edges("checkpoint_restore")
+	_cancel_held_fire("checkpoint_restore")
+	_observed_fire_down = false
+	_fire_rearm_required = false
+	_active_fire_source = &"none"
+	_active_fire_press_edge_id = ""
+	_active_fire_press_time_usec = 0
+	_shot_commits.clear()
+	_shot_history.clear()
+	_last_shot.clear()
+	_impact_commits.clear()
+	_impact_history.clear()
+	_last_input_receipt.clear()
+	_input_history.clear()
+	_last_result_until = 0.0
+	if hud_result != null:
+		hud_result.text = ""
+	shot_feedback.reset_feedback()
+	_clear_live_impacts()
+	_transient_reset_complete = true
 
 
 func _visible_rig_audit() -> Dictionary:
@@ -883,4 +900,6 @@ func _mcp_state() -> Dictionary:
 		"visible_rig": audit,
 		"ready_for_combat": _ready_for_combat,
 		"gameplay_input_enabled": gameplay_input_enabled,
+		"restore_epoch": _restore_epoch,
+		"transient_reset_complete": _transient_reset_complete,
 	}

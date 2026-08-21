@@ -379,34 +379,34 @@ theme_override_font_sizes/font_size = 42
 text = "FIELD BRIEFING  /  11:40 LOCAL"
 [node name="Copy" type="Label" parent="Root/Pages/BriefingPage"]
 offset_left = 72.0
-offset_top = 154.0
-offset_right = 790.0
-offset_bottom = 474.0
+offset_top = 454.0
+offset_right = 1120.0
+offset_bottom = 536.0
 theme_override_colors/font_color = Color(0.95, 0.93, 0.82, 0.98)
 theme_override_colors/font_outline_color = Color(0.22, 0.12, 0.01, 0.9)
 theme_override_constants/outline_size = 5
 theme_override_font_sizes/font_size = 21
-text = "The Rift Front planted a timed bomb in the Sector C rocket maintenance bay.\n\nCommunications are down. Support is not coming. You are the only operator who can enter the base.\n\nRetake Alpha first. Hold Bravo and recover both defusal keys. Then breach Charlie and dismantle the device before detonation.\n\nThe five-minute countdown begins on deployment."
+text = "11:40 — KESTREL RIDGE MILITARY BASE\nRIFT FRONT SIGNALS CONFIRMED INSIDE THE PERIMETER."
 autowrap_mode = 2
 [node name="Actions" type="HBoxContainer" parent="Root/Pages/BriefingPage"]
 offset_left = 72.0
-offset_top = 548.0
+offset_top = 568.0
 offset_right = 570.0
-offset_bottom = 610.0
+offset_bottom = 630.0
 theme_override_constants/separation = 12
 [node name="DeployButton" type="Button" parent="Root/Pages/BriefingPage/Actions"]
 custom_minimum_size = Vector2(300, 54)
 layout_mode = 2
-text = "DEPLOY NOW  ▶"
+text = "SKIP BRIEFING  ▶"
 [node name="BackButton" type="Button" parent="Root/Pages/BriefingPage/Actions"]
 custom_minimum_size = Vector2(160, 54)
 layout_mode = 2
 text = "BACK"
 [node name="Error" type="Label" parent="Root/Pages/BriefingPage"]
 offset_left = 72.0
-offset_top = 620.0
+offset_top = 640.0
 offset_right = 780.0
-offset_bottom = 654.0
+offset_bottom = 674.0
 theme_override_colors/font_color = Color(1, 0.35, 0.22, 1)
 
 [node name="PausePage" type="Control" parent="Root/Pages"]

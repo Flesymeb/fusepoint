@@ -244,6 +244,20 @@ func finish_checkpoint_restore(epoch: int) -> bool:
 	return true
 
 
+func abort_checkpoint_restore(saved: Dictionary, epoch: int) -> bool:
+	if epoch != _restore_epoch:
+		return false
+	_restore_in_progress = true
+	if not apply_checkpoint_snapshot(saved, epoch):
+		return false
+	_restore_in_progress = false
+	_restore_quiescent = true
+	_restore_readiness = &"rollback_quiescent"
+	set_physics_process(false)
+	velocity = Vector3.ZERO
+	return true
+
+
 func _resume_after_restore_boundary(epoch: int) -> void:
 	await get_tree().physics_frame
 	if _restore_in_progress or epoch != _restore_epoch:

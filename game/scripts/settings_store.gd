@@ -20,7 +20,7 @@ var values := {
 
 func _ready() -> void:
 	load_settings()
-	apply_runtime()
+	apply_runtime.call_deferred()
 
 
 func load_settings() -> void:
@@ -50,6 +50,15 @@ func apply_runtime() -> void:
 		var camera := player.get_node_or_null("Head/Camera3D") as Camera3D
 		if camera != null:
 			camera.fov = clampf(float(values["fov"]), 65.0, 95.0)
+		if player.has_method(&"apply_accessibility_settings"):
+			player.call(&"apply_accessibility_settings", values)
+	for group_name: StringName in [&"product_shell", &"tactical_hud", &"terminal_presenter"]:
+		var owner := get_tree().get_first_node_in_group(group_name)
+		if owner != null and owner.has_method(&"apply_accessibility_settings"):
+			owner.call(&"apply_accessibility_settings", values)
+	var damage_feedback := get_node_or_null("../../PlayerDamageFeedback")
+	if damage_feedback != null and damage_feedback.has_method(&"apply_accessibility_settings"):
+		damage_feedback.call(&"apply_accessibility_settings", values)
 
 
 func snapshot() -> Dictionary:

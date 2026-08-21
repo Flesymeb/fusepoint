@@ -30,6 +30,9 @@ var _story_active := false
 var _event_rows: Array[String] = []
 var _minimap_bound := false
 var _hud_enabled := false
+var _applied_ui_scale := 1.0
+var _applied_subtitle_size := 18
+var _restore_epoch := 0
 
 
 func _ready() -> void:
@@ -75,6 +78,34 @@ func _bind_minimap() -> void:
 func set_hud_enabled(enabled: bool) -> void:
 	_hud_enabled = enabled
 	root.visible = enabled
+
+
+func apply_accessibility_settings(values: Dictionary) -> void:
+	_applied_ui_scale = clampf(float(values.get("ui_scale", 1.0)), 1.0, 2.0)
+	_applied_subtitle_size = clampi(int(values.get("subtitle_size", 18)), 14, 32)
+	narrative.add_theme_font_size_override("font_size", _applied_subtitle_size)
+	var multiplier := 1.0 + (_applied_ui_scale - 1.0) * 0.16
+	for node: Node in root.find_children("*", "Control", true, false):
+		var control := node as Control
+		if not (control is Label or control is Button):
+			continue
+		if not control.has_meta(&"fusepoint_hud_base_font_size"):
+			control.set_meta(&"fusepoint_hud_base_font_size", control.get_theme_font_size("font_size"))
+		var base_size := int(control.get_meta(&"fusepoint_hud_base_font_size"))
+		if base_size > 0 and base_size < 32:
+			control.add_theme_font_size_override("font_size", int(round(base_size * multiplier)))
+
+
+func reset_transient_feedback_for_restore(epoch: int) -> void:
+	_restore_epoch = maxi(_restore_epoch, epoch)
+	_story_active = false
+	_story_elapsed = 99.0
+	narrative.visible = false
+	narrative.text = ""
+	_event_rows.clear()
+	for child: Node in feed.get_children():
+		if child is Label:
+			(child as Label).text = ""
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -231,4 +262,7 @@ func _mcp_state() -> Dictionary:
 		"story_active": _story_active,
 		"story_elapsed": _story_elapsed,
 		"event_rows": _event_rows,
+		"applied_ui_scale": _applied_ui_scale,
+		"applied_subtitle_size": _applied_subtitle_size,
+		"restore_epoch": _restore_epoch,
 	}

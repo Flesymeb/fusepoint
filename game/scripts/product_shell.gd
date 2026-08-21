@@ -10,6 +10,13 @@ const STATE_PAUSE := &"pause"
 const STATE_SETTINGS := &"settings"
 const STATE_DEATH := &"death_recovery"
 const STATE_RESULT := &"result"
+const BRIEFING_CAPTIONS: Array[String] = [
+	"11:40 — KESTREL RIDGE MILITARY BASE\nRIFT FRONT SIGNALS CONFIRMED INSIDE THE PERIMETER.",
+	"SECTOR C ROCKET MAINTENANCE BAY\nA FIVE-MINUTE DETONATION DEVICE IS ARMED.",
+	"RETAKE ALPHA. SECURE BRAVO.\nRECOVER BOTH DEFUSAL KEYS.",
+	"BREACH CHARLIE AND DISMANTLE THE DEVICE.\nSUPPORT IS NOT COMING.",
+]
+const BRIEFING_BEAT_SECONDS := 2.4
 
 @onready var root: Control = $Root
 @onready var pages: Control = $Root/Pages
@@ -26,6 +33,15 @@ var _return_from_settings := STATE_TITLE
 var _selected_weapon := &"ak74m"
 var _loading_remaining := 0.0
 var _transition_serial := 0
+var _briefing_elapsed := 0.0
+var _briefing_caption_index := -1
+var _briefing_complete := false
+var _briefing_skip_count := 0
+var _deployment_requested := false
+var _applied_ui_scale := 1.0
+var _applied_subtitle_size := 18
+var _reduced_camera_motion := false
+var _screen_shake := true
 
 
 func _ready() -> void:
@@ -36,6 +52,7 @@ func _ready() -> void:
 	settings_store.settings_applied.connect(_on_settings_applied)
 	_set_gameplay_enabled(false)
 	_load_settings_controls()
+	settings_store.apply_runtime()
 	_show_page(STATE_TITLE)
 
 
@@ -47,7 +64,7 @@ func _connect_controls() -> void:
 	$Root/Pages/LoadoutPage/Content/Weapons/SaigaButton.pressed.connect(_select_weapon.bind(&"saiga12"))
 	$Root/Pages/LoadoutPage/Content/Actions/ConfirmButton.pressed.connect(_start_loading)
 	$Root/Pages/LoadoutPage/Content/Actions/BackButton.pressed.connect(_show_page.bind(STATE_TITLE))
-	$Root/Pages/BriefingPage/Actions/DeployButton.pressed.connect(_deploy)
+	$Root/Pages/BriefingPage/Actions/DeployButton.pressed.connect(_briefing_primary_action)
 	$Root/Pages/BriefingPage/Actions/BackButton.pressed.connect(_show_page.bind(STATE_LOADOUT))
 	$Root/Pages/PausePage/Menu/ResumeButton.pressed.connect(_resume_gameplay)
 	$Root/Pages/PausePage/Menu/SettingsButton.pressed.connect(_open_settings_from.bind(STATE_PAUSE))
@@ -66,17 +83,13 @@ func _input(event: InputEvent) -> void:
 	if app_state != STATE_GAMEPLAY and event.is_action_pressed(&"menu_accept"):
 		var focused := get_viewport().gui_get_focus_owner()
 		if focused is BaseButton:
-			(focused as BaseButton).pressed.emit()
+			var button := focused as BaseButton
+			if button.toggle_mode:
+				button.button_pressed = not button.button_pressed
+			button.pressed.emit()
 			get_viewport().set_input_as_handled()
 			return
-	if event.is_action_pressed(&"pause"):
-		if app_state == STATE_GAMEPLAY:
-			_pause_gameplay()
-		elif app_state == STATE_PAUSE:
-			_resume_gameplay()
-		get_viewport().set_input_as_handled()
-		return
-	if not (event.is_action_pressed(&"ui_cancel") or event.is_action_pressed(&"menu_back")):
+	if not (event.is_action_pressed(&"pause") or event.is_action_pressed(&"menu_back")):
 		return
 	match app_state:
 		STATE_LOADOUT, STATE_BRIEFING:
@@ -85,6 +98,8 @@ func _input(event: InputEvent) -> void:
 			_cancel_settings()
 		STATE_PAUSE:
 			_resume_gameplay()
+		STATE_GAMEPLAY:
+			_pause_gameplay()
 	get_viewport().set_input_as_handled()
 
 
@@ -94,6 +109,8 @@ func _process(delta: float) -> void:
 		$Root/Pages/LoadingPage/Progress.value = (1.0 - _loading_remaining / 1.35) * 100.0
 		if _loading_remaining <= 0.0:
 			_show_page(STATE_BRIEFING)
+	elif app_state == STATE_BRIEFING and not _briefing_complete:
+		_update_briefing(delta)
 
 
 func _show_page(state: StringName) -> void:
@@ -102,6 +119,8 @@ func _show_page(state: StringName) -> void:
 	pages.visible = state != STATE_GAMEPLAY
 	for child in pages.get_children():
 		(child as Control).visible = child.name == _page_name(state)
+	if state == STATE_BRIEFING:
+		_start_briefing()
 	if state != STATE_GAMEPLAY:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		_focus_first_button.call_deferred()
@@ -153,13 +172,57 @@ func _start_loading() -> void:
 	_show_page(STATE_LOADING)
 
 
-func _deploy() -> void:
+func _start_briefing() -> void:
+	_briefing_elapsed = 0.0
+	_briefing_caption_index = -1
+	_briefing_complete = false
+	_deployment_requested = false
+	$Root/Pages/BriefingPage/Error.text = ""
+	var deploy_button := $Root/Pages/BriefingPage/Actions/DeployButton as Button
+	deploy_button.text = "SKIP BRIEFING  ▶"
+	deploy_button.disabled = false
+	_update_briefing(0.0)
+
+
+func _update_briefing(delta: float) -> void:
+	_briefing_elapsed += maxf(delta, 0.0)
+	var next_index := mini(int(_briefing_elapsed / BRIEFING_BEAT_SECONDS), BRIEFING_CAPTIONS.size() - 1)
+	if next_index != _briefing_caption_index:
+		_briefing_caption_index = next_index
+		$Root/Pages/BriefingPage/Copy.text = BRIEFING_CAPTIONS[next_index]
+	if _briefing_elapsed >= BRIEFING_BEAT_SECONDS * BRIEFING_CAPTIONS.size():
+		_complete_briefing(false)
+
+
+func _briefing_primary_action() -> void:
 	if app_state != STATE_BRIEFING:
 		return
+	if not _briefing_complete:
+		_complete_briefing(true)
+		return
+	_deploy()
+
+
+func _complete_briefing(skipped: bool) -> void:
+	if _briefing_complete:
+		return
+	_briefing_complete = true
+	if skipped:
+		_briefing_skip_count += 1
+	$Root/Pages/BriefingPage/Copy.text = "MISSION PACKAGE SYNCHRONIZED\nAUTHORIZE DEPLOYMENT WHEN READY."
+	$Root/Pages/BriefingPage/Actions/DeployButton.text = "AUTHORIZE DEPLOYMENT  ▶"
+
+
+func _deploy() -> void:
+	if app_state != STATE_BRIEFING or not _briefing_complete or _deployment_requested:
+		return
+	_deployment_requested = true
 	if not weapon.call(&"equip_loadout", _selected_weapon):
+		_deployment_requested = false
 		$Root/Pages/BriefingPage/Error.text = "LOADOUT UNAVAILABLE — RETURN AND SELECT A VALID WEAPON"
 		return
 	if not mission.call(&"begin_deployment"):
+		_deployment_requested = false
 		$Root/Pages/BriefingPage/Error.text = "DEPLOYMENT ALREADY COMMITTED"
 		return
 	get_tree().paused = false
@@ -223,10 +286,32 @@ func _apply_settings() -> void:
 
 
 func _on_settings_applied(values: Dictionary) -> void:
-	var subtitle_size := int(values["subtitle_size"])
-	var narrative := hud.get_node_or_null("Root/Narrative") as Label
-	if narrative != null:
-		narrative.add_theme_font_size_override("font_size", subtitle_size)
+	apply_accessibility_settings(values)
+
+
+func apply_accessibility_settings(values: Dictionary) -> void:
+	_applied_ui_scale = clampf(float(values.get("ui_scale", 1.0)), 1.0, 2.0)
+	_applied_subtitle_size = clampi(int(values.get("subtitle_size", 18)), 14, 32)
+	_reduced_camera_motion = values.get("reduced_camera_motion", false) == true
+	_screen_shake = values.get("screen_shake", true) == true
+	$Root/Pages/BriefingPage/Copy.add_theme_font_size_override("font_size", _applied_subtitle_size)
+	_apply_readability_scale(root, _applied_ui_scale)
+	if hud.has_method(&"apply_accessibility_settings"):
+		hud.call(&"apply_accessibility_settings", values)
+
+
+func _apply_readability_scale(scope: Node, requested_scale: float) -> void:
+	var multiplier := 1.0 + (requested_scale - 1.0) * 0.22
+	for node: Node in scope.find_children("*", "Control", true, false):
+		var control := node as Control
+		if not (control is Label or control is Button or control is CheckButton):
+			continue
+		if not control.has_meta(&"fusepoint_base_font_size"):
+			control.set_meta(&"fusepoint_base_font_size", control.get_theme_font_size("font_size"))
+		var base_size := int(control.get_meta(&"fusepoint_base_font_size"))
+		if base_size <= 0 or base_size >= 34:
+			continue
+		control.add_theme_font_size_override("font_size", maxi(base_size, int(round(base_size * multiplier))))
 
 
 func _cancel_settings() -> void:
@@ -245,7 +330,8 @@ func _on_player_died(_event: Dictionary) -> void:
 func _restart_checkpoint() -> void:
 	if app_state == STATE_RESULT:
 		return
-	mission.call(&"request_checkpoint_restore")
+	if mission.call(&"request_checkpoint_restore") != true:
+		return
 	get_tree().paused = false
 	_set_gameplay_enabled(true)
 	_show_page(STATE_GAMEPLAY)
@@ -304,6 +390,16 @@ func _mcp_state() -> Dictionary:
 		"pages_visible": pages.visible,
 		"selected_weapon": _selected_weapon,
 		"transition_serial": _transition_serial,
+		"briefing_elapsed": _briefing_elapsed,
+		"briefing_caption_index": _briefing_caption_index,
+		"briefing_caption_line_count": ($Root/Pages/BriefingPage/Copy as Label).text.count("\n") + 1,
+		"briefing_complete": _briefing_complete,
+		"briefing_skip_count": _briefing_skip_count,
+		"deployment_requested": _deployment_requested,
+		"applied_ui_scale": _applied_ui_scale,
+		"applied_subtitle_size": _applied_subtitle_size,
+		"reduced_camera_motion": _reduced_camera_motion,
+		"screen_shake": _screen_shake,
 		"paused": get_tree().paused,
 		"gameplay_input_enabled": player.get("gameplay_input_enabled"),
 		"mission_state": mission.get("mission_state"),

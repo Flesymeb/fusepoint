@@ -48,6 +48,9 @@ var _observed_events: Dictionary = {}
 var _last_death_event_id := ""
 var _damage_tween: Tween
 var _death_tween: Tween
+var _applied_reduced_motion := false
+var _applied_screen_shake := true
+var _restore_epoch := 0
 
 
 func _ready() -> void:
@@ -176,6 +179,16 @@ func reset_feedback(clear_event_history := false) -> void:
 	_restore_camera_rest()
 
 
+func reset_for_restore(epoch: int) -> void:
+	_restore_epoch = maxi(_restore_epoch, epoch)
+	reset_feedback(true)
+
+
+func apply_accessibility_settings(values: Dictionary) -> void:
+	_applied_reduced_motion = values.get("reduced_camera_motion", false) == true
+	_applied_screen_shake = values.get("screen_shake", true) == true
+
+
 func snapshot() -> Dictionary:
 	return {
 		"damage_event_count": damage_event_count,
@@ -192,6 +205,9 @@ func snapshot() -> Dictionary:
 		"health_bound": _player != null,
 		"camera_bound": _camera != null,
 		"camera_offset": _camera.position - _camera_rest_position if _camera != null else Vector3.ZERO,
+		"restore_epoch": _restore_epoch,
+		"reduced_camera_motion": _applied_reduced_motion,
+		"screen_shake_enabled": _applied_screen_shake,
 	}
 
 
@@ -240,16 +256,13 @@ func _apply_camera_impulse(angle: float, amount_ratio: float) -> void:
 
 
 func _camera_motion_scale() -> float:
-	if _settings_store == null or not _settings_store.has_method(&"snapshot"):
-		return 1.0
-	var values: Dictionary = _settings_store.call(&"snapshot")
-	if values.get("screen_shake", true) != true:
+	if not _applied_screen_shake:
 		return 0.0
-	return 0.35 if values.get("reduced_camera_motion", false) == true else 1.0
+	return 0.35 if _applied_reduced_motion else 1.0
 
 
-func _on_checkpoint_restored(_event: Dictionary) -> void:
-	reset_feedback(false)
+func _on_checkpoint_restored(event: Dictionary) -> void:
+	reset_for_restore(int(event.get("restore_epoch", _restore_epoch + 1)))
 
 
 func _on_spawn_reset() -> void:

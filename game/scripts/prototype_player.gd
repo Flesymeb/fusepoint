@@ -54,6 +54,9 @@ var terminal_locked := false
 var terminal_event_id := ""
 var _deployment_collision_layer := 1
 var _deployment_collision_mask := 1
+var restore_epoch := 0
+var reduced_camera_motion := false
+var screen_shake_enabled := true
 
 
 func _ready() -> void:
@@ -72,11 +75,6 @@ func _ready() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not gameplay_input_enabled:
 		return
-	if event.is_action_pressed("ui_cancel"):
-		_release_mouse()
-		get_viewport().set_input_as_handled()
-		return
-
 	if event is InputEventMouseButton:
 		var mouse_button := event as InputEventMouseButton
 		if mouse_button.pressed and mouse_button.button_index == MOUSE_BUTTON_LEFT and not _mouse_captured:
@@ -261,9 +259,25 @@ func reset_to_deployment_without_mission_reset() -> void:
 	checkpoint_restored.emit({"event_id": "checkpoint-restore-deployment", "health_after": health})
 
 
-func restore_checkpoint_state(checkpoint_transform: Transform3D, checkpoint_health: float) -> void:
+func restore_checkpoint_state(checkpoint_transform: Transform3D, checkpoint_health: float, epoch := 0) -> void:
+	restore_epoch = maxi(restore_epoch, epoch)
+	reset_transient_state_for_restore()
 	_restore_movement_state(checkpoint_transform, checkpoint_health)
-	checkpoint_restored.emit({"event_id": "checkpoint-restore", "health_after": health})
+	checkpoint_restored.emit({"event_id": "checkpoint-restore-%06d" % restore_epoch, "health_after": health, "restore_epoch": restore_epoch})
+
+
+func reset_transient_state_for_restore() -> void:
+	_damage_commits.clear()
+	_last_damage_event.clear()
+	terminal_locked = false
+	terminal_event_id = ""
+	velocity = Vector3.ZERO
+
+
+func apply_accessibility_settings(values: Dictionary) -> void:
+	reduced_camera_motion = values.get("reduced_camera_motion", false) == true
+	screen_shake_enabled = values.get("screen_shake", true) == true
+	camera.fov = clampf(float(values.get("fov", camera.fov)), 65.0, 95.0)
 
 
 func _restore_movement_state(target_transform: Transform3D, target_health: float) -> void:
@@ -416,4 +430,7 @@ func _mcp_state() -> Dictionary:
 		"gameplay_input_enabled": gameplay_input_enabled,
 		"terminal_locked": terminal_locked,
 		"terminal_event_id": terminal_event_id,
+		"restore_epoch": restore_epoch,
+		"reduced_camera_motion": reduced_camera_motion,
+		"screen_shake_enabled": screen_shake_enabled,
 	}
