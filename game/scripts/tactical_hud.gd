@@ -132,8 +132,8 @@ func _apply_responsive_layout() -> void:
 	$Root/CountdownRail/Keys.size = Vector2(404.0, 20.0 if expanded else 18.0)
 	compass_label.position = Vector2(center.x - 210.0, safe.y + (112.0 if expanded else 90.0))
 	compass_label.size = Vector2(420.0, 48.0)
-	route_label.position = Vector2(center.x - 250.0, safe.y + (160.0 if expanded else 132.0))
-	route_label.size = Vector2(500.0, 32.0)
+	route_label.position = Vector2(center.x - 310.0, safe.y + (160.0 if expanded else 132.0))
+	route_label.size = Vector2(620.0, 32.0)
 	feed.position = Vector2(viewport_size.x - safe.x - 326.0, safe.y + 2.0)
 	feed.size = Vector2(324.0, 152.0 if expanded else 128.0)
 	reticle.position = center - Vector2(14.0, 14.0)
@@ -304,7 +304,21 @@ func _update_navigation_state() -> void:
 	var delta := next_corner - player.global_position
 	var bearing := fposmod(rad_to_deg(atan2(delta.x, -delta.z)), 360.0)
 	var cross_track := float(route.get("cross_track_distance", 0.0))
-	route_label.text = "NEXT ROUTE  %03d°  •  %dm%s" % [int(bearing), int(delta.length()), "  OFF ROUTE" if cross_track > 3.5 else ""]
+	var bravo_handoff := _bravo_locked_handoff_active()
+	var route_copy := "NEXT ROUTE  %03d°  •  %dm%s" % [int(bearing), int(delta.length()), "  OFF ROUTE" if cross_track > 3.5 else ""]
+	if bravo_handoff:
+		route_copy += "  •  B LOCKED: SECURE A"
+	route_label.text = route_copy
+	var bravo := arena.get_node_or_null("Bravo") if arena != null else null
+	if bravo != null and bravo.has_method(&"set_hud_handoff_visible"):
+		bravo.call(&"set_hud_handoff_visible", bravo_handoff)
+
+
+func _bravo_locked_handoff_active() -> bool:
+	if _applied_ui_scale <= 1.5 or mission == null or player == null or player.get("gameplay_input_enabled") != true:
+		return false
+	var points: Dictionary = mission.get("capture_points")
+	return StringName(points[&"alpha"]["state"]) != &"secured_aegis" and StringName(points[&"bravo"]["state"]) != &"secured_aegis"
 
 
 func _current_objective_id() -> StringName:
@@ -409,16 +423,22 @@ func _mcp_state() -> Dictionary:
 		"weapon_component": weapon_hud.get_path(),
 		"north_up": minimap.get("rotate_with_player") == false,
 		"contextual_objective_visible": objective_band.visible,
+		"applied_ui_scale": _applied_ui_scale,
+		"layout_contract_id": LAYOUT_CONTRACT_ID,
+		"layout": _layout_snapshot(),
+		"guidance_source": &"authoritative_route_probe",
+		"guidance_style": &"transparent_borderless_text",
+		"bravo_locked_guidance": {
+			"active": _bravo_locked_handoff_active(),
+			"source": &"authoritative_capture_points",
+			"presentation": &"compact_route_line_handoff",
+			"text": route_label.text,
+		},
 		"story_active": _story_active,
 		"story_elapsed": _story_elapsed,
 		"event_rows": _event_rows,
 		"combat_row_receipts": _event_row_receipts,
-		"applied_ui_scale": _applied_ui_scale,
 		"applied_subtitle_size": _applied_subtitle_size,
 		"restore_epoch": _restore_epoch,
-		"layout_contract_id": LAYOUT_CONTRACT_ID,
 		"narrative_visible_line_count": narrative.text.count("\n") + 1 if narrative.visible else 0,
-		"layout": _layout_snapshot(),
-		"guidance_source": &"authoritative_route_probe",
-		"guidance_style": &"transparent_borderless_text",
 	}

@@ -12,6 +12,8 @@ const ROUTE_TARGET_EFFECTIVE_SECONDS := 37.5
 # Loop-18 ordinary input covered the 24 m route in about 9.1 s. This observed
 # effective pace selects spatial separation only; it never changes player speed.
 const CALIBRATED_EFFECTIVE_ROUTE_SPEED := 2.6
+const SOURCE_CLOUD_SHADER := "res://shaders/clouds.gdshader"
+const SOURCE_SUN_FLARE_SCRIPT := "res://scripts/source_sun_flare.gd"
 
 @onready var map_wrapper: Node3D = $NavigationRegion3D/AuthoredEnvironmentWrapper
 @onready var map_instance: Node3D = $NavigationRegion3D/AuthoredEnvironmentWrapper/StandoffArena
@@ -19,7 +21,7 @@ const CALIBRATED_EFFECTIVE_ROUTE_SPEED := 2.6
 @onready var navigation_region: NavigationRegion3D = $NavigationRegion3D
 @onready var world_environment: WorldEnvironment = $WorldEnvironment
 @onready var sun: DirectionalLight3D = $Sun
-@onready var cloud_layer: MeshInstance3D = $AtmospherePresentation/CloudLayer
+@onready var cloud_layer: Node3D = $AtmospherePresentation/DayCloudLayer
 @onready var sun_flare: Control = $AtmospherePresentation/SunFlareCanvas/DirectionalSunFlare
 
 var map_bounds := AABB()
@@ -45,10 +47,25 @@ var deployment_anchor_selection: Dictionary = {}
 func _ready() -> void:
 	navigation_region.bake_finished.connect(_on_navigation_bake_finished)
 	await get_tree().process_frame
+	_bind_source_atmosphere_layers()
 	_configure_map_materials()
 	_measure_map()
 	_build_map_collision()
 	_start_navigation_bake()
+
+
+func _process(_delta: float) -> void:
+	# Result cameras can replace the active camera without replacing the source
+	# flare component. Keep the product wrapper's direct source binding current.
+	var active_camera := get_viewport().get_camera_3d()
+	if sun_flare.get("sun") != sun or sun_flare.get("camera") != active_camera:
+		sun_flare.set("sun", sun)
+		sun_flare.set("camera", active_camera)
+
+
+func _bind_source_atmosphere_layers() -> void:
+	sun_flare.set("sun", sun)
+	sun_flare.set("camera", get_viewport().get_camera_3d())
 
 
 func _configure_map_materials() -> void:
@@ -678,9 +695,21 @@ func get_route_chain(leg_id: StringName) -> PackedVector3Array:
 
 
 func _mcp_state() -> Dictionary:
+	var atmosphere := _atmosphere_snapshot()
 	return {
+		"atmosphere_binding_summary": {
+			"daylight_exposure": atmosphere.get("daylight_exposure", {}),
+			"source_sky_enabled": (atmosphere.get("source_sky", {}) as Dictionary).get("enabled", false),
+			"source_shadows_enabled": (atmosphere.get("source_shadows", {}) as Dictionary).get("enabled", false),
+			"source_ssao_enabled": (atmosphere.get("source_ssao", {}) as Dictionary).get("enabled", false),
+			"cloud_direct_source_binding": (atmosphere.get("clouds", {}) as Dictionary).get("direct_source_binding", false),
+			"cloud_runtime_variant_count": (atmosphere.get("clouds", {}) as Dictionary).get("runtime_variant_count", 0),
+			"flare_direct_source_binding": (atmosphere.get("directional_sun_flare", {}) as Dictionary).get("direct_source_binding", false),
+			"flare_sun_bound": (atmosphere.get("directional_sun_flare", {}) as Dictionary).get("sun_bound", false),
+			"flare_camera_bound": (atmosphere.get("directional_sun_flare", {}) as Dictionary).get("camera_bound", false),
+		},
 		"asset_id": "standoff_arena_authored_environment",
-		"atmosphere_layers": _atmosphere_snapshot(),
+		"atmosphere_layers": atmosphere,
 		"source_sha256": EXPECTED_SOURCE_SHA256,
 		"environment_instance_count": 1,
 		"environment_instance_path": map_instance.get_path(),
@@ -712,27 +741,54 @@ func _mcp_state() -> Dictionary:
 
 func _atmosphere_snapshot() -> Dictionary:
 	var environment := world_environment.environment
-	var cloud_material := cloud_layer.material_override as ShaderMaterial
+	var cloud_sheets: Array[Dictionary] = []
+	for child: Node in cloud_layer.get_children():
+		var sheet := child as MeshInstance3D
+		if sheet == null:
+			continue
+		var material := sheet.material_override as ShaderMaterial
+		cloud_sheets.append({
+			"path": sheet.get_path(),
+			"height": sheet.global_position.y,
+			"plane_size": (sheet.mesh as PlaneMesh).size if sheet.mesh is PlaneMesh else Vector2.ZERO,
+			"material_bound": material != null,
+			"shader_path": material.shader.resource_path if material != null and material.shader != null else "",
+			"cloud_scale": material.get_shader_parameter(&"cloud_scale") if material != null else -1.0,
+			"drift_speed": material.get_shader_parameter(&"drift_speed") if material != null else -1.0,
+			"density": material.get_shader_parameter(&"density") if material != null else -1.0,
+		})
+	var flare_script := sun_flare.get_script() as Script
+	var flare_camera := sun_flare.get("camera") as Camera3D
 	return {
 		"daylight_exposure": {
 			"background_energy_multiplier": environment.background_energy_multiplier,
 			"tonemap_exposure": environment.tonemap_exposure,
 			"accepted_values_unchanged": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.tonemap_exposure, 1.0),
 		},
-		"source_sky": {"enabled": environment.sky != null, "background_mode": environment.background_mode},
-		"source_shadows": {"enabled": sun.shadow_enabled, "max_distance": sun.directional_shadow_max_distance},
-		"source_ssao": {"enabled": environment.ssao_enabled, "radius": environment.ssao_radius, "intensity": environment.ssao_intensity},
+		"source_sky": {"enabled": environment.sky != null, "background_mode": environment.background_mode, "profile": &"3d_fps_map_source"},
+		"source_shadows": {"enabled": sun.shadow_enabled, "max_distance": sun.directional_shadow_max_distance, "energy": sun.light_energy, "profile": &"3d_fps_map_source"},
+		"source_ssao": {"enabled": environment.ssao_enabled, "radius": environment.ssao_radius, "intensity": environment.ssao_intensity, "power": environment.ssao_power, "profile": &"3d_fps_map_source"},
 		"clouds": {
 			"family_id": &"environment_cloud_layer",
 			"enabled": cloud_layer.visible,
 			"singleton_count": 1,
-			"runtime_variant_count": 1,
-			"material_bound": cloud_material != null and cloud_material.shader != null,
-			"density": cloud_material.get_shader_parameter(&"density") if cloud_material != null else -1.0,
-			"drift_speed": cloud_material.get_shader_parameter(&"drift_speed") if cloud_material != null else 0.0,
-			"sun_response": cloud_material.get_shader_parameter(&"sun_response") if cloud_material != null else 0.0,
+			"runtime_variant_count": cloud_sheets.size(),
+			"source_shader_path": SOURCE_CLOUD_SHADER,
+			"direct_source_binding": cloud_sheets.size() == 2 and cloud_sheets.all(func(sheet: Dictionary) -> bool: return String(sheet.get("shader_path", "")) == SOURCE_CLOUD_SHADER),
+			"sheets": cloud_sheets,
 			"world_height": cloud_layer.global_position.y,
 			"authored_geometry_changed": false,
 		},
-		"directional_sun_flare": sun_flare.call(&"_mcp_state") if sun_flare != null and sun_flare.has_method(&"_mcp_state") else {},
+		"directional_sun_flare": {
+			"family_id": &"directional_sun_flare",
+			"enabled": sun_flare.visible,
+			"source_script_path": flare_script.resource_path if flare_script != null else "",
+			"direct_source_binding": flare_script != null and flare_script.resource_path == SOURCE_SUN_FLARE_SCRIPT,
+			"sun_bound": sun_flare.get("sun") == sun,
+			"camera_bound": flare_camera != null and flare_camera.current,
+			"camera_path": String(flare_camera.get_path()) if flare_camera != null else "",
+			"canvas_layer": (sun_flare.get_parent() as CanvasLayer).layer,
+			"changes_exposure": false,
+			"presentation_only": true,
+		},
 	}

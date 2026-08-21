@@ -15,6 +15,7 @@ const NOTICE_RETICLE_CLEARANCE := Vector2(120.0, 96.0)
 @onready var marker: MeshInstance3D = get_node_or_null("SurfaceMarker") as MeshInstance3D
 var _marker_material: StandardMaterial3D
 var _notice_budget: Dictionary = {}
+var _hud_handoff_visible := false
 
 
 func _ready() -> void:
@@ -60,11 +61,11 @@ func _update_notice_visibility(state: Dictionary) -> void:
 	var camera := get_viewport().get_camera_3d()
 	var desired: bool = player.get("gameplay_input_enabled") == true
 	var suppression_reason := &""
-	# A future locked point is not route guidance. Alpha remains the only
-	# deployment notice until its authoritative capture unlocks Bravo.
+	# Keep the locked world label out of reserved screen regions; the tactical
+	# HUD owns its compact, authoritative route handoff at large UI scales.
 	if state.get("legal", false) != true and objective_id != &"alpha":
 		desired = false
-		suppression_reason = &"future_objective_suppressed"
+		suppression_reason = &"authoritative_hud_handoff"
 	if camera == null or not camera.current:
 		desired = false
 		suppression_reason = &"no_current_camera"
@@ -93,6 +94,10 @@ func _update_notice_visibility(state: Dictionary) -> void:
 		"source": &"authoritative_objective_state",
 		"desired_visible": player.get("gameplay_input_enabled") == true,
 		"visible": label.visible,
+		"presentation_mode": &"compact_hud_handoff" if objective_id == &"bravo" and state.get("legal", false) != true else &"world_label",
+		"hud_handoff_requested": objective_id == &"bravo" and state.get("legal", false) != true and player.get("gameplay_input_enabled") == true,
+		"hud_handoff_visible": _hud_handoff_visible,
+		"truthful_guidance_visible": label.visible or _hud_handoff_visible,
 		"legal": state.get("legal", false) == true,
 		"suppression_reason": suppression_reason,
 		"screen_rect": screen_rect,
@@ -105,6 +110,10 @@ func _update_notice_visibility(state: Dictionary) -> void:
 
 func notice_budget_state() -> Dictionary:
 	return _notice_budget.duplicate(true)
+
+
+func set_hud_handoff_visible(visible: bool) -> void:
+	_hud_handoff_visible = visible
 
 
 func _mcp_state() -> Dictionary:

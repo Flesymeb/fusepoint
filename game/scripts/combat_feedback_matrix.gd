@@ -6,6 +6,8 @@ signal feedback_receipt_updated(receipt: Dictionary)
 
 const CACHE_LIMIT := 128
 const PREVIOUS_RECEIPT_LIMIT := 64
+const RETAINED_RUN_LIMIT := 3
+const RETAINED_FAMILY_LIMIT := 6
 const JOINED_ENEMY_KINDS: Array[StringName] = [&"shot_resolved", &"player_hit", &"died", &"reload_started", &"reload_finished"]
 const JOINED_MISSION_KINDS: Array[StringName] = [
 	&"deployment_started", &"capture_started", &"capture_contested", &"capture_interrupted",
@@ -30,6 +32,9 @@ var _restore_epoch := 0
 var _paused_last_frame := false
 var _previous_receipts: Array[Dictionary] = []
 var _clear_history: Array[Dictionary] = []
+var _retained_by_run: Dictionary = {}
+var _retained_run_order: Array[int] = []
+var _active_run_epoch := -1
 
 var _weapon: Node
 var _player: Node
@@ -47,9 +52,14 @@ func _ready() -> void:
 
 
 func _process(_delta: float) -> void:
+	# Home/replay can advance mission authority before another mission event is
+	# emitted. Observe the epoch independently so prior-run identities cannot
+	# remain in the active cache while the shell is already on the next run.
+	if _mission != null:
+		_roll_epoch_if_needed(&"process_observed")
 	if get_tree().paused and not _paused_last_frame:
 		_restore_epoch += 1
-		_archive_and_clear(&"pause")
+		_retain_boundary(&"pause")
 	_paused_last_frame = get_tree().paused
 
 
@@ -62,6 +72,7 @@ func _bind_runtime() -> void:
 	_damage_feedback = get_node_or_null(damage_feedback_path)
 	_mission_feedback = get_node_or_null(mission_feedback_path)
 	_shot_feedback = _weapon.get_node_or_null("ShotFeedback") if _weapon != null else null
+	_active_run_epoch = _current_run_epoch()
 	_connect_signal(_weapon, &"shot_resolved", _on_player_shot)
 	_connect_signal(_shot_feedback, &"shot_presented", _on_shot_presented)
 	_connect_signal(_player, &"authoritative_damage_received", _on_player_damage)
@@ -193,9 +204,10 @@ func _on_roster_event(wrapper: Dictionary) -> void:
 
 func _on_mission_event(event: Dictionary) -> void:
 	var kind := StringName(event.get("kind", &""))
+	_roll_epoch_if_needed(kind)
 	if kind in [&"checkpoint_restored", &"deployment_started", &"terminal_submitted"]:
 		_restore_epoch += 1
-		_archive_and_clear(kind)
+		_retain_boundary(kind)
 	if kind == &"timer_tick":
 		var remaining := int(ceil(float(event.get("remaining_time", 0.0))))
 		if remaining not in [30, 15, 10, 5]:
@@ -216,7 +228,7 @@ func _on_mission_event(event: Dictionary) -> void:
 
 func _on_player_spawn_reset() -> void:
 	_restore_epoch += 1
-	_archive_and_clear(&"player_spawn_reset")
+	_retain_boundary(&"player_spawn_reset")
 
 
 func _on_hud_row(receipt: Dictionary) -> void:
@@ -234,12 +246,20 @@ func _on_mission_cue(receipt: Dictionary) -> void:
 		return
 	var row := _ensure_row(event_id, &"mission")
 	_set_channel(row, &"mission_presentation", receipt)
-	var audio_roles: Dictionary = _mission_feedback.call(&"snapshot").get("audio_roles", {}) if _mission_feedback != null and _mission_feedback.has_method(&"snapshot") else {}
-	_set_channel(row, &"audio", audio_roles)
+	var feedback: Dictionary = _mission_feedback.call(&"snapshot") if _mission_feedback != null and _mission_feedback.has_method(&"snapshot") else {}
+	_set_channel(row, &"audio", {
+		"roles": feedback.get("audio_roles", {}),
+		"voice_receipts": feedback.get("voice_receipts", []),
+		"retained_voice_receipts": feedback.get("retained_voice_receipts", []),
+		"concurrency_limits": feedback.get("audio_concurrency_limits", {}),
+		"semantic_role_contract": feedback.get("semantic_role_contract", {}),
+		"presentation_only": true,
+	})
 	_publish(row)
 
 
 func _ensure_row(event_id: String, event_family: StringName) -> Dictionary:
+	_roll_epoch_if_needed(&"event_observed")
 	var identity := _identity_for_event_id(event_id)
 	if not _events.has(identity):
 		_events[identity] = {
@@ -258,7 +278,9 @@ func _ensure_row(event_id: String, event_family: StringName) -> Dictionary:
 		}
 		_event_order.append(identity)
 		while _event_order.size() > CACHE_LIMIT:
-			_events.erase(_event_order.pop_front())
+			var evicted_identity := _event_order.pop_front()
+			_retain_row((_events[evicted_identity] as Dictionary), &"active_cache_eviction")
+			_events.erase(evicted_identity)
 	var row: Dictionary = _events[identity]
 	if StringName(row.get("event_family", &"")) in [&"shot_presentation", &"hud"]:
 		row["event_family"] = event_family
@@ -362,25 +384,77 @@ func _clear_joined_receipts() -> void:
 	_latest_event_id = ""
 
 
-func _archive_and_clear(reason: StringName) -> void:
-	if not _event_order.is_empty():
-		for identity: String in _event_order:
-			var archived: Dictionary = (_events[identity] as Dictionary).duplicate(true)
-			archived["archived_reason"] = reason
-			archived["archived_usec"] = Time.get_ticks_usec()
-			_previous_receipts.append(archived)
-		while _previous_receipts.size() > PREVIOUS_RECEIPT_LIMIT:
-			_previous_receipts.pop_front()
+func _retain_boundary(reason: StringName, clear_active := false) -> void:
+	for identity: String in _event_order:
+		_retain_row((_events[identity] as Dictionary), reason)
 	_clear_history.append({
 		"reason": reason,
-		"run_epoch": _current_run_epoch(),
+		"run_epoch": _active_run_epoch if _active_run_epoch >= 0 else _current_run_epoch(),
 		"restore_epoch": _restore_epoch,
 		"archived_count": _event_order.size(),
+		"active_rows_preserved": not clear_active,
 		"at_usec": Time.get_ticks_usec(),
 	})
 	while _clear_history.size() > 16:
 		_clear_history.pop_front()
-	_clear_joined_receipts()
+	if clear_active:
+		_clear_joined_receipts()
+
+
+func _retain_row(source: Dictionary, reason: StringName) -> void:
+	if source.is_empty():
+		return
+	var archived := source.duplicate(true)
+	var reasons: Array = archived.get("archived_reasons", [])
+	if reason not in reasons:
+		reasons.append(reason)
+	archived["archived_reasons"] = reasons
+	archived["archived_reason"] = reason
+	archived["archived_usec"] = Time.get_ticks_usec()
+	var identity := String(archived.get("immutable_identity", ""))
+	var replaced_previous := false
+	for index in _previous_receipts.size():
+		if String(_previous_receipts[index].get("immutable_identity", "")) == identity:
+			_previous_receipts[index] = archived
+			replaced_previous = true
+			break
+	if not replaced_previous:
+		_previous_receipts.append(archived)
+	while _previous_receipts.size() > PREVIOUS_RECEIPT_LIMIT:
+		_previous_receipts.pop_front()
+
+	var run_epoch := int(archived.get("run_epoch", _active_run_epoch))
+	if not _retained_by_run.has(run_epoch):
+		_retained_by_run[run_epoch] = {}
+		_retained_run_order.append(run_epoch)
+	var families: Dictionary = _retained_by_run[run_epoch]
+	var family := StringName(archived.get("event_family", &"unknown"))
+	var family_rows: Array = families.get(family, [])
+	var replaced_family := false
+	for index in family_rows.size():
+		if String((family_rows[index] as Dictionary).get("immutable_identity", "")) == identity:
+			family_rows[index] = archived
+			replaced_family = true
+			break
+	if not replaced_family:
+		family_rows.append(archived)
+	while family_rows.size() > RETAINED_FAMILY_LIMIT:
+		family_rows.pop_front()
+	families[family] = family_rows
+	_retained_by_run[run_epoch] = families
+	while _retained_run_order.size() > RETAINED_RUN_LIMIT:
+		_retained_by_run.erase(_retained_run_order.pop_front())
+
+
+func _roll_epoch_if_needed(reason: StringName) -> void:
+	var current := _current_run_epoch()
+	if _active_run_epoch < 0:
+		_active_run_epoch = current
+		return
+	if current == _active_run_epoch:
+		return
+	_retain_boundary(StringName("run_epoch_advanced:%s" % String(reason)), true)
+	_active_run_epoch = current
 
 
 func _identity_for_event_id(event_id: String) -> String:
@@ -480,8 +554,26 @@ func snapshot() -> Dictionary:
 		"previous_receipts": _previous_receipts.duplicate(true),
 		"previous_receipt_count": _previous_receipts.size(),
 		"previous_receipt_limit": PREVIOUS_RECEIPT_LIMIT,
+		"retained_run_limit": RETAINED_RUN_LIMIT,
+		"retained_family_limit": RETAINED_FAMILY_LIMIT,
+		"retained_run_order": _retained_run_order.duplicate(),
+		"retained_by_run": _retained_by_run.duplicate(true),
 		"clear_history": _clear_history.duplicate(true),
 	}
+
+
+## Read-only Tester selector for complete bounded rows. It never mutates authority.
+func retained_rows(run_epoch := -1, event_family := &"") -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var epochs: Array = _retained_run_order if run_epoch < 0 else [run_epoch]
+	for epoch_value in epochs:
+		var families: Dictionary = _retained_by_run.get(int(epoch_value), {})
+		for family_value in families:
+			if not String(event_family).is_empty() and StringName(family_value) != StringName(event_family):
+				continue
+			for row: Dictionary in families[family_value]:
+				result.append(row.duplicate(true))
+	return result
 
 
 func _mcp_state() -> Dictionary:
@@ -529,10 +621,27 @@ func _mcp_state() -> Dictionary:
 		"previous_receipt_count": _previous_receipts.size(),
 		"previous_receipt_limit": PREVIOUS_RECEIPT_LIMIT,
 		"previous_receipt_tail": previous_tail,
+		"representative_latest_full": _previous_receipts.back().duplicate(true) if not _previous_receipts.is_empty() else {},
+		"retained_run_order": _retained_run_order.duplicate(),
+		"retained_index": _retained_index(),
+		"retained_query_method": &"retained_rows",
+		"retained_run_limit": RETAINED_RUN_LIMIT,
+		"retained_family_limit": RETAINED_FAMILY_LIMIT,
 		"duplicate_channel_count": _duplicate_channel_count,
 		"restore_epoch": _restore_epoch,
 		"clear_history": _clear_history.duplicate(true),
 	}
+
+
+func _retained_index() -> Dictionary:
+	var index := {}
+	for run_epoch in _retained_run_order:
+		var families: Dictionary = _retained_by_run.get(run_epoch, {})
+		var family_counts := {}
+		for family in families:
+			family_counts[family] = (families[family] as Array).size()
+		index[run_epoch] = family_counts
+	return index
 
 
 func _receipt_summary(row: Dictionary) -> Dictionary:

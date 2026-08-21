@@ -1144,6 +1144,11 @@ func _mcp_state() -> Dictionary:
 		target_scale = profile.aim_scale if _ads_held else profile.hip_scale
 	return {
 		"run_epoch": _run_epoch,
+		# Keep patrol-critical hold/release fields before large nested audit data so
+		# bounded runtime digests cannot truncate them away.
+		"trigger_held": _trigger_held,
+		"fire_action_down": _observed_fire_down,
+		"fire_rearm_required": _fire_rearm_required,
 		"last_run_epoch_receipt": _last_run_epoch_receipt,
 		"active_weapon_id": String(_equipped_id),
 		"active_profile_id": String(viewmodel.call(&"current_weapon_id")),
@@ -1182,9 +1187,6 @@ func _mcp_state() -> Dictionary:
 		"reserve": weapon["reserve"],
 		"ak74m_state": _weapons[&"ak74m"],
 		"saiga12_state": _weapons[&"saiga12"],
-		"trigger_held": _trigger_held,
-		"fire_action_down": _observed_fire_down,
-		"fire_rearm_required": _fire_rearm_required,
 		"queued_fire_edge_count": _fire_edge_queue.size(),
 		"combat_clock_seconds": _combat_clock_seconds,
 		"fire_edge_authority": &"normalized_raw_input_events",

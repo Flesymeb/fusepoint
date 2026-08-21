@@ -351,6 +351,7 @@ func _play_role(role: StringName, priority: int, source_id: String) -> void:
 	_active_voice_lifetimes[role] = -1.0 if role in [&"ambience", &"music"] else float(_audio_durations.get(role, 0.0))
 	_append_voice_receipt({
 		"event_id": source_id,
+		"run_epoch": int(_mission.get("run_epoch")) if _mission != null else 0,
 		"role": role,
 		"bus": player.bus,
 		"voice_path": String(player.get_path()),
@@ -361,6 +362,10 @@ func _play_role(role: StringName, priority: int, source_id: String) -> void:
 		"onset_frame": Engine.get_process_frames(),
 		"lifetime_seconds": float(_audio_durations.get(role, 0.0)),
 		"attenuation": &"non_spatial",
+		"emitter_context": {"spatial": false, "owner": get_path()},
+		"concurrency": {"active": 1 if player.playing else 0, "limit": 1, "family": role},
+		"cleanup_observed": false,
+		"cleanup_usec": 0,
 		"priority": priority,
 	})
 
@@ -431,6 +436,7 @@ func _emit_footstep(actor: CharacterBody3D, role: StringName, cadence: float, si
 	emitter.play()
 	_append_voice_receipt({
 		"event_id": "step-%d" % Time.get_ticks_usec(),
+		"run_epoch": int(_mission.get("run_epoch")) if _mission != null else 0,
 		"role": role,
 		"bus": emitter.bus,
 		"voice_path": String(emitter.get_path()),
@@ -446,6 +452,10 @@ func _emit_footstep(actor: CharacterBody3D, role: StringName, cadence: float, si
 		"cadence_seconds": cadence,
 		"grounded": actor.is_on_floor(),
 		"attenuation": {"unit_size": emitter.unit_size, "max_distance": emitter.max_distance},
+		"emitter_context": {"spatial": true, "owner": actor.get_path()},
+		"concurrency": {"active": 1 if emitter.playing else 0, "limit": 1, "family": actor_key},
+		"cleanup_observed": false,
+		"cleanup_usec": 0,
 		"lifetime_seconds": float(_audio_durations.get(role, 0.0)),
 	})
 

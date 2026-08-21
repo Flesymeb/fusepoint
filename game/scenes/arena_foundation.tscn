@@ -1,19 +1,20 @@
-[gd_scene load_steps=24 format=3]
+[gd_scene load_steps=26 format=3]
 
 [ext_resource type="PackedScene" path="res://systems/world/3d_fps_map/standoff_2/chicken_gun_standoff_2_arena.glb" id="1_map"]
 [ext_resource type="Script" path="res://scripts/arena_foundation.gd" id="2_foundation"]
 [ext_resource type="Script" path="res://scripts/placeholder_objective.gd" id="3_objective"]
 [ext_resource type="Script" path="res://scripts/arena_route_probe.gd" id="4_route"]
 [ext_resource type="Script" path="res://scripts/bomb_objective.gd" id="5_bomb"]
-[ext_resource type="Shader" path="res://shaders/fusepoint_cloud_layer.gdshader" id="6_cloud_shader"]
-[ext_resource type="Script" path="res://scripts/directional_sun_flare.gd" id="7_sun_flare"]
+[ext_resource type="Shader" path="res://shaders/clouds.gdshader" id="6_cloud_shader"]
+[ext_resource type="Script" path="res://scripts/source_sun_flare.gd" id="7_sun_flare"]
 
 [sub_resource type="ProceduralSkyMaterial" id="SkyMaterial_daylight"]
-sky_top_color = Color(0.18, 0.38, 0.62, 1)
-sky_horizon_color = Color(0.72, 0.84, 0.95, 1)
-ground_bottom_color = Color(0.18, 0.2, 0.19, 1)
-ground_horizon_color = Color(0.56, 0.6, 0.56, 1)
-sun_angle_max = 14.0
+sky_top_color = Color(0.184314, 0.454902, 0.776471, 1)
+sky_horizon_color = Color(0.72549, 0.890196, 1, 1)
+ground_bottom_color = Color(0.203922, 0.262745, 0.184314, 1)
+ground_horizon_color = Color(0.639216, 0.709804, 0.560784, 1)
+sun_angle_max = 18.0
+sun_curve = 0.08
 
 [sub_resource type="Sky" id="Sky_daylight"]
 sky_material = SubResource("SkyMaterial_daylight")
@@ -24,16 +25,15 @@ background_mode = 2
 sky = SubResource("Sky_daylight")
 background_energy_multiplier = 0.8
 ambient_light_source = 3
-ambient_light_energy = 0.75
-ambient_light_sky_contribution = 0.7
+ambient_light_energy = 0.85
+ambient_light_sky_contribution = 0.75
 reflected_light_source = 2
 tonemap_mode = 2
 tonemap_exposure = 1.0
 ssao_enabled = true
 ssao_radius = 1.2
-ssao_intensity = 1.3
-ssao_power = 1.5
-ssao_detail = 0.65
+ssao_intensity = 1.25
+ssao_power = 1.35
 
 [sub_resource type="NavigationMesh" id="NavigationMesh_arena"]
 agent_height = 1.8
@@ -46,17 +46,27 @@ filter_low_hanging_obstacles = true
 filter_ledge_spans = true
 filter_walkable_low_height_spans = true
 
-[sub_resource type="PlaneMesh" id="Mesh_cloud_layer"]
+[sub_resource type="PlaneMesh" id="Mesh_cloud_sheet_1"]
 size = Vector2(2600, 2600)
 
-[sub_resource type="ShaderMaterial" id="Material_cloud_layer"]
+[sub_resource type="ShaderMaterial" id="Material_cloud_sheet_1"]
 render_priority = -2
 shader = ExtResource("6_cloud_shader")
-shader_parameter/cloud_color = Color(0.98, 0.99, 1, 0.34)
-shader_parameter/cloud_scale = 14.0
-shader_parameter/drift_speed = 0.0035
-shader_parameter/density = 0.57
-shader_parameter/sun_response = 0.16
+shader_parameter/cloud_color = Color(0.98, 0.99, 1, 0.42)
+shader_parameter/cloud_scale = 15.0
+shader_parameter/drift_speed = 0.004
+shader_parameter/density = 0.54
+
+[sub_resource type="PlaneMesh" id="Mesh_cloud_sheet_2"]
+size = Vector2(3100, 3100)
+
+[sub_resource type="ShaderMaterial" id="Material_cloud_sheet_2"]
+render_priority = -2
+shader = ExtResource("6_cloud_shader")
+shader_parameter/cloud_color = Color(0.98, 0.99, 1, 0.32)
+shader_parameter/cloud_scale = 12.8
+shader_parameter/drift_speed = 0.005
+shader_parameter/density = 0.575
 
 [sub_resource type="BoxShape3D" id="Shape_alpha"]
 size = Vector3(8, 2.4, 8)
@@ -136,20 +146,27 @@ environment = SubResource("Environment_daylight")
 [node name="Sun" type="DirectionalLight3D" parent="."]
 rotation_degrees = Vector3(-48, -32, 0)
 light_color = Color(1, 0.965, 0.9, 1)
-light_energy = 1.35
+light_energy = 1.8
 shadow_enabled = true
 directional_shadow_max_distance = 180.0
 shadow_bias = 0.025
 
 [node name="AtmospherePresentation" type="Node3D" parent="."]
 
-[node name="CloudLayer" type="MeshInstance3D" parent="AtmospherePresentation"]
+[node name="DayCloudLayer" type="Node3D" parent="AtmospherePresentation"]
 position = Vector3(0, 120, 0)
-mesh = SubResource("Mesh_cloud_layer")
-material_override = SubResource("Material_cloud_layer")
+
+[node name="CloudSheet1" type="MeshInstance3D" parent="AtmospherePresentation/DayCloudLayer"]
+mesh = SubResource("Mesh_cloud_sheet_1")
+material_override = SubResource("Material_cloud_sheet_1")
+
+[node name="CloudSheet2" type="MeshInstance3D" parent="AtmospherePresentation/DayCloudLayer"]
+position = Vector3(0, 16, 0)
+mesh = SubResource("Mesh_cloud_sheet_2")
+material_override = SubResource("Material_cloud_sheet_2")
 
 [node name="SunFlareCanvas" type="CanvasLayer" parent="AtmospherePresentation"]
-layer = 4
+layer = 8
 
 [node name="DirectionalSunFlare" type="Control" parent="AtmospherePresentation/SunFlareCanvas" groups=["mcp_watch"]]
 layout_mode = 3
@@ -160,7 +177,6 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 script = ExtResource("7_sun_flare")
-sun_path = NodePath("../../../Sun")
 
 [node name="NavigationRegion3D" type="NavigationRegion3D" parent="."]
 navigation_mesh = SubResource("NavigationMesh_arena")

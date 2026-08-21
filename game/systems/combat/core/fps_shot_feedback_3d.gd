@@ -120,7 +120,14 @@ func show_shot(event: Dictionary) -> bool:
 		"concurrency": {"active": active_effect_count, "limit": max_active_effects, "culled_total": _culled_effect_count},
 		"presentation_count": presented_event_count,
 		"duplicate_count": duplicate_event_count,
+		"authority_frame": int(event.get("committed_frame", Engine.get_process_frames())),
+		"authority_usec": int(event.get("committed_at_usec", event.get("timestamp_usec", Time.get_ticks_usec()))),
+		"observed_frame": Engine.get_process_frames(),
+		"observed_usec": Time.get_ticks_usec(),
+		"presentation_only": true,
 	}
+	_last_presentation["latency_frames"] = maxi(int(_last_presentation["observed_frame"]) - int(_last_presentation["authority_frame"]), 0)
+	_last_presentation["within_two_rendered_frames"] = int(_last_presentation["latency_frames"]) <= 2
 	last_event = event.duplicate(true)
 	last_event["presentation"] = _last_presentation.duplicate(true)
 	shot_presented.emit(event.duplicate(true))

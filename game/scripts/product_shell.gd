@@ -26,7 +26,7 @@ const BRIEFING_BEAT_SECONDS := 2.5
 const TRANSITION_HISTORY_LIMIT := 32
 const TERMINAL_RESULT_RECEIPT_LIMIT := 4
 const SAFE_AREA_RATIO := 0.05
-const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v2"
+const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v3_scroll_focus"
 const NON_PAGE_STATES: Array[StringName] = [STATE_DEPLOYMENT, STATE_GAMEPLAY, STATE_VICTORY, STATE_DETONATION]
 const LIFECYCLE_TABLE := {
 	&"title": {"predecessors":[&"title",&"loadout",&"briefing",&"settings",&"pause",&"death_recovery",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/TitlePage/Menu/StartButton"},
@@ -61,6 +61,8 @@ const LIFECYCLE_ACTIONS := {
 @onready var terminal: Node = get_node("../TerminalPresentation")
 @onready var damage_feedback: Node = get_node("../PlayerDamageFeedback")
 @onready var briefing_video: VideoStreamPlayer = $Root/Pages/BriefingPage/OpeningVideo
+@onready var settings_scroll: ScrollContainer = $Root/Pages/SettingsPage/SettingsScroll
+@onready var settings_grid: GridContainer = $Root/Pages/SettingsPage/SettingsScroll/Settings
 
 var app_state := STATE_TITLE
 var _return_from_settings := STATE_TITLE
@@ -94,6 +96,8 @@ var _opening_completion_count := 0
 var _activation_serial := 0
 var _activation_frame := -1
 var _last_activation_receipt: Dictionary = {}
+var _settings_focus_history: Array[Dictionary] = []
+var _last_settings_focus_receipt: Dictionary = {}
 
 
 func _ready() -> void:
@@ -139,6 +143,73 @@ func _connect_controls() -> void:
 	$Root/Pages/ResultPage/Menu/ReplayButton.pressed.connect(_replay)
 	$Root/Pages/ResultPage/Menu/RestartButton.pressed.connect(_restart_checkpoint)
 	$Root/Pages/ResultPage/Menu/HomeButton.pressed.connect(_return_home)
+	_configure_settings_navigation()
+
+
+func _settings_controls() -> Array[Control]:
+	return [
+		$Root/Pages/SettingsPage/SettingsScroll/Settings/MasterVolume,
+		$Root/Pages/SettingsPage/SettingsScroll/Settings/UIScale,
+		$Root/Pages/SettingsPage/SettingsScroll/Settings/FOV,
+		$Root/Pages/SettingsPage/SettingsScroll/Settings/SubtitleSize,
+		$Root/Pages/SettingsPage/SettingsScroll/Settings/ReducedMotion,
+		$Root/Pages/SettingsPage/SettingsScroll/Settings/ScreenShake,
+		$Root/Pages/SettingsPage/SettingsScroll/Settings/HoldADS,
+		$Root/Pages/SettingsPage/Actions/ApplyButton,
+		$Root/Pages/SettingsPage/Actions/CancelButton,
+	]
+
+
+func _configure_settings_navigation() -> void:
+	var controls := _settings_controls()
+	for control: Control in controls:
+		control.focus_mode = Control.FOCUS_ALL
+		if not control.focus_entered.is_connected(_on_settings_focus_entered.bind(control)):
+			control.focus_entered.connect(_on_settings_focus_entered.bind(control))
+	var first := controls[0]
+	var last_setting := controls[6]
+	var apply_button := controls[7]
+	var cancel_button := controls[8]
+	for index in 7:
+		var control := controls[index]
+		var above: Control = apply_button if index == 0 else controls[index - 1]
+		var below: Control = apply_button if index == 6 else controls[index + 1]
+		control.focus_neighbor_top = control.get_path_to(above)
+		control.focus_neighbor_bottom = control.get_path_to(below)
+	apply_button.focus_neighbor_top = apply_button.get_path_to(last_setting)
+	apply_button.focus_neighbor_bottom = apply_button.get_path_to(first)
+	apply_button.focus_neighbor_right = apply_button.get_path_to(cancel_button)
+	cancel_button.focus_neighbor_top = cancel_button.get_path_to(last_setting)
+	cancel_button.focus_neighbor_bottom = cancel_button.get_path_to(first)
+	cancel_button.focus_neighbor_left = cancel_button.get_path_to(apply_button)
+
+
+func _on_settings_focus_entered(control: Control) -> void:
+	_finalize_settings_focus_receipt.call_deferred(control)
+
+
+func _finalize_settings_focus_receipt(control: Control) -> void:
+	if app_state != STATE_SETTINGS or not is_instance_valid(control):
+		return
+	var scroll_rect := settings_scroll.get_global_rect()
+	var control_rect := control.get_global_rect()
+	_last_settings_focus_receipt = {
+		"run_epoch": int(mission.get("run_epoch")),
+		"page": STATE_SETTINGS,
+		"input_family": _last_input_family,
+		"focused_control": control.get_path(),
+		"focus_visible_in_scroll": not settings_scroll.is_ancestor_of(control) or scroll_rect.encloses(control_rect),
+		"scroll_vertical": settings_scroll.scroll_vertical,
+		"scroll_viewport_rect": scroll_rect,
+		"control_rect": control_rect,
+		"paused": get_tree().paused,
+		"gameplay_input_enabled": player.get("gameplay_input_enabled") == true,
+		"ui_scale": _applied_ui_scale,
+		"accepted": true,
+	}
+	_settings_focus_history.append(_last_settings_focus_receipt.duplicate(true))
+	while _settings_focus_history.size() > TRANSITION_HISTORY_LIMIT:
+		_settings_focus_history.pop_front()
 
 
 func _input(event: InputEvent) -> void:
@@ -426,29 +497,30 @@ func _resume_gameplay() -> void:
 func _open_settings_from(return_state: StringName) -> void:
 	_return_from_settings = return_state
 	_load_settings_controls()
+	settings_scroll.scroll_vertical = 0
 	_show_page(STATE_SETTINGS)
 
 
 func _load_settings_controls() -> void:
 	var values := settings_store.snapshot()
-	$Root/Pages/SettingsPage/Settings/MasterVolume.value = float(values["master_volume"]) * 100.0
-	$Root/Pages/SettingsPage/Settings/UIScale.value = float(values["ui_scale"]) * 100.0
-	$Root/Pages/SettingsPage/Settings/FOV.value = float(values["fov"])
-	$Root/Pages/SettingsPage/Settings/SubtitleSize.value = float(values["subtitle_size"])
-	$Root/Pages/SettingsPage/Settings/ReducedMotion.button_pressed = bool(values["reduced_camera_motion"])
-	$Root/Pages/SettingsPage/Settings/ScreenShake.button_pressed = bool(values["screen_shake"])
-	$Root/Pages/SettingsPage/Settings/HoldADS.button_pressed = bool(values["hold_ads"])
+	$Root/Pages/SettingsPage/SettingsScroll/Settings/MasterVolume.value = float(values["master_volume"]) * 100.0
+	$Root/Pages/SettingsPage/SettingsScroll/Settings/UIScale.value = float(values["ui_scale"]) * 100.0
+	$Root/Pages/SettingsPage/SettingsScroll/Settings/FOV.value = float(values["fov"])
+	$Root/Pages/SettingsPage/SettingsScroll/Settings/SubtitleSize.value = float(values["subtitle_size"])
+	$Root/Pages/SettingsPage/SettingsScroll/Settings/ReducedMotion.button_pressed = bool(values["reduced_camera_motion"])
+	$Root/Pages/SettingsPage/SettingsScroll/Settings/ScreenShake.button_pressed = bool(values["screen_shake"])
+	$Root/Pages/SettingsPage/SettingsScroll/Settings/HoldADS.button_pressed = bool(values["hold_ads"])
 
 
 func _apply_settings() -> void:
 	settings_store.save_settings({
-		"master_volume": $Root/Pages/SettingsPage/Settings/MasterVolume.value / 100.0,
-		"ui_scale": $Root/Pages/SettingsPage/Settings/UIScale.value / 100.0,
-		"fov": $Root/Pages/SettingsPage/Settings/FOV.value,
-		"subtitle_size": $Root/Pages/SettingsPage/Settings/SubtitleSize.value,
-		"reduced_camera_motion": $Root/Pages/SettingsPage/Settings/ReducedMotion.button_pressed,
-		"screen_shake": $Root/Pages/SettingsPage/Settings/ScreenShake.button_pressed,
-		"hold_ads": $Root/Pages/SettingsPage/Settings/HoldADS.button_pressed,
+		"master_volume": $Root/Pages/SettingsPage/SettingsScroll/Settings/MasterVolume.value / 100.0,
+		"ui_scale": $Root/Pages/SettingsPage/SettingsScroll/Settings/UIScale.value / 100.0,
+		"fov": $Root/Pages/SettingsPage/SettingsScroll/Settings/FOV.value,
+		"subtitle_size": $Root/Pages/SettingsPage/SettingsScroll/Settings/SubtitleSize.value,
+		"reduced_camera_motion": $Root/Pages/SettingsPage/SettingsScroll/Settings/ReducedMotion.button_pressed,
+		"screen_shake": $Root/Pages/SettingsPage/SettingsScroll/Settings/ScreenShake.button_pressed,
+		"hold_ads": $Root/Pages/SettingsPage/SettingsScroll/Settings/HoldADS.button_pressed,
 	})
 	_cancel_settings()
 
@@ -516,7 +588,8 @@ func _apply_responsive_layout() -> void:
 	_set_rect(^"Root/Pages/PausePage/Title", Rect2(safe.position + Vector2(16.0, 54.0), Vector2(560.0, 72.0)))
 	_set_rect(^"Root/Pages/PausePage/Menu", Rect2(safe.position + Vector2(16.0, 164.0), Vector2(420.0, 330.0)))
 	_set_rect(^"Root/Pages/SettingsPage/Title", Rect2(safe.position, Vector2(safe.size.x, 62.0)))
-	_set_rect(^"Root/Pages/SettingsPage/Settings", Rect2(safe.position + Vector2(24.0, 94.0), Vector2(minf(820.0, safe.size.x - 48.0), safe.size.y - 190.0)))
+	_set_rect(^"Root/Pages/SettingsPage/ScrollHint", Rect2(Vector2(safe.end.x - 500.0, safe.position.y + 18.0), Vector2(500.0, 34.0)))
+	_set_rect(^"Root/Pages/SettingsPage/SettingsScroll", Rect2(safe.position + Vector2(24.0, 94.0), Vector2(minf(900.0, safe.size.x - 48.0), safe.size.y - 190.0)))
 	_set_rect(^"Root/Pages/SettingsPage/Actions", Rect2(Vector2(safe.position.x + 24.0, safe.end.y - 72.0), Vector2(520.0, 60.0)))
 	_set_rect(^"Root/Pages/DeathPage/Title", Rect2(safe.position + Vector2(16.0, 108.0), Vector2(safe.size.x - 32.0, 86.0)))
 	_set_rect(^"Root/Pages/DeathPage/Copy", Rect2(safe.position + Vector2(16.0, 222.0), Vector2(safe.size.x - 32.0, 100.0)))
@@ -679,6 +752,7 @@ func _layout_snapshot() -> Dictionary:
 	var safe_margin := viewport_size * SAFE_AREA_RATIO
 	var safe_rect := Rect2(safe_margin, viewport_size - safe_margin * 2.0)
 	var violations: Array[String] = []
+	var settings_reflow := {}
 	if app_state != STATE_GAMEPLAY:
 		var page := pages.get_node_or_null(_page_name(app_state))
 		if page != null:
@@ -686,9 +760,40 @@ func _layout_snapshot() -> Dictionary:
 				var control := child as Control
 				if not control.is_visible_in_tree() or not (control is Label or control is BaseButton or control is Range):
 					continue
+				# Scroll content outside the viewport is intentionally reachable, not
+				# clipped product UI. The ScrollContainer and focused reveal are the
+				# safe-area acceptance boundary for Settings descendants.
+				if app_state == STATE_SETTINGS and (control == settings_grid or settings_grid.is_ancestor_of(control)):
+					continue
 				var rect := control.get_global_rect()
 				if not safe_rect.encloses(rect):
 					violations.append(str(control.get_path()))
+	if app_state == STATE_SETTINGS:
+		var critical_controls := _settings_controls()
+		var focus_owner := get_viewport().gui_get_focus_owner() as Control
+		var scroll_rect := settings_scroll.get_global_rect()
+		var focused_in_scroll := focus_owner != null and settings_scroll.is_ancestor_of(focus_owner)
+		var focused_revealed := focus_owner != null and (not focused_in_scroll or scroll_rect.encloses(focus_owner.get_global_rect()))
+		var inaccessible: Array[String] = []
+		for control: Control in critical_controls:
+			if control.focus_mode == Control.FOCUS_NONE or not control.is_visible_in_tree():
+				inaccessible.append(str(control.get_path()))
+		settings_reflow = {
+			"mode": &"focus_following_bounded_scroll",
+			"follow_focus": settings_scroll.follow_focus,
+			"scroll_vertical": settings_scroll.scroll_vertical,
+			"scroll_viewport_rect": scroll_rect,
+			"content_minimum_size": settings_grid.get_combined_minimum_size(),
+			"scroll_required": settings_grid.get_combined_minimum_size().y > settings_scroll.size.y,
+			"critical_control_count": critical_controls.size(),
+			"inaccessible_controls": inaccessible,
+			"focused_control": str(focus_owner.get_path()) if focus_owner != null else "",
+			"focused_revealed": focused_revealed,
+			"predecessor": _return_from_settings,
+			"all_critical_reachable": inaccessible.is_empty(),
+		}
+		if not settings_scroll.follow_focus or not focused_revealed or not inaccessible.is_empty():
+			violations.append("settings_focus_reflow")
 	return {
 		"contract_id": LAYOUT_CONTRACT_ID,
 		"applied_ui_scale": _applied_ui_scale,
@@ -699,6 +804,7 @@ func _layout_snapshot() -> Dictionary:
 		"violation_count": violations.size(),
 		"violations": violations,
 		"within_safe_area": violations.is_empty(),
+		"settings_reflow": settings_reflow,
 		"blocking_shell_visible": root.visible and pages.visible,
 		"route_plate_visible": $Root/Pages/LoadoutPage/RoutePlate.is_visible_in_tree(),
 		"gameplay_surface_clear": app_state != STATE_GAMEPLAY or (not root.visible and not pages.visible),
@@ -809,6 +915,13 @@ func _mcp_state() -> Dictionary:
 		"route_plate_visible": $Root/Pages/LoadoutPage/RoutePlate.is_visible_in_tree(),
 		"gameplay_surface_clear": app_state != STATE_GAMEPLAY or (not root.visible and not pages.visible),
 		"selected_weapon": _selected_weapon,
+		"focused_control": str(get_viewport().gui_get_focus_owner().get_path()) if get_viewport().gui_get_focus_owner() != null else "",
+		"applied_ui_scale": _applied_ui_scale,
+		"paused": get_tree().paused,
+		"gameplay_input_enabled": player.get("gameplay_input_enabled"),
+		"last_input_family": _last_input_family,
+		"last_settings_focus_receipt": _last_settings_focus_receipt,
+		"layout": _layout_snapshot(),
 		"transition_serial": _transition_serial,
 		"last_transition_receipt": _last_transition_receipt,
 		"transition_history": _transition_history,
@@ -817,9 +930,9 @@ func _mcp_state() -> Dictionary:
 		"last_lifecycle_action_receipt": _last_lifecycle_action_receipt,
 		"lifecycle_action_history": _lifecycle_action_history,
 		"last_transition_rejection": _last_transition_rejection,
-		"last_input_family": _last_input_family,
 		"activation_serial": _activation_serial,
 		"last_activation_receipt": _last_activation_receipt,
+		"settings_focus_history": _settings_focus_history,
 		"briefing_elapsed": _briefing_elapsed,
 		"briefing_caption_index": _briefing_caption_index,
 		"briefing_caption_line_count": ($Root/Pages/BriefingPage/Copy as Label).text.count("\n") + 1,
@@ -836,12 +949,9 @@ func _mcp_state() -> Dictionary:
 		"death_lock_remaining": _death_lock_remaining,
 		"active_recovery_epoch": _active_recovery_epoch,
 		"recovery_source": (mission.get("last_checkpoint_restore_receipt") as Dictionary).get("recovery_source", &"none"),
-		"applied_ui_scale": _applied_ui_scale,
 		"applied_subtitle_size": _applied_subtitle_size,
 		"reduced_camera_motion": _reduced_camera_motion,
 		"screen_shake": _screen_shake,
-		"paused": get_tree().paused,
-		"gameplay_input_enabled": player.get("gameplay_input_enabled"),
 		"mission_state": mission.get("mission_state"),
 		"terminal_event_id": String(mission.get("terminal_event_id")),
 		"result_entry_count": _observed_terminal_results.size(),
@@ -849,6 +959,4 @@ func _mcp_state() -> Dictionary:
 		"terminal_result_receipts": _terminal_result_receipts.duplicate(true),
 		"terminal_result_receipt_count": _terminal_result_receipts.size(),
 		"terminal_presentation": terminal.snapshot(),
-		"focused_control": str(get_viewport().gui_get_focus_owner().get_path()) if get_viewport().gui_get_focus_owner() != null else "",
-		"layout": _layout_snapshot(),
 	}
