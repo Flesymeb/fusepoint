@@ -409,6 +409,55 @@ func snapshot() -> Dictionary:
 	}
 
 
+func reset_volatile_combat_state_for_restore() -> void:
+	# Checkpoint durability ends at identity/transform/health/ammo/activation.
+	# Everything below is perception, authorization, navigation, reservation, or
+	# transient presentation state and must never survive a restore boundary.
+	target = null
+	_target_health = null
+	last_attack_report.clear()
+	_last_seen_target_position = Vector3.ZERO
+	_has_last_seen_target_position = false
+	_last_seen_target_remaining = 0.0
+	_reaction_remaining = 0.0
+	_attack_remaining = 0.0
+	_hurt_remaining = 0.0
+	_fire_pose_remaining = 0.0
+	_reload_remaining = 0.0
+	_navigation_safe_velocity = Vector3.ZERO
+	_release_cover()
+	_evade_remaining = 0.0
+	_evade_destination = Vector3.ZERO
+	_last_threat_position = Vector3.ZERO
+	_has_last_threat_position = false
+	_last_tactical_decision = &"checkpoint_quiescent"
+	_release_engagement_slot()
+	_reposition_decision_remaining = minf(reposition_interval_seconds, 1.0 + float(absi(tactical_random_seed) % 7) * 0.11)
+	_reposition_timeout_remaining = 0.0
+	_force_reposition = false
+	_last_reposition_reason = &"checkpoint_restore"
+	_attack_attempts_on_current_target = 0
+	_squad_alert_count = 0
+	_last_alert_source_path = ""
+	_targetless_destination = Vector3.ZERO
+	_has_targetless_destination = false
+	_targetless_action_remaining = 0.0
+	_targetless_watchdog_remaining = targetless_watchdog_seconds
+	_targetless_action = &"checkpoint_quiescent"
+	_targetless_action_serial = 0
+	_scan_direction = -1.0 if absi(tactical_random_seed) % 2 == 0 else 1.0
+	_rng.seed = tactical_random_seed if tactical_random_seed != 0 else hash("%s:%s" % [name, String(get_path())])
+	_home_position = global_position
+	_has_home_position = true
+	velocity = Vector3.ZERO
+	ai_state = AIState.IDLE
+	if _navigation_agent != null:
+		_navigation_agent.avoidance_enabled = false
+		_navigation_agent.target_position = global_position
+	if _death_audio != null:
+		_death_audio.stop()
+
+
 func state_name() -> String:
 	return AIState.keys()[ai_state].to_lower()
 

@@ -35,6 +35,7 @@ var bomb_stage_index := 0
 var bomb_stage_progress := 0.0
 var bomb_completed: Array[bool] = [false, false, false]
 var checkpoint_version := 0
+var deployment_snapshot: Dictionary = {}
 var checkpoint_snapshot: Dictionary = {}
 var checkpoint_commit_count := 0
 var checkpoint_restore_count := 0
@@ -43,6 +44,9 @@ var event_sequence := 0
 var event_history: Array[Dictionary] = []
 var last_event: Dictionary = {}
 var deployment_commit_count := 0
+var enemy_restore_epoch := 0
+var checkpoint_restore_in_progress := false
+var last_enemy_restore_receipt: Dictionary = {}
 
 var _active_capture := &""
 var _active_bomb_stage := false
@@ -85,9 +89,13 @@ func _initialize_mission_state() -> void:
 	bomb_stage_progress = 0.0
 	bomb_completed = [false, false, false]
 	checkpoint_version = 0
+	deployment_snapshot.clear()
 	checkpoint_snapshot.clear()
 	checkpoint_commit_count = 0
 	checkpoint_restore_count = 0
+	enemy_restore_epoch = 0
+	checkpoint_restore_in_progress = false
+	last_enemy_restore_receipt.clear()
 	terminal_commit_count = 0
 	_active_capture = &""
 	_active_bomb_stage = false
@@ -99,6 +107,7 @@ func begin_deployment() -> bool:
 		return false
 	deployment_commit_count = 1
 	mission_state = &"active_gameplay"
+	deployment_snapshot = _build_snapshot()
 	_record_event(&"deployment_started", {"remaining_time": remaining_time})
 	return true
 
@@ -308,10 +317,14 @@ func _complete_bomb_stage() -> void:
 		bomb_state = &"accessible"
 
 
-func _on_player_damaged(_amount: float, damage_event_id: String) -> void:
+func _on_player_damaged(event: Dictionary) -> void:
 	if _active_bomb_stage:
 		_interrupt_bomb(&"authoritative_damage")
-	_record_event(&"player_damaged", {"damage_event_id": damage_event_id, "health": player.get("health")})
+	_record_event(&"player_damaged", {
+		"damage_event_id": String(event.get("event_id", "")),
+		"shot_id": String(event.get("shot_id", "")),
+		"health": event.get("health_after", player.get("health")),
+	})
 
 
 func _submit_terminal(result: StringName, reason: StringName) -> void:
@@ -344,11 +357,15 @@ func request_checkpoint_restore() -> bool:
 	if mission_state != &"active_gameplay":
 		return false
 	var time_before := remaining_time
-	if checkpoint_snapshot.is_empty():
-		player.call(&"reset_to_deployment_without_mission_reset")
-		_record_event(&"checkpoint_restored", {"version": 0, "remaining_time": remaining_time, "time_granted": 0.0})
-		return true
-	var snapshot := checkpoint_snapshot.duplicate(true)
+	var snapshot := (deployment_snapshot if checkpoint_snapshot.is_empty() else checkpoint_snapshot).duplicate(true)
+	if snapshot.is_empty():
+		return false
+	if enemy_roster == null or not enemy_roster.has_method(&"begin_restore_epoch"):
+		return false
+	enemy_restore_epoch = int(enemy_roster.call(&"begin_restore_epoch"))
+	if enemy_restore_epoch < 0:
+		return false
+	checkpoint_restore_in_progress = true
 	capture_points = snapshot["capture_points"].duplicate(true)
 	committed_keys.assign(snapshot["committed_keys"])
 	route_locks = snapshot["route_locks"].duplicate(true)
@@ -362,12 +379,20 @@ func request_checkpoint_restore() -> bool:
 	overlaps = {&"alpha": false, &"bravo": false, &"charlie": false}
 	player.call(&"restore_checkpoint_state", snapshot["player_transform"], float(snapshot["player_health"]))
 	weapon_controller.call(&"restore_weapon_state", snapshot["weapon_state"])
-	if enemy_roster != null and enemy_roster.has_method(&"restore_all"):
-		enemy_roster.call(&"restore_all", snapshot.get("enemy_roster", {}))
+	if enemy_roster.call(&"apply_restore_snapshot", snapshot.get("enemy_roster", {}), enemy_restore_epoch) != true:
+		push_error("Enemy checkpoint restore epoch %d could not apply every actor snapshot" % enemy_restore_epoch)
+		return false
+	last_enemy_restore_receipt = enemy_roster.call(&"commit_restore_epoch", enemy_restore_epoch)
+	if last_enemy_restore_receipt.is_empty():
+		push_error("Enemy checkpoint restore epoch %d could not commit atomically" % enemy_restore_epoch)
+		return false
+	checkpoint_restore_in_progress = false
 	checkpoint_restore_count += 1
 	_record_event(&"checkpoint_restored", {
 		"version": checkpoint_version,
 		"restore_count": checkpoint_restore_count,
+		"enemy_restore_epoch": enemy_restore_epoch,
+		"enemy_actor_count": last_enemy_restore_receipt.get("actor_count", 0),
 		"remaining_time": remaining_time,
 		"time_granted": maxf(0.0, remaining_time - time_before),
 	})
@@ -376,6 +401,7 @@ func request_checkpoint_restore() -> bool:
 
 func _build_snapshot() -> Dictionary:
 	return {
+		"schema_version": 2,
 		"version": checkpoint_version,
 		"remaining_time": remaining_time,
 		"mission_state": mission_state,
@@ -523,8 +549,12 @@ func _mcp_state() -> Dictionary:
 		"bomb_stage_progress": bomb_stage_progress,
 		"bomb_completed": bomb_completed,
 		"checkpoint_version": checkpoint_version,
+		"deployment_snapshot_ready": not deployment_snapshot.is_empty(),
 		"checkpoint_commit_count": checkpoint_commit_count,
 		"checkpoint_restore_count": checkpoint_restore_count,
+		"enemy_restore_epoch": enemy_restore_epoch,
+		"checkpoint_restore_in_progress": checkpoint_restore_in_progress,
+		"last_enemy_restore_receipt": last_enemy_restore_receipt,
 		"terminal_commit_count": terminal_commit_count,
 		"active_capture": _active_capture,
 		"active_bomb_stage": _active_bomb_stage,

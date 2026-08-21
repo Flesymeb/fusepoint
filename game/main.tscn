@@ -1,4 +1,4 @@
-[gd_scene load_steps=17 format=3]
+[gd_scene load_steps=18 format=3]
 
 [ext_resource type="PackedScene" path="res://scenes/arena_foundation.tscn" id="1_arena"]
 [ext_resource type="Script" path="res://scripts/prototype_player.gd" id="2_player"]
@@ -9,6 +9,7 @@
 [ext_resource type="Script" path="res://scripts/enemy_roster.gd" id="7_roster"]
 [ext_resource type="PackedScene" path="res://scenes/tactical_hud.tscn" id="8_hud"]
 [ext_resource type="PackedScene" path="res://scenes/product_shell.tscn" id="9_shell"]
+[ext_resource type="PackedScene" path="res://systems/combat/core/fps_player_damage_feedback.tscn" id="10_damage_feedback"]
 
 [sub_resource type="CapsuleShape3D" id="Shape_player"]
 radius = 0.4
@@ -126,5 +127,10 @@ bravo_path = NodePath("../ArenaFoundation/Bravo")
 charlie_path = NodePath("../ArenaFoundation/Charlie")
 
 [node name="TacticalHUD" parent="." instance=ExtResource("8_hud")]
+
+[node name="PlayerDamageFeedback" parent="." instance=ExtResource("10_damage_feedback")]
+player_path = NodePath("../PrototypePlayer")
+camera_path = NodePath("../PrototypePlayer/Head/Camera3D")
+settings_store_path = NodePath("../ProductShell/SettingsStore")
 
 [node name="ProductShell" parent="." instance=ExtResource("9_shell")]

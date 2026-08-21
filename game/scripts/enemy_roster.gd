@@ -39,6 +39,11 @@ var activation_sequence := 0
 var roster_initialized := false
 var slot_projection_reports: Array[Dictionary] = []
 var roster_events: Array[Dictionary] = []
+var restore_epoch := 0
+var restore_in_progress := false
+var restore_applied_actor_count := 0
+var last_restore_receipt: Dictionary = {}
+var _roster_event_sequence := 0
 var _last_progression_signature := ""
 var diagnostic_mode := &"player"
 var _diagnostic_camera: Camera3D
@@ -61,7 +66,7 @@ func _ready() -> void:
 
 
 func _process(_delta: float) -> void:
-	if roster_initialized:
+	if roster_initialized and not restore_in_progress:
 		_update_region_activation()
 
 
@@ -228,11 +233,63 @@ func snapshot_all() -> Dictionary:
 	return snapshots
 
 
-func restore_all(saved: Dictionary) -> void:
-	for id in saved:
-		if enemies.has(id):
-			(enemies[id] as FusepointEnemyAgent).restore_authoritative_snapshot(saved[id])
-	_commit_roster_event(&"checkpoint_restored", {"actor_count": saved.size()})
+func begin_restore_epoch() -> int:
+	if restore_in_progress or not roster_initialized:
+		return -1
+	restore_epoch += 1
+	restore_in_progress = true
+	restore_applied_actor_count = 0
+	last_restore_receipt.clear()
+	for enemy: FusepointEnemyAgent in enemies.values():
+		enemy.begin_checkpoint_restore(restore_epoch)
+	return restore_epoch
+
+
+func apply_restore_snapshot(saved: Dictionary, epoch: int) -> bool:
+	if not restore_in_progress or epoch != restore_epoch or saved.size() != enemies.size():
+		return false
+	var applied := 0
+	for id: StringName in enemies:
+		var actor_snapshot: Dictionary = saved.get(id, saved.get(String(id), {}))
+		if actor_snapshot.is_empty():
+			return false
+		if not (enemies[id] as FusepointEnemyAgent).apply_checkpoint_snapshot(actor_snapshot, epoch):
+			return false
+		applied += 1
+	restore_applied_actor_count = applied
+	return applied == enemies.size()
+
+
+func commit_restore_epoch(epoch: int) -> Dictionary:
+	if not restore_in_progress or epoch != restore_epoch or restore_applied_actor_count != enemies.size():
+		return {}
+	var actor_receipts: Array[Dictionary] = []
+	for enemy: FusepointEnemyAgent in enemies.values():
+		if not enemy.finish_checkpoint_restore(epoch):
+			return {}
+		actor_receipts.append({
+			"id": enemy.stable_id,
+			"restored_epoch": epoch,
+			"quiescent": true,
+			"readiness": &"fresh_perception_pending",
+		})
+	restore_in_progress = false
+	_last_progression_signature = _progression_signature()
+	last_restore_receipt = {
+		"restore_epoch": epoch,
+		"actor_count": actor_receipts.size(),
+		"all_snapshots_applied": actor_receipts.size() == enemies.size(),
+		"actors": actor_receipts,
+	}
+	_commit_roster_event(&"checkpoint_restore_transaction", last_restore_receipt)
+	return last_restore_receipt.duplicate(true)
+
+
+func restore_all(saved: Dictionary) -> Dictionary:
+	var epoch := begin_restore_epoch()
+	if epoch < 0 or not apply_restore_snapshot(saved, epoch):
+		return {}
+	return commit_restore_epoch(epoch)
 
 
 func _objective_for(region_id: StringName) -> Node3D:
@@ -243,14 +300,17 @@ func _objective_for(region_id: StringName) -> Node3D:
 
 
 func _on_enemy_event(event: Dictionary) -> void:
+	if restore_in_progress:
+		return
 	_commit_roster_event(&"enemy_event", event)
 	if event.get("kind", &"") != &"action_changed" and mission_controller.has_method(&"report_enemy_event"):
 		mission_controller.call(&"report_enemy_event", event)
 
 
 func _commit_roster_event(kind: StringName, payload: Dictionary) -> void:
+	_roster_event_sequence += 1
 	var event := {
-		"event_id": "roster-%06d" % (roster_events.size() + 1),
+		"event_id": "roster-%06d" % _roster_event_sequence,
 		"kind": kind,
 		"payload": payload.duplicate(true),
 	}
@@ -281,6 +341,10 @@ func _summary() -> Dictionary:
 		"active_count": active_count,
 		"alive_count": alive_count,
 		"activation_sequence": activation_sequence,
+		"restore_epoch": restore_epoch,
+		"restore_in_progress": restore_in_progress,
+		"restore_applied_actor_count": restore_applied_actor_count,
+		"last_restore_receipt": last_restore_receipt,
 		"slot_projection_reports": slot_projection_reports,
 		"unique_slot_count": _unique_slot_count(),
 		"actors": actor_states,
@@ -294,6 +358,14 @@ func _unique_slot_count() -> int:
 	for enemy: FusepointEnemyAgent in enemies.values():
 		slots[enemy.route_slot] = true
 	return slots.size()
+
+
+func _progression_signature() -> String:
+	var state: Dictionary = mission_controller.call(&"_mcp_state")
+	var points: Dictionary = state.get("capture_points", {})
+	var alpha_secured := StringName((points.get(&"alpha", {}) as Dictionary).get("state", &"held_rift")) == &"secured_aegis"
+	var bravo_secured := StringName((points.get(&"bravo", {}) as Dictionary).get("state", &"held_rift")) == &"secured_aegis"
+	return "%s:%s" % [alpha_secured, bravo_secured]
 
 
 func _mcp_state() -> Dictionary:

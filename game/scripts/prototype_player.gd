@@ -1,7 +1,8 @@
 extends CharacterBody3D
 
 signal spawn_reset
-signal authoritative_damage_received(amount: float, damage_event_id: String)
+signal authoritative_damage_received(event: Dictionary)
+signal checkpoint_restored(event: Dictionary)
 signal player_died(event: Dictionary)
 
 @export_group("Ground locomotion")
@@ -47,6 +48,7 @@ var _standing_clearance_shape := CapsuleShape3D.new()
 var health := 100.0
 var _damage_serial := 0
 var _damage_commits: Dictionary = {}
+var _last_damage_event: Dictionary = {}
 var gameplay_input_enabled := true
 
 
@@ -240,6 +242,7 @@ func _reset_to_spawn() -> void:
 	_stand_clearance = true
 	health = max_health
 	_damage_commits.clear()
+	_last_damage_event.clear()
 	_set_stance(false)
 	head.position.y = standing_eye_height
 	_capture_mouse()
@@ -248,10 +251,12 @@ func _reset_to_spawn() -> void:
 
 func reset_to_deployment_without_mission_reset() -> void:
 	_restore_movement_state(_spawn_transform, max_health)
+	checkpoint_restored.emit({"event_id": "checkpoint-restore-deployment", "health_after": health})
 
 
 func restore_checkpoint_state(checkpoint_transform: Transform3D, checkpoint_health: float) -> void:
 	_restore_movement_state(checkpoint_transform, checkpoint_health)
+	checkpoint_restored.emit({"event_id": "checkpoint-restore", "health_after": health})
 
 
 func _restore_movement_state(target_transform: Transform3D, target_health: float) -> void:
@@ -271,27 +276,50 @@ func _restore_movement_state(target_transform: Transform3D, target_health: float
 	_capture_mouse()
 
 
-func apply_authoritative_damage(amount: float, damage_event_id := "") -> bool:
+func apply_authoritative_damage(amount: float, damage_event_id := "", metadata: Dictionary = {}) -> bool:
 	if amount <= 0.0 or health <= 0.0:
 		return false
 	_damage_serial += 1
-	var event_id := damage_event_id
+	var event_id := damage_event_id if not damage_event_id.is_empty() else String(metadata.get("event_id", metadata.get("shot_id", "")))
 	if event_id.is_empty():
 		event_id = "player-damage-%06d" % _damage_serial
 	if _damage_commits.has(event_id):
 		return false
 	_damage_commits[event_id] = true
+	var health_before := health
 	health = maxf(0.0, health - amount)
-	authoritative_damage_received.emit(amount, event_id)
+	var source_position: Variant = metadata.get("source_position", metadata.get("origin", global_position))
+	if not source_position is Vector3:
+		source_position = global_position
+	var severity_ratio := clampf(amount / maxf(max_health, 1.0), 0.0, 1.0)
+	var severity := &"critical" if health <= max_health * 0.25 else &"heavy" if severity_ratio >= 0.2 else &"light"
+	_last_damage_event = {
+		"event_id": event_id,
+		"shot_id": String(metadata.get("shot_id", event_id)),
+		"source_path": String(metadata.get("source_path", "")),
+		"source_position": source_position,
+		"amount": amount,
+		"severity": severity,
+		"severity_ratio": severity_ratio,
+		"health_before": health_before,
+		"health_after": health,
+		"max_health": max_health,
+		"killed": health <= 0.0,
+	}
+	authoritative_damage_received.emit(_last_damage_event.duplicate(true))
 	if health <= 0.0:
-		player_died.emit({"event_id": event_id, "health": health, "position": global_position})
+		var death_event := _last_damage_event.duplicate(true)
+		death_event["position"] = global_position
+		player_died.emit(death_event)
 	return true
 
 
 func apply_damage(amount: float, event: Dictionary = {}) -> Dictionary:
 	var report := event.duplicate(true)
-	var shot_id := String(report.get("shot_id", ""))
-	var applied := apply_authoritative_damage(amount, shot_id)
+	var damage_event_id := String(report.get("event_id", report.get("shot_id", "")))
+	var applied := apply_authoritative_damage(amount, damage_event_id, report)
+	if applied:
+		report.merge(_last_damage_event, true)
 	report["amount"] = amount
 	report["health_after"] = health
 	report["max_health"] = max_health
@@ -352,5 +380,6 @@ func _mcp_state() -> Dictionary:
 		"health": health,
 		"max_health": max_health,
 		"damage_commit_count": _damage_commits.size(),
+		"last_damage_event": _last_damage_event,
 		"gameplay_input_enabled": gameplay_input_enabled,
 	}

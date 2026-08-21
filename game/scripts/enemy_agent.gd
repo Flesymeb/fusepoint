@@ -20,6 +20,11 @@ var _cleanup_remaining := 0.0
 var _event_sequence := 0
 var _last_enemy_event: Dictionary = {}
 var _mission_target: Node3D
+var _restore_epoch := 0
+var _restore_in_progress := false
+var _restored_epoch := 0
+var _restore_quiescent := false
+var _restore_readiness := &"ordinary"
 
 
 func _ready() -> void:
@@ -27,6 +32,7 @@ func _ready() -> void:
 	add_to_group(&"mcp_watch")
 	add_to_group(&"fusepoint_enemy")
 	attack_resolved.connect(_on_attack_resolved)
+	target_acquired.connect(_on_target_acquired_after_restore)
 	reload_started.connect(_on_reload_started)
 	reload_finished.connect(_on_reload_finished)
 	enemy_died.connect(_on_enemy_died)
@@ -168,21 +174,51 @@ func authoritative_snapshot() -> Dictionary:
 		"presentation_bound": _presentation_actor != null,
 		"presentation_state": _presentation_actor.state_name() if _presentation_actor != null else "inactive",
 		"binding_accepted": _presentation_actor.binding_report.get("accepted", false) == true if _presentation_actor != null else false,
+		"restore_epoch": _restore_epoch,
+		"restored_epoch": _restored_epoch,
+		"restore_in_progress": _restore_in_progress,
+		"restore_quiescent": _restore_quiescent,
+		"restore_readiness": _restore_readiness,
 		"last_event": _last_enemy_event,
 	}
 
 
-func restore_authoritative_snapshot(saved: Dictionary) -> void:
+func begin_checkpoint_restore(epoch: int) -> void:
+	_restore_epoch = epoch
+	_restore_in_progress = true
+	_restore_quiescent = true
+	_restore_readiness = &"suspended"
+	set_physics_process(false)
+	velocity = Vector3.ZERO
+	reset_volatile_combat_state_for_restore()
+	if _collision_shape != null:
+		_collision_shape.set_deferred("disabled", true)
+	if _navigation_agent != null:
+		_navigation_agent.avoidance_enabled = false
+
+
+func apply_checkpoint_snapshot(saved: Dictionary, epoch: int) -> bool:
+	if not _restore_in_progress or epoch != _restore_epoch:
+		return false
+	if StringName(saved.get("id", &"")) != stable_id:
+		push_error("Restore identity mismatch for %s" % stable_id)
+		return false
+	if StringName(saved.get("region", region_id)) != region_id or StringName(saved.get("role", tactical_role)) != tactical_role or StringName(saved.get("route_slot", route_slot)) != route_slot:
+		push_error("Restore roster binding mismatch for %s" % stable_id)
+		return false
 	global_transform = saved.get("transform", global_transform)
 	velocity = Vector3.ZERO
 	rounds_remaining = int(saved.get("ammo", magazine_size))
 	activation_sequence = int(saved.get("activation_sequence", activation_sequence))
-	cleanup_hidden = saved.get("cleanup_hidden", false) == true
+	cleanup_hidden = false
+	_cleanup_remaining = 0.0
 	var health_state: Dictionary = saved.get("health", {})
 	var restored_health := float(health_state.get("current", _health.max_health if _health != null else 100.0))
 	if _health != null:
 		_health.reset_health(restored_health)
 	mission_active = saved.get("active", false) == true
+	reset_volatile_combat_state_for_restore()
+	_last_enemy_event.clear()
 	if mission_active:
 		_ensure_presentation()
 		if _health != null and _health.is_dead:
@@ -191,10 +227,40 @@ func restore_authoritative_snapshot(saved: Dictionary) -> void:
 		else:
 			ai_state = AIState.IDLE
 			_presentation_actor.reset_enemy()
+	_restored_epoch = epoch
+	_restore_readiness = &"snapshot_applied"
+	return true
+
+
+func finish_checkpoint_restore(epoch: int) -> bool:
+	if not _restore_in_progress or epoch != _restore_epoch or _restored_epoch != epoch:
+		return false
+	_restore_in_progress = false
+	_restore_readiness = &"fresh_perception_pending"
+	call_deferred(&"_resume_after_restore_boundary", epoch)
+	return true
+
+
+func _resume_after_restore_boundary(epoch: int) -> void:
+	await get_tree().physics_frame
+	if _restore_in_progress or epoch != _restore_epoch:
+		return
+	_restore_quiescent = false
+	_restore_readiness = &"fresh_perception_required" if mission_active and is_alive() else &"inactive_or_dead"
 	_apply_activation_state()
 
 
+func restore_authoritative_snapshot(saved: Dictionary) -> void:
+	# Compatibility entry point; still observes the same three-phase transaction.
+	var epoch := _restore_epoch + 1
+	begin_checkpoint_restore(epoch)
+	if apply_checkpoint_snapshot(saved, epoch):
+		finish_checkpoint_restore(epoch)
+
+
 func _on_attack_resolved(report: Dictionary) -> void:
+	if _restored_epoch > 0:
+		_restore_readiness = &"combat_ready"
 	var event := report.duplicate(true)
 	event["actor_id"] = stable_id
 	event["weapon_id"] = &"rift_carbine"
@@ -202,6 +268,11 @@ func _on_attack_resolved(report: Dictionary) -> void:
 	event["role"] = tactical_role
 	event["ammo_after"] = rounds_remaining
 	_commit_enemy_event(&"shot_resolved", event)
+
+
+func _on_target_acquired_after_restore(_target: Node3D) -> void:
+	if _restored_epoch > 0 and not _restore_in_progress:
+		_restore_readiness = &"fresh_aim_window"
 
 
 func _on_reload_started(combat: Dictionary) -> void:

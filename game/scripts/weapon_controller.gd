@@ -50,11 +50,15 @@ var _last_result_until := 0.0
 var _inspect_tween: Tween
 var _ready_for_combat := false
 var gameplay_input_enabled := true
-var _fire_action_down := false
+var _observed_fire_down := false
+var _fire_rearm_required := false
+var _fire_edge_queue: Array[Dictionary] = []
+var _fire_source_hint := &"none"
 var _active_fire_source := &"none"
 var _input_edge_serial := 0
 var _last_input_receipt: Dictionary = {}
 var _input_history: Array[Dictionary] = []
+var _combat_clock_seconds := 0.0
 
 
 func _ready() -> void:
@@ -72,21 +76,17 @@ func _ready() -> void:
 func _finish_ready() -> void:
 	await get_tree().process_frame
 	_ready_for_combat = true
-	_fire_action_down = Input.is_action_pressed(&"fire")
 	_sync_hud()
 	weapon_state_changed.emit(_mcp_state())
 
 
 func _input(event: InputEvent) -> void:
-	# Gameplay fire is consumed before GUI and unhandled-input routing. Polling in
-	# _process mirrors the same latch so analog actions and injected InputMap
-	# actions cannot be starved, while this raw path preserves an immediate edge.
-	if not _ready_for_combat or not gameplay_input_enabled:
+	# Raw events only preserve the human-readable source label. InputMap's frame
+	# edge flags below are the sole press/release authority for both mouse and
+	# mapped analog input, including events injected between rendered frames.
+	if not event.is_action(&"fire"):
 		return
-	if event.is_action_pressed(&"fire"):
-		_consume_fire_edge(true, _input_source_for(event))
-	elif event.is_action_released(&"fire"):
-		_consume_fire_edge(false, _input_source_for(event))
+	_fire_source_hint = _input_source_for(event)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -116,11 +116,7 @@ func _process(_delta: float) -> void:
 	if not gameplay_input_enabled:
 		_sync_hud()
 		return
-	_poll_fire_action()
 	var now := _now()
-	if _trigger_held and _current_weapon()["fire_mode"] == FIRE_MODE_AUTO and now >= _next_shot_time:
-		_try_submit_shot()
-		_next_shot_time = now + _fire_interval()
 	if _action_state == &"reload" and now >= _action_until:
 		_commit_reload()
 	elif _action_state == &"inspect" and now >= _action_until:
@@ -137,26 +133,83 @@ func _process(_delta: float) -> void:
 	_sync_hud()
 
 
-func _poll_fire_action() -> void:
-	var pressed := Input.is_action_pressed(&"fire")
-	if pressed != _fire_action_down:
-		_consume_fire_edge(pressed, _polled_fire_source())
+func _physics_process(delta: float) -> void:
+	if not _ready_for_combat:
+		return
+	if gameplay_input_enabled:
+		_combat_clock_seconds += maxf(delta, 0.0)
+	_capture_mapped_fire_edges()
+	_drain_fire_edges()
+	if not gameplay_input_enabled:
+		return
+	var scheduled_shots := 0
+	while _trigger_held and _current_weapon()["fire_mode"] == FIRE_MODE_AUTO and _now() >= _next_shot_time and scheduled_shots < 8:
+		if _try_submit_shot().is_empty():
+			break
+		_next_shot_time += _fire_interval()
+		scheduled_shots += 1
+
+
+func _capture_mapped_fire_edges() -> void:
+	var pressed := Input.is_action_just_pressed(&"fire")
+	var released := Input.is_action_just_released(&"fire")
+	if not pressed and not released:
+		return
+	var source := _fire_source_hint
+	if source == &"none":
+		source = &"mouse_left" if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) else &"gamepad_trigger"
+	if pressed:
+		_observe_fire_transition(true, source)
+	if released:
+		_observe_fire_transition(false, source)
+	_fire_source_hint = &"none"
+
+
+func _observe_fire_transition(pressed: bool, source: StringName) -> void:
+	if pressed == _observed_fire_down:
+		return
+	_observed_fire_down = pressed
+	if not pressed and _fire_rearm_required:
+		_fire_rearm_required = false
+		return
+	if not _ready_for_combat or not gameplay_input_enabled or _fire_rearm_required:
+		if pressed:
+			_fire_rearm_required = true
+		return
+	_input_edge_serial += 1
+	_fire_edge_queue.append({
+		"edge_id": "fire-input-%06d" % _input_edge_serial,
+		"pressed": pressed,
+		"source": source,
+		"captured_at_seconds": _now(),
+	})
+
+
+func _drain_fire_edges() -> void:
+	while not _fire_edge_queue.is_empty():
+		var edge: Dictionary = _fire_edge_queue.pop_front()
+		var edge_id := String(edge.get("edge_id", ""))
+		var source := StringName(edge.get("source", &"mapped_action"))
+		if not gameplay_input_enabled:
+			var magazine := int(_current_weapon()["magazine"])
+			_record_input_edge(source, &"press" if edge.get("pressed", false) else &"release", false, "gameplay_disabled", "", magazine, magazine, "eligibility_changed", edge_id)
+			continue
+		if edge.get("pressed", false) == true:
+			_begin_fire(source, edge_id)
+		else:
+			_end_fire(source, "release", edge_id)
 
 
 func _consume_fire_edge(pressed: bool, source: StringName) -> void:
-	if pressed == _fire_action_down:
-		return
-	_fire_action_down = pressed
-	if pressed:
-		_begin_fire(source)
-	else:
-		_end_fire(source)
+	# Retained as a deterministic diagnostic seam; it feeds the same queue and
+	# cannot bypass the authoritative edge consumer.
+	_observe_fire_transition(pressed, source)
 
 
-func _begin_fire(source := &"action_poll") -> void:
+func _begin_fire(source := &"mapped_action", edge_id := "") -> void:
 	var magazine_before := int(_current_weapon()["magazine"])
 	if not _can_fire():
-		_record_input_edge(source, &"press", false, _fire_rejection_reason(), "", magazine_before, magazine_before)
+		_record_input_edge(source, &"press", false, _fire_rejection_reason(), "", magazine_before, magazine_before, "", edge_id)
 		return
 	_trigger_held = true
 	_active_fire_source = source
@@ -173,17 +226,19 @@ func _begin_fire(source := &"action_poll") -> void:
 		String(receipt.get("shot_id", "")),
 		magazine_before,
 		magazine_after,
+		"",
+		edge_id,
 	)
 
 
-func _end_fire(source := &"action_poll", cancellation_reason := "release") -> void:
+func _end_fire(source := &"mapped_action", cancellation_reason := "release", edge_id := "") -> void:
 	var was_held := _trigger_held
 	_trigger_held = false
 	if feedback.has_method(&"end_fire"):
 		feedback.call(&"end_fire")
 	if cancellation_reason == "release":
 		var magazine := int(_current_weapon()["magazine"])
-		_record_input_edge(source, &"release", was_held or _fire_action_down == false, "released", "", magazine, magazine)
+		_record_input_edge(source, &"release", was_held or not _observed_fire_down, "released", "", magazine, magazine, "", edge_id)
 	_active_fire_source = &"none"
 
 
@@ -464,15 +519,18 @@ func _current_weapon() -> Dictionary:
 func set_gameplay_input_enabled(enabled: bool) -> void:
 	gameplay_input_enabled = enabled
 	if not enabled:
+		_cancel_queued_fire_edges("gameplay_disabled")
 		_cancel_held_fire("gameplay_disabled")
+		_fire_rearm_required = _observed_fire_down
+		_fire_source_hint = &"none"
 		_ads_held = false
 		_cancel_action(&"idle")
 	elif _action_state == &"idle":
 		_action_state = &"hip"
 		viewmodel.call(&"set_aiming", false, true)
-	# Latch the physical level on every handoff. A trigger held across a page,
-	# pause, death, or restore must be released before it can create a new edge.
-	_fire_action_down = Input.is_action_pressed(&"fire")
+	# A press observed across a page/pause/death/restore boundary remains armed
+	# off until its genuine release event arrives; enabling never samples a
+	# physical level and therefore cannot fabricate a transition.
 
 
 func equip_loadout(weapon_id: StringName) -> bool:
@@ -696,7 +754,7 @@ func _audit_descendants(node: Node, mesh_paths: Array[String], skeleton_paths: A
 
 
 func _now() -> float:
-	return Time.get_ticks_msec() / 1000.0
+	return _combat_clock_seconds
 
 
 func _input_source_for(event: InputEvent) -> StringName:
@@ -707,10 +765,6 @@ func _input_source_for(event: InputEvent) -> StringName:
 	if event is InputEventJoypadButton:
 		return &"gamepad_button"
 	return &"mapped_action"
-
-
-func _polled_fire_source() -> StringName:
-	return &"gamepad_trigger" if Input.get_action_strength(&"fire") > 0.3 and not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) else &"mouse_left"
 
 
 func _fire_rejection_reason() -> String:
@@ -732,6 +786,23 @@ func _cancel_held_fire(reason: String) -> void:
 		feedback.call(&"end_fire")
 
 
+func _cancel_queued_fire_edges(reason: String) -> void:
+	while not _fire_edge_queue.is_empty():
+		var edge: Dictionary = _fire_edge_queue.pop_front()
+		var magazine := int(_current_weapon()["magazine"])
+		_record_input_edge(
+			StringName(edge.get("source", &"mapped_action")),
+			&"press" if edge.get("pressed", false) else &"release",
+			false,
+			"cancelled",
+			"",
+			magazine,
+			magazine,
+			reason,
+			String(edge.get("edge_id", "")),
+		)
+
+
 func _record_input_edge(
 	source: StringName,
 	edge: StringName,
@@ -741,10 +812,13 @@ func _record_input_edge(
 	magazine_before: int,
 	magazine_after: int,
 	cancellation_reason := "",
+	edge_id := "",
 ) -> void:
-	_input_edge_serial += 1
+	if edge_id.is_empty():
+		_input_edge_serial += 1
+		edge_id = "fire-input-%06d" % _input_edge_serial
 	_last_input_receipt = {
-		"edge_id": "fire-input-%06d" % _input_edge_serial,
+		"edge_id": edge_id,
 		"source": source,
 		"edge": edge,
 		"shell_gameplay_enabled": gameplay_input_enabled,
@@ -777,7 +851,11 @@ func _mcp_state() -> Dictionary:
 		"ak74m_state": _weapons[&"ak74m"],
 		"saiga12_state": _weapons[&"saiga12"],
 		"trigger_held": _trigger_held,
-		"fire_action_down": _fire_action_down,
+		"fire_action_down": _observed_fire_down,
+		"fire_rearm_required": _fire_rearm_required,
+		"queued_fire_edge_count": _fire_edge_queue.size(),
+		"combat_clock_seconds": _combat_clock_seconds,
+		"fire_edge_authority": &"input_map_frame_edges",
 		"active_fire_source": _active_fire_source,
 		"last_input_receipt": _last_input_receipt,
 		"input_history": _input_history,
