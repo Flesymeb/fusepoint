@@ -471,10 +471,10 @@ func _commit_checkpoint(point_id: StringName) -> void:
 
 
 func request_checkpoint_restore() -> bool:
-	if mission_state != &"active_gameplay":
+	if mission_state != &"active_gameplay" or checkpoint_version <= 0 or checkpoint_snapshot.is_empty():
 		return false
 	var time_before := remaining_time
-	var snapshot := (deployment_snapshot if checkpoint_snapshot.is_empty() else checkpoint_snapshot).duplicate(true)
+	var snapshot := checkpoint_snapshot.duplicate(true)
 	if not _valid_checkpoint_snapshot(snapshot):
 		return false
 	if enemy_roster == null or not enemy_roster.has_method(&"begin_restore_epoch"):
@@ -752,6 +752,7 @@ func _mcp_state() -> Dictionary:
 		"event_history": event_history,
 		"enemy_roster_ready": enemy_roster != null and enemy_roster.get("roster_initialized") == true,
 		"enemy_roster_count": (enemy_roster.get("enemies") as Dictionary).size() if enemy_roster != null else 0,
+		"enemy_progression_receipts": (enemy_roster.get("progression_receipts") as Array).duplicate(true) if enemy_roster != null else [],
 		"history_limit": HISTORY_LIMIT,
 		"deployment_commit_count": deployment_commit_count,
 	}

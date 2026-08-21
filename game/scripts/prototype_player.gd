@@ -62,6 +62,8 @@ var screen_shake_enabled := true
 var _look_input_serial := 0
 var _last_look_receipt: Dictionary = {}
 var _look_history: Array[Dictionary] = []
+var _deployment_reset_count := 0
+var _last_deployment_reset_receipt: Dictionary = {}
 
 
 func _ready() -> void:
@@ -106,9 +108,7 @@ func _physics_process(delta: float) -> void:
 		return
 	_apply_gamepad_look(delta)
 	if Input.is_action_just_pressed("restart"):
-		var mission_controller := get_tree().get_first_node_in_group(&"mission_controller")
-		if mission_controller == null or mission_controller.call(&"request_checkpoint_restore") != true:
-			_reset_to_spawn()
+		_reset_to_spawn(&"restart_input")
 		return
 
 	var was_on_floor := is_on_floor()
@@ -286,7 +286,7 @@ func _release_mouse() -> void:
 	_mouse_captured = false
 
 
-func _reset_to_spawn() -> void:
+func _reset_to_spawn(source: StringName = &"mission_setup") -> void:
 	exit_terminal_lock()
 	global_transform = _spawn_transform
 	head.rotation = _spawn_head_rotation
@@ -304,6 +304,17 @@ func _reset_to_spawn() -> void:
 	_set_stance(false)
 	head.position.y = standing_eye_height
 	_capture_mouse()
+	_deployment_reset_count += 1
+	_last_deployment_reset_receipt = {
+		"event_id": "deployment-reset-%06d" % _deployment_reset_count,
+		"source": source,
+		"destination": &"deployment_spawn",
+		"position": global_position,
+		"health": health,
+		"checkpoint_restore_epoch": restore_epoch,
+		"mission_checkpoint_transaction_requested": false,
+		"transient_state_reset": true,
+	}
 	spawn_reset.emit()
 
 
@@ -427,7 +438,7 @@ func set_gameplay_input_enabled(enabled: bool) -> void:
 
 
 func prepare_new_mission() -> void:
-	_reset_to_spawn()
+	_reset_to_spawn(&"new_mission")
 
 
 func enter_terminal_lock(event_id: String) -> bool:
@@ -489,4 +500,6 @@ func _mcp_state() -> Dictionary:
 		"look_input_authority": &"player_raw_input_and_physics_stick",
 		"look_input_count": _look_input_serial,
 		"last_look_receipt": _last_look_receipt,
+		"deployment_reset_count": _deployment_reset_count,
+		"last_deployment_reset_receipt": _last_deployment_reset_receipt,
 	}

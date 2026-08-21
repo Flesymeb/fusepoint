@@ -17,6 +17,8 @@ const BRIEFING_CAPTIONS: Array[String] = [
 	"BREACH CHARLIE AND DISMANTLE THE DEVICE.\nSUPPORT IS NOT COMING.",
 ]
 const BRIEFING_BEAT_SECONDS := 2.4
+const TRANSITION_HISTORY_LIMIT := 32
+const SAFE_AREA_RATIO := 0.05
 
 @onready var root: Control = $Root
 @onready var pages: Control = $Root/Pages
@@ -42,6 +44,11 @@ var _applied_ui_scale := 1.0
 var _applied_subtitle_size := 18
 var _reduced_camera_motion := false
 var _screen_shake := true
+var _last_input_family := &"keyboard_mouse"
+var _focus_by_state: Dictionary = {}
+var _last_transition_receipt: Dictionary = {}
+var _transition_history: Array[Dictionary] = []
+var _last_transition_rejection := &""
 
 
 func _ready() -> void:
@@ -80,6 +87,7 @@ func _connect_controls() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	_observe_input_family(event)
 	if app_state != STATE_GAMEPLAY and event.is_action_pressed(&"menu_accept"):
 		var focused := get_viewport().gui_get_focus_owner()
 		if focused is BaseButton:
@@ -114,6 +122,10 @@ func _process(delta: float) -> void:
 
 
 func _show_page(state: StringName) -> void:
+	var previous_state := app_state
+	var focused_before := get_viewport().gui_get_focus_owner()
+	if focused_before != null and previous_state != STATE_GAMEPLAY:
+		_focus_by_state[previous_state] = focused_before.get_path()
 	_transition_serial += 1
 	app_state = state
 	pages.visible = state != STATE_GAMEPLAY
@@ -124,6 +136,7 @@ func _show_page(state: StringName) -> void:
 	if state != STATE_GAMEPLAY:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		_focus_first_button.call_deferred()
+	_commit_transition(previous_state, state, &"page_change")
 
 
 func _page_name(state: StringName) -> String:
@@ -143,10 +156,18 @@ func _focus_first_button() -> void:
 	var page := pages.get_node_or_null(_page_name(app_state))
 	if page == null:
 		return
+	var remembered_path: NodePath = _focus_by_state.get(app_state, NodePath())
+	if not remembered_path.is_empty():
+		var remembered := get_node_or_null(remembered_path) as BaseButton
+		if remembered != null and remembered.visible and not remembered.disabled:
+			remembered.grab_focus()
+			_finalize_transition_focus()
+			return
 	for control in page.find_children("*", "Button", true, false):
 		var button := control as Button
 		if button.visible and not button.disabled:
 			button.grab_focus()
+			_finalize_transition_focus()
 			return
 
 
@@ -240,6 +261,7 @@ func _set_gameplay_enabled(enabled: bool) -> void:
 func _pause_gameplay() -> void:
 	if app_state != STATE_GAMEPLAY:
 		return
+	$Root/Pages/PausePage/Menu/RestartButton.visible = int(mission.get("checkpoint_version")) > 0
 	player.call(&"set_gameplay_input_enabled", false)
 	weapon.call(&"set_gameplay_input_enabled", false)
 	get_tree().paused = true
@@ -324,17 +346,102 @@ func _on_player_died(_event: Dictionary) -> void:
 	get_tree().paused = true
 	player.call(&"set_gameplay_input_enabled", false)
 	weapon.call(&"set_gameplay_input_enabled", false)
+	$Root/Pages/DeathPage/Menu/RestartButton.visible = int(mission.get("checkpoint_version")) > 0
 	_show_page(STATE_DEATH)
 
 
 func _restart_checkpoint() -> void:
-	if app_state == STATE_RESULT:
-		return
 	if mission.call(&"request_checkpoint_restore") != true:
+		_record_transition_rejection(&"checkpoint_restart", &"checkpoint_unavailable_or_illegal")
 		return
 	get_tree().paused = false
 	_set_gameplay_enabled(true)
 	_show_page(STATE_GAMEPLAY)
+
+
+func _observe_input_family(event: InputEvent) -> void:
+	if event is InputEventJoypadButton or event is InputEventJoypadMotion:
+		_last_input_family = &"gamepad"
+	elif event is InputEventKey or event is InputEventMouse:
+		_last_input_family = &"keyboard_mouse"
+
+
+func _commit_transition(previous_state: StringName, next_state: StringName, reason: StringName) -> void:
+	_last_transition_rejection = &""
+	_last_transition_receipt = {
+		"transition_id": "shell-transition-%06d" % _transition_serial,
+		"sequence": _transition_serial,
+		"previous_state": previous_state,
+		"next_state": next_state,
+		"reason": reason,
+		"accepted": true,
+		"rejection_reason": &"",
+		"input_family": _last_input_family,
+		"focused_control": "",
+		"paused": get_tree().paused,
+		"gameplay_input_enabled": player.get("gameplay_input_enabled") == true,
+		"ui_scale": _applied_ui_scale,
+	}
+	_transition_history.append(_last_transition_receipt.duplicate(true))
+	while _transition_history.size() > TRANSITION_HISTORY_LIMIT:
+		_transition_history.pop_front()
+
+
+func _finalize_transition_focus() -> void:
+	var focused := get_viewport().gui_get_focus_owner()
+	var focused_path := str(focused.get_path()) if focused != null else ""
+	_last_transition_receipt["focused_control"] = focused_path
+	if not _transition_history.is_empty():
+		_transition_history[-1]["focused_control"] = focused_path
+
+
+func _record_transition_rejection(action: StringName, reason: StringName) -> void:
+	_transition_serial += 1
+	_last_transition_rejection = reason
+	var focused := get_viewport().gui_get_focus_owner()
+	_last_transition_receipt = {
+		"transition_id": "shell-transition-%06d" % _transition_serial,
+		"sequence": _transition_serial,
+		"previous_state": app_state,
+		"next_state": app_state,
+		"reason": action,
+		"accepted": false,
+		"rejection_reason": reason,
+		"input_family": _last_input_family,
+		"focused_control": str(focused.get_path()) if focused != null else "",
+		"paused": get_tree().paused,
+		"gameplay_input_enabled": player.get("gameplay_input_enabled") == true,
+		"ui_scale": _applied_ui_scale,
+	}
+	_transition_history.append(_last_transition_receipt.duplicate(true))
+	while _transition_history.size() > TRANSITION_HISTORY_LIMIT:
+		_transition_history.pop_front()
+
+
+func _layout_snapshot() -> Dictionary:
+	var viewport_size := root.size
+	var safe_margin := viewport_size * SAFE_AREA_RATIO
+	var safe_rect := Rect2(safe_margin, viewport_size - safe_margin * 2.0)
+	var violations: Array[String] = []
+	if app_state != STATE_GAMEPLAY:
+		var page := pages.get_node_or_null(_page_name(app_state))
+		if page != null:
+			for child: Node in page.find_children("*", "Control", true, false):
+				var control := child as Control
+				if not control.is_visible_in_tree() or not (control is Label or control is BaseButton or control is Range):
+					continue
+				var rect := control.get_global_rect()
+				if not safe_rect.encloses(rect):
+					violations.append(str(control.get_path()))
+	return {
+		"viewport_size": viewport_size,
+		"safe_margin": safe_margin,
+		"safe_rect": safe_rect,
+		"critical_control_count": 0 if app_state == STATE_GAMEPLAY else (pages.get_node(_page_name(app_state)) as Control).find_children("*", "Control", true, false).size(),
+		"violation_count": violations.size(),
+		"violations": violations,
+		"within_safe_area": violations.is_empty(),
+	}
 
 
 func _return_home() -> void:
@@ -390,6 +497,10 @@ func _mcp_state() -> Dictionary:
 		"pages_visible": pages.visible,
 		"selected_weapon": _selected_weapon,
 		"transition_serial": _transition_serial,
+		"last_transition_receipt": _last_transition_receipt,
+		"transition_history": _transition_history,
+		"last_transition_rejection": _last_transition_rejection,
+		"last_input_family": _last_input_family,
 		"briefing_elapsed": _briefing_elapsed,
 		"briefing_caption_index": _briefing_caption_index,
 		"briefing_caption_line_count": ($Root/Pages/BriefingPage/Copy as Label).text.count("\n") + 1,
@@ -405,4 +516,5 @@ func _mcp_state() -> Dictionary:
 		"mission_state": mission.get("mission_state"),
 		"terminal_presentation": terminal.snapshot(),
 		"focused_control": str(get_viewport().gui_get_focus_owner().get_path()) if get_viewport().gui_get_focus_owner() != null else "",
+		"layout": _layout_snapshot(),
 	}

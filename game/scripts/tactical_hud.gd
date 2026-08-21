@@ -2,6 +2,7 @@ class_name FusepointTacticalHUD
 extends CanvasLayer
 
 const STORY_COPY := "11:40 — KESTREL RIDGE MILITARY BASE\nThe Rift Front planted a timed bomb in the Sector C rocket maintenance bay.\nCommunications are down. Support is not coming. You are the only operator who can enter.\nRetake Alpha, secure Bravo, then recover both defusal keys.\nIn five minutes, the base disappears with the bomb."
+const SAFE_AREA_RATIO := 0.05
 
 @onready var root: Control = $Root
 @onready var minimap: Control = $Root/Minimap
@@ -19,6 +20,7 @@ const STORY_COPY := "11:40 — KESTREL RIDGE MILITARY BASE\nThe Rift Front plant
 @onready var objective_detail: Label = $Root/ObjectiveBand/Layout/Detail
 @onready var narrative: Label = $Root/Narrative
 @onready var feed: VBoxContainer = $Root/CombatFeed
+@onready var reticle: Control = $Root/Reticle
 
 var player: CharacterBody3D
 var weapon: Node
@@ -38,6 +40,8 @@ var _restore_epoch := 0
 func _ready() -> void:
 	root.visible = false
 	vitals.call(&"set_armor_visible", false)
+	root.resized.connect(_apply_responsive_layout)
+	_apply_responsive_layout.call_deferred()
 	call_deferred(&"_bind_runtime")
 
 
@@ -94,6 +98,69 @@ func apply_accessibility_settings(values: Dictionary) -> void:
 		var base_size := int(control.get_meta(&"fusepoint_hud_base_font_size"))
 		if base_size > 0 and base_size < 32:
 			control.add_theme_font_size_override("font_size", int(round(base_size * multiplier)))
+	_apply_responsive_layout.call_deferred()
+
+
+func _apply_responsive_layout() -> void:
+	var viewport_size := root.size
+	if viewport_size.x <= 0.0 or viewport_size.y <= 0.0:
+		return
+	var safe := Vector2(maxf(viewport_size.x * SAFE_AREA_RATIO, 32.0), maxf(viewport_size.y * SAFE_AREA_RATIO, 24.0))
+	var center := viewport_size * 0.5
+	minimap.position = safe + Vector2(2.0, 2.0)
+	minimap.size = Vector2(160.0, 160.0)
+	$Root/MapTitle.position = Vector2(safe.x + 2.0, safe.y + 168.0)
+	$Root/MapTitle.size = Vector2(220.0, 28.0)
+	$Root/CountdownRail.position = Vector2(center.x - 202.0, safe.y)
+	$Root/CountdownRail.size = Vector2(404.0, 90.0)
+	compass_label.position = Vector2(center.x - 210.0, safe.y + 90.0)
+	compass_label.size = Vector2(420.0, 42.0)
+	route_label.position = Vector2(center.x - 240.0, safe.y + 132.0)
+	route_label.size = Vector2(480.0, 26.0)
+	feed.position = Vector2(viewport_size.x - safe.x - 302.0, safe.y + 2.0)
+	feed.size = Vector2(300.0, 128.0)
+	reticle.position = center - Vector2(14.0, 14.0)
+	reticle.size = Vector2(28.0, 28.0)
+	var narrative_width := minf(1040.0, viewport_size.x - safe.x * 2.0 - 8.0)
+	narrative.position = Vector2(center.x - narrative_width * 0.5, safe.y + 148.0)
+	narrative.size = Vector2(narrative_width, minf(170.0, center.y - safe.y - 156.0))
+	var objective_width := minf(620.0, viewport_size.x - safe.x * 2.0 - 8.0)
+	objective_band.position = Vector2(center.x - objective_width * 0.5, viewport_size.y - safe.y - 138.0)
+	objective_band.size = Vector2(objective_width, 86.0)
+	objective_progress.custom_minimum_size.x = maxf(objective_width - 30.0, 120.0)
+	vitals.position = Vector2(safe.x + 2.0, viewport_size.y - safe.y - 56.0)
+	vitals.size = Vector2(280.0, 54.0)
+	stance_label.position = Vector2(safe.x + 2.0, viewport_size.y - safe.y - 84.0)
+	stance_label.size = Vector2(300.0, 24.0)
+	weapon_hud.position = Vector2(viewport_size.x - safe.x - 322.0, viewport_size.y - safe.y - 110.0)
+	weapon_hud.size = Vector2(320.0, 108.0)
+
+
+func _layout_snapshot() -> Dictionary:
+	var viewport_size := root.size
+	var safe_margin := Vector2(maxf(viewport_size.x * SAFE_AREA_RATIO, 32.0), maxf(viewport_size.y * SAFE_AREA_RATIO, 24.0))
+	var safe_rect := Rect2(safe_margin, viewport_size - safe_margin * 2.0)
+	var regions: Array[Control] = [minimap, $Root/CountdownRail, compass_label, route_label, feed, vitals, stance_label, weapon_hud, reticle]
+	if objective_band.visible:
+		regions.append(objective_band)
+	if narrative.visible:
+		regions.append(narrative)
+	var violations: Array[String] = []
+	var region_rects: Dictionary = {}
+	for control: Control in regions:
+		var rect := control.get_global_rect()
+		region_rects[str(control.get_path())] = rect
+		if not safe_rect.encloses(rect):
+			violations.append(str(control.get_path()))
+	return {
+		"viewport_size": viewport_size,
+		"safe_margin": safe_margin,
+		"safe_rect": safe_rect,
+		"region_rects": region_rects,
+		"violation_count": violations.size(),
+		"violations": violations,
+		"within_safe_area": violations.is_empty(),
+	}
 
 
 func reset_transient_feedback_for_restore(epoch: int) -> void:
@@ -265,4 +332,5 @@ func _mcp_state() -> Dictionary:
 		"applied_ui_scale": _applied_ui_scale,
 		"applied_subtitle_size": _applied_subtitle_size,
 		"restore_epoch": _restore_epoch,
+		"layout": _layout_snapshot(),
 	}

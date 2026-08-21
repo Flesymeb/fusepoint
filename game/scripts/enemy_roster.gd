@@ -50,6 +50,8 @@ var restore_applied_actor_count := 0
 var last_restore_receipt: Dictionary = {}
 var _roster_event_sequence := 0
 var _last_progression_signature := ""
+var progression_receipts: Array[Dictionary] = []
+var _progression_receipt_sequence := 0
 var diagnostic_mode := &"player"
 var _diagnostic_camera: Camera3D
 var _diagnostic_actor_index := 0
@@ -362,6 +364,11 @@ func commit_restore_epoch(epoch: int) -> Dictionary:
 		"all_snapshots_applied": actor_receipts.size() == enemies.size(),
 		"actors": actor_receipts,
 	}
+	for enemy: FusepointEnemyAgent in enemies.values():
+		_append_progression_receipt(&"restored", enemy, {
+			"restore_epoch": epoch,
+			"restore_committed": true,
+		})
 	_commit_roster_event(&"checkpoint_restore_transaction", last_restore_receipt)
 	return last_restore_receipt.duplicate(true)
 
@@ -404,6 +411,10 @@ func _objective_for(region_id: StringName) -> Node3D:
 func _on_enemy_event(event: Dictionary) -> void:
 	if restore_in_progress:
 		return
+	var actor_id := StringName(event.get("actor_id", &""))
+	var enemy := enemies.get(actor_id) as FusepointEnemyAgent
+	if enemy != null:
+		_append_progression_receipt(StringName(event.get("kind", &"enemy_event")), enemy, event)
 	_commit_roster_event(&"enemy_event", event)
 	if event.get("kind", &"") != &"action_changed" and mission_controller.has_method(&"report_enemy_event"):
 		mission_controller.call(&"report_enemy_event", event)
@@ -458,6 +469,8 @@ func _summary() -> Dictionary:
 		"reservation_minimum_distance": reservation_minimum_distance,
 		"unique_slot_count": _unique_slot_count(),
 		"actors": actor_states,
+		"progression_receipt_count": progression_receipts.size(),
+		"progression_receipts": progression_receipts,
 		"last_event": roster_events.back() if not roster_events.is_empty() else {},
 		"diagnostic_mode": diagnostic_mode,
 	}
@@ -476,6 +489,35 @@ func _progression_signature() -> String:
 	var alpha_secured := StringName((points.get(&"alpha", {}) as Dictionary).get("state", &"held_rift")) == &"secured_aegis"
 	var bravo_secured := StringName((points.get(&"bravo", {}) as Dictionary).get("state", &"held_rift")) == &"secured_aegis"
 	return "%s:%s" % [alpha_secured, bravo_secured]
+
+
+func _append_progression_receipt(kind: StringName, enemy: FusepointEnemyAgent, source_event: Dictionary = {}) -> void:
+	var actor := enemy.authoritative_snapshot()
+	var health_state: Dictionary = actor.get("health", {})
+	_progression_receipt_sequence += 1
+	progression_receipts.append({
+		"receipt_id": "progression-%06d" % _progression_receipt_sequence,
+		"sequence": _progression_receipt_sequence,
+		"activation_sequence": int(actor.get("activation_sequence", 0)),
+		"kind": kind,
+		"region": actor.get("region", &""),
+		"actor_id": actor.get("id", &""),
+		"role": actor.get("role", &""),
+		"action": actor.get("action", &"idle"),
+		"target_visible": actor.get("target_visible", false),
+		"route_target": actor.get("route_target", enemy.global_position),
+		"navigation_velocity": actor.get("navigation_velocity", Vector3.ZERO),
+		"nearest_neighbor_distance": actor.get("nearest_neighbor_distance", -1.0),
+		"ammo": actor.get("ammo", 0),
+		"health": health_state.get("current", 0.0),
+		"alive": actor.get("alive", false),
+		"shot_event_id": actor.get("shot_event_id", ""),
+		"fire_block_reason": actor.get("fire_block_reason", &"unknown"),
+		"restore_epoch": actor.get("restore_epoch", 0),
+		"source_event": source_event.duplicate(true),
+	})
+	while progression_receipts.size() > 96:
+		progression_receipts.pop_front()
 
 
 func _mcp_state() -> Dictionary:
