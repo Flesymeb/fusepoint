@@ -18,6 +18,11 @@ runs/
 *.mov
 *.mp4
 
+# Local product-direction inputs consumed by GameLoop. Keep these available to
+# Planner locally, but do not publish them with generated product commits.
+PRD.md
+visual-references/
+
 # Reusable generated game assets remain in the host asset pool. Keep compact
 # manifests, receipts, scenes, scripts, and configuration in the game repo.
 game/assets/**/*.glb
