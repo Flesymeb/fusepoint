@@ -9,6 +9,7 @@ const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v2"
 
 @onready var root: Control = $Root
 @onready var minimap: Control = $Root/Minimap
+@onready var map_title: Label = $Root/MapTitle
 @onready var vitals: Control = $Root/Vitals
 @onready var weapon_hud: Control = $Root/WeaponAmmoHUD
 @onready var time_label: Label = $Root/CountdownRail/Time
@@ -118,9 +119,17 @@ func _apply_responsive_layout() -> void:
 	minimap.position = safe + Vector2(2.0, 2.0)
 	minimap.size = Vector2(150.0, 150.0) if expanded else Vector2(160.0, 160.0)
 	$Root/MapTitle.position = Vector2(safe.x + 2.0, safe.y + 168.0)
-	$Root/MapTitle.size = Vector2(250.0, 32.0)
+	$Root/MapTitle.size = Vector2(270.0, 34.0)
 	$Root/CountdownRail.position = Vector2(center.x - 202.0, safe.y)
 	$Root/CountdownRail.size = Vector2(404.0, 112.0 if expanded else 90.0)
+	$Root/CountdownRail/Detonation.position = Vector2.ZERO
+	$Root/CountdownRail/Detonation.size = Vector2(404.0, 22.0)
+	$Root/CountdownRail/Time.position = Vector2(0.0, 18.0)
+	$Root/CountdownRail/Time.size = Vector2(404.0, 46.0 if expanded else 35.0)
+	$Root/CountdownRail/Stage.position = Vector2(0.0, 68.0 if expanded else 53.0)
+	$Root/CountdownRail/Stage.size = Vector2(404.0, 22.0 if expanded else 19.0)
+	$Root/CountdownRail/Keys.position = Vector2(0.0, 92.0 if expanded else 72.0)
+	$Root/CountdownRail/Keys.size = Vector2(404.0, 20.0 if expanded else 18.0)
 	compass_label.position = Vector2(center.x - 210.0, safe.y + (112.0 if expanded else 90.0))
 	compass_label.size = Vector2(420.0, 48.0)
 	route_label.position = Vector2(center.x - 250.0, safe.y + (160.0 if expanded else 132.0))
@@ -132,7 +141,7 @@ func _apply_responsive_layout() -> void:
 	var narrative_width := minf(920.0, viewport_size.x - safe.x * 2.0 - 8.0)
 	narrative.position = Vector2(center.x - narrative_width * 0.5, safe.y + (202.0 if expanded else 174.0))
 	narrative.size = Vector2(narrative_width, 78.0 if expanded else 106.0)
-	var objective_width := minf(620.0, viewport_size.x - safe.x * 2.0 - 8.0)
+	var objective_width := minf(500.0 if expanded else 620.0, viewport_size.x - safe.x * 2.0 - 8.0)
 	objective_band.position = Vector2(center.x - objective_width * 0.5, viewport_size.y - safe.y - (122.0 if expanded else 138.0))
 	objective_band.size = Vector2(objective_width, 100.0 if expanded else 86.0)
 	objective_progress.custom_minimum_size.x = maxf(objective_width - 30.0, 120.0)
@@ -148,18 +157,27 @@ func _layout_snapshot() -> Dictionary:
 	var viewport_size := root.size
 	var safe_margin := Vector2(maxf(viewport_size.x * SAFE_AREA_RATIO, 32.0), maxf(viewport_size.y * SAFE_AREA_RATIO, 24.0))
 	var safe_rect := Rect2(safe_margin, viewport_size - safe_margin * 2.0)
-	var regions: Array[Control] = [minimap, $Root/CountdownRail, compass_label, route_label, feed, vitals, stance_label, weapon_hud, reticle]
+	var regions: Array[Control] = [minimap, map_title, $Root/CountdownRail, compass_label, route_label, feed, vitals, stance_label, weapon_hud, reticle]
 	if objective_band.visible:
 		regions.append(objective_band)
 	if narrative.visible:
 		regions.append(narrative)
 	var violations: Array[String] = []
+	var content_clipping: Array[String] = []
 	var region_rects: Dictionary = {}
 	for control: Control in regions:
 		var rect := control.get_global_rect()
 		region_rects[str(control.get_path())] = rect
 		if not safe_rect.encloses(rect):
 			violations.append(str(control.get_path()))
+		var required := control.get_combined_minimum_size()
+		if required.x > control.size.x + 1.0 or required.y > control.size.y + 1.0:
+			content_clipping.append(str(control.get_path()))
+	var world_notices := _world_notice_budget()
+	for notice_id in world_notices:
+		var notice: Dictionary = world_notices[notice_id]
+		if notice.get("visible", false) == true and notice.get("within_safe_area", false) != true:
+			violations.append("world_notice:%s" % notice_id)
 	return {
 		"contract_id": LAYOUT_CONTRACT_ID,
 		"applied_ui_scale": _applied_ui_scale,
@@ -167,10 +185,23 @@ func _layout_snapshot() -> Dictionary:
 		"safe_margin": safe_margin,
 		"safe_rect": safe_rect,
 		"region_rects": region_rects,
-		"violation_count": violations.size(),
+		"violation_count": violations.size() + content_clipping.size(),
 		"violations": violations,
-		"within_safe_area": violations.is_empty(),
+		"content_clipping": content_clipping,
+		"world_notices": world_notices,
+		"within_safe_area": violations.is_empty() and content_clipping.is_empty(),
 	}
+
+
+func _world_notice_budget() -> Dictionary:
+	var result := {}
+	if arena == null:
+		return result
+	for objective_name in [&"Alpha", &"Bravo"]:
+		var objective := arena.get_node_or_null(NodePath(String(objective_name)))
+		if objective != null and objective.has_method(&"notice_budget_state"):
+			result[String(objective_name).to_lower()] = objective.call(&"notice_budget_state")
+	return result
 
 
 func reset_transient_feedback_for_restore(epoch: int) -> void:
@@ -388,4 +419,6 @@ func _mcp_state() -> Dictionary:
 		"layout_contract_id": LAYOUT_CONTRACT_ID,
 		"narrative_visible_line_count": narrative.text.count("\n") + 1 if narrative.visible else 0,
 		"layout": _layout_snapshot(),
+		"guidance_source": &"authoritative_route_probe",
+		"guidance_style": &"transparent_borderless_text",
 	}

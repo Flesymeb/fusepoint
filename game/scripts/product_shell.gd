@@ -27,6 +27,7 @@ const TRANSITION_HISTORY_LIMIT := 32
 const TERMINAL_RESULT_RECEIPT_LIMIT := 4
 const SAFE_AREA_RATIO := 0.05
 const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v2"
+const NON_PAGE_STATES: Array[StringName] = [STATE_DEPLOYMENT, STATE_GAMEPLAY, STATE_VICTORY, STATE_DETONATION]
 const LIFECYCLE_TABLE := {
 	&"title": {"predecessors":[&"title",&"loadout",&"briefing",&"settings",&"pause",&"death_recovery",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/TitlePage/Menu/StartButton"},
 	&"loadout": {"predecessors":[&"title",&"briefing",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/LoadoutPage/Content/Weapons/AKButton"},
@@ -90,10 +91,17 @@ var _terminal_result_receipts: Array[Dictionary] = []
 var _opening_media_status := &"uninitialized"
 var _opening_completion_source := &""
 var _opening_completion_count := 0
+var _activation_serial := 0
+var _activation_frame := -1
+var _last_activation_receipt: Dictionary = {}
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# The shell owns page input only while a blocking page is rendered. Keeping
+	# either full-screen parent on STOP can swallow mouse look with hidden pages.
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pages.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_connect_controls()
 	player.player_died.connect(_on_player_died)
 	mission.mission_event_committed.connect(_on_mission_event_committed)
@@ -136,12 +144,7 @@ func _connect_controls() -> void:
 func _input(event: InputEvent) -> void:
 	_observe_input_family(event)
 	if pages.visible and app_state != STATE_GAMEPLAY and event.is_action_pressed(&"menu_accept"):
-		var focused := get_viewport().gui_get_focus_owner()
-		if focused is BaseButton and focused.is_visible_in_tree() and not (focused as BaseButton).disabled:
-			var button := focused as BaseButton
-			if button.toggle_mode:
-				button.button_pressed = not button.button_pressed
-			button.pressed.emit()
+		if _activate_focused_control_once():
 			get_viewport().set_input_as_handled()
 			return
 	if not (event.is_action_pressed(&"pause") or event.is_action_pressed(&"menu_back")):
@@ -156,6 +159,33 @@ func _input(event: InputEvent) -> void:
 		STATE_GAMEPLAY:
 			_pause_gameplay()
 	get_viewport().set_input_as_handled()
+
+
+func _activate_focused_control_once() -> bool:
+	var focused := get_viewport().gui_get_focus_owner()
+	if not (focused is BaseButton):
+		return false
+	var button := focused as BaseButton
+	if not button.is_visible_in_tree() or button.disabled:
+		return false
+	var frame := Engine.get_process_frames()
+	if frame == _activation_frame:
+		return true
+	_activation_frame = frame
+	_activation_serial += 1
+	_last_activation_receipt = {
+		"activation_id": "shell-activation-%06d" % _activation_serial,
+		"frame": frame,
+		"state": app_state,
+		"input_family": _last_input_family,
+		"focused_control": button.get_path(),
+		"enabled": true,
+		"emission_count": 1,
+	}
+	if button.toggle_mode:
+		button.button_pressed = not button.button_pressed
+	button.pressed.emit()
+	return true
 
 
 func _process(delta: float) -> void:
@@ -189,7 +219,8 @@ func _show_page(state: StringName, reason := &"page_change", authority := &"shel
 		_focus_by_state[previous_state] = focused_before.get_path()
 	_transition_serial += 1
 	app_state = state
-	pages.visible = state not in [STATE_GAMEPLAY, STATE_DEPLOYMENT, STATE_VICTORY, STATE_DETONATION]
+	pages.visible = state not in NON_PAGE_STATES
+	root.visible = pages.visible
 	if not pages.visible and focused_before != null:
 		focused_before.release_focus()
 	for child in pages.get_children():
@@ -668,6 +699,9 @@ func _layout_snapshot() -> Dictionary:
 		"violation_count": violations.size(),
 		"violations": violations,
 		"within_safe_area": violations.is_empty(),
+		"blocking_shell_visible": root.visible and pages.visible,
+		"route_plate_visible": $Root/Pages/LoadoutPage/RoutePlate.is_visible_in_tree(),
+		"gameplay_surface_clear": app_state != STATE_GAMEPLAY or (not root.visible and not pages.visible),
 	}
 
 
@@ -771,6 +805,9 @@ func _mcp_state() -> Dictionary:
 		"run_epoch": int(mission.get("run_epoch")),
 		"app_state": app_state,
 		"pages_visible": pages.visible,
+		"shell_root_visible": root.visible,
+		"route_plate_visible": $Root/Pages/LoadoutPage/RoutePlate.is_visible_in_tree(),
+		"gameplay_surface_clear": app_state != STATE_GAMEPLAY or (not root.visible and not pages.visible),
 		"selected_weapon": _selected_weapon,
 		"transition_serial": _transition_serial,
 		"last_transition_receipt": _last_transition_receipt,
@@ -781,6 +818,8 @@ func _mcp_state() -> Dictionary:
 		"lifecycle_action_history": _lifecycle_action_history,
 		"last_transition_rejection": _last_transition_rejection,
 		"last_input_family": _last_input_family,
+		"activation_serial": _activation_serial,
+		"last_activation_receipt": _last_activation_receipt,
 		"briefing_elapsed": _briefing_elapsed,
 		"briefing_caption_index": _briefing_caption_index,
 		"briefing_caption_line_count": ($Root/Pages/BriefingPage/Copy as Label).text.count("\n") + 1,
