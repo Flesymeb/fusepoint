@@ -8,6 +8,7 @@ signal mission_cue_presented(receipt: Dictionary)
 
 const CACHE_LIMIT := 128
 const WARNING_THRESHOLDS: Array[int] = [30, 15, 10, 5]
+const VOICE_RECEIPT_LIMIT := 64
 
 @export var mission_path: NodePath
 @export_range(0.2, 4.0, 0.1) var default_cue_seconds := 1.8
@@ -36,25 +37,47 @@ var _variant_use_counts := {&"capture": 0, &"route": 0, &"defusal": 0, &"warning
 var _last_sequence := 0
 var _cue_tween: Tween
 var _audio_player: AudioStreamPlayer
+var _audio_players: Dictionary = {}
 var _audio_streams: Dictionary = {}
+var _audio_durations: Dictionary = {}
+var _active_voice_lifetimes: Dictionary = {}
+var _voice_receipts: Array[Dictionary] = []
+var _footstep_emitters: Dictionary = {}
+var _enemy_step_elapsed: Dictionary = {}
+var _player_step_elapsed := 0.0
+var _player_step_side := 0
+var _player_was_grounded := true
+var _paused_last_frame := false
 
 
 func _ready() -> void:
-	process_mode = Node.PROCESS_MODE_PAUSABLE
-	_audio_player = AudioStreamPlayer.new()
-	_audio_player.name = "MissionCueAudio"
-	add_child(_audio_player)
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	_build_audio_mix()
+	_audio_player = _audio_players.get(&"route") as AudioStreamPlayer
 	cue_root.visible = false
 	cue_root.modulate = Color(1.0, 1.0, 1.0, 0.0)
 	_mission = get_node_or_null(mission_path) if not mission_path.is_empty() else null
 	if _mission != null and _mission.has_signal(&"mission_event_committed"):
 		_mission.connect(&"mission_event_committed", present_event)
+	call_deferred(&"_bind_player_lifecycle")
 
 
 func _process(delta: float) -> void:
+	if get_tree().paused:
+		if not _paused_last_frame:
+			reset_feedback(false)
+		_paused_last_frame = true
+		return
+	if _paused_last_frame:
+		_paused_last_frame = false
+		_resume_mission_bed("lifecycle-pause-resume")
 	active_lifetime_remaining = maxf(0.0, active_lifetime_remaining - delta)
 	if active_lifetime_remaining <= 0.0:
 		active_cue_count = 0
+	for role: StringName in _active_voice_lifetimes.keys():
+		if float(_active_voice_lifetimes[role]) >= 0.0:
+			_active_voice_lifetimes[role] = maxf(0.0, float(_active_voice_lifetimes[role]) - delta)
+	_observe_footsteps(delta)
 
 
 func present_event(event: Dictionary) -> bool:
@@ -74,6 +97,12 @@ func present_event(event: Dictionary) -> bool:
 	_last_sequence = maxi(_last_sequence, sequence)
 	if cue.is_empty():
 		return false
+	if kind == &"deployment_started":
+		_start_mission_bed(event_id)
+	elif kind == &"terminal_submitted":
+		_stop_mission_bed()
+		_stop_spatial_voices()
+		_voice_receipts.clear()
 	_remember_event(event_id)
 	if active_cue_count > 0:
 		concurrency_cull_count += 1
@@ -81,6 +110,7 @@ func present_event(event: Dictionary) -> bool:
 	presented_event_count += 1
 	var family := StringName(cue.get("family", &"route"))
 	_variant_use_counts[family] = int(_variant_use_counts.get(family, 0)) + 1
+	cue["event_id"] = event_id
 	_show_cue(cue)
 	last_event = event.duplicate(true)
 	last_cue = {
@@ -110,8 +140,40 @@ func reset_feedback(clear_history := false) -> void:
 		_observed_ids.clear()
 		_observed_order.clear()
 		_last_sequence = 0
-	if _audio_player != null:
-		_audio_player.stop()
+	for player: AudioStreamPlayer in _audio_players.values():
+		player.stop()
+	_stop_spatial_voices()
+	_active_voice_lifetimes.clear()
+	_voice_receipts.clear()
+	_enemy_step_elapsed.clear()
+	_player_step_elapsed = 0.0
+
+
+func _bind_player_lifecycle() -> void:
+	var player := get_tree().get_first_node_in_group(&"player")
+	if player == null:
+		return
+	if player.has_signal(&"spawn_reset") and not player.is_connected(&"spawn_reset", _on_player_spawn_reset):
+		player.connect(&"spawn_reset", _on_player_spawn_reset)
+	if player.has_signal(&"player_died") and not player.is_connected(&"player_died", _on_player_died):
+		player.connect(&"player_died", _on_player_died)
+
+
+func _on_player_spawn_reset() -> void:
+	var player := get_tree().get_first_node_in_group(&"player")
+	var receipt: Dictionary = player.get("_last_deployment_reset_receipt") if player != null else {}
+	reset_feedback(true)
+	_start_mission_bed(String(receipt.get("event_id", "deployment-reset")))
+
+
+func _on_player_died(_event: Dictionary) -> void:
+	reset_feedback(false)
+
+
+func _stop_spatial_voices() -> void:
+	for emitter: AudioStreamPlayer3D in _footstep_emitters.values():
+		if is_instance_valid(emitter):
+			emitter.stop()
 
 
 func snapshot() -> Dictionary:
@@ -130,6 +192,11 @@ func snapshot() -> Dictionary:
 		"runtime_variant_count": _variant_use_counts.size(),
 		"max_single_variant_share": _max_variant_share(),
 		"variant_roles": [&"capture", &"route", &"defusal", &"warning", &"terminal"],
+		"audio_roles": _audio_role_snapshot(),
+		"audio_role_count": _audio_streams.size(),
+		"voice_receipts": _voice_receipts,
+		"voice_receipt_count": _voice_receipts.size(),
+		"independent_buses": [&"Mission", &"Dialogue", &"Ambience", &"Music", &"Foley"],
 		"authoritative_calls": [],
 		"presentation_only": true,
 	}
@@ -193,7 +260,7 @@ func _show_cue(cue: Dictionary) -> void:
 	pulse.scale.x = 0.05
 	active_cue_count = 1
 	active_lifetime_remaining = float(cue.get("lifetime", default_cue_seconds))
-	_play_audio(StringName(cue.get("family", &"route")), int(cue.get("priority", 1)))
+	_play_audio(StringName(cue.get("family", &"route")), int(cue.get("priority", 1)), String(cue.get("event_id", "")))
 	_cue_tween = create_tween().set_parallel(true)
 	_cue_tween.set_pause_mode(Tween.TWEEN_PAUSE_BOUND)
 	_cue_tween.tween_property(cue_root, "modulate", Color.WHITE, 0.12)
@@ -224,23 +291,184 @@ func _objective_name(payload: Dictionary) -> String:
 	return String(payload.get("objective_id", &"point")).to_upper()
 
 
-func _play_audio(family: StringName, priority: int) -> void:
-	if not _audio_streams.has(family):
-		var profile: Array = {
-			&"capture": [420.0, 0.2, 0.08],
-			&"route": [620.0, 0.26, 0.05],
-			&"defusal": [310.0, 0.22, 0.10],
-			&"warning": [176.0, 0.30, 0.12],
-			&"terminal": [760.0, 0.28, 0.08],
-		}.get(family, [440.0, 0.2, 0.08])
-		_audio_streams[family] = _synth_cue(0.18 if family != &"terminal" else 0.32, float(profile[0]), float(profile[1]), float(profile[2]))
-	_audio_player.stream = _audio_streams[family]
-	_audio_player.volume_db = -9.0 + minf(float(priority), 8.0) * 0.35
-	_audio_player.pitch_scale = 0.92 if family == &"warning" else 1.0
-	_audio_player.play()
+func _play_audio(family: StringName, priority: int, event_id: String) -> void:
+	_play_role(family, priority, event_id)
 
 
-func _synth_cue(duration: float, frequency: float, tone_gain: float, noise_gain: float) -> AudioStreamWAV:
+func _build_audio_mix() -> void:
+	var profiles := {
+		&"capture": [0.24, 410.0, 0.25, 0.10, &"Mission", false],
+		&"route": [0.30, 640.0, 0.23, 0.04, &"Mission", false],
+		&"defusal": [0.38, 286.0, 0.24, 0.13, &"Mission", false],
+		&"warning": [0.42, 168.0, 0.31, 0.11, &"Mission", false],
+		&"terminal": [0.62, 782.0, 0.27, 0.07, &"Mission", false],
+		&"dialogue": [1.35, 228.0, 0.18, 0.12, &"Dialogue", false],
+		&"ambience": [2.2, 74.0, 0.08, 0.20, &"Ambience", true],
+		&"music": [2.8, 94.0, 0.10, 0.015, &"Music", true],
+		&"player_walk": [0.16, 108.0, 0.12, 0.48, &"Foley", false],
+		&"player_sprint": [0.19, 86.0, 0.15, 0.58, &"Foley", false],
+		&"player_crouch": [0.13, 142.0, 0.08, 0.30, &"Foley", false],
+		&"player_land": [0.28, 72.0, 0.18, 0.62, &"Foley", false],
+		&"enemy_step": [0.18, 96.0, 0.13, 0.50, &"Foley", false],
+	}
+	for role: StringName in profiles:
+		var profile: Array = profiles[role]
+		var duration := float(profile[0])
+		var stream := _synth_cue(duration, float(profile[1]), float(profile[2]), float(profile[3]), profile[5] == true, role)
+		_audio_streams[role] = stream
+		_audio_durations[role] = duration
+		if role not in [&"player_walk", &"player_sprint", &"player_crouch", &"player_land", &"enemy_step"]:
+			var player := AudioStreamPlayer.new()
+			player.name = "%sVoice" % String(role).to_pascal_case()
+			player.stream = stream
+			player.bus = StringName(profile[4])
+			player.volume_db = -4.0 if role == &"dialogue" else -12.0 if role in [&"ambience", &"music"] else -7.0
+			add_child(player)
+			_audio_players[role] = player
+
+
+func _play_role(role: StringName, priority: int, source_id: String) -> void:
+	var player := _audio_players.get(role) as AudioStreamPlayer
+	if player == null or not _audio_streams.has(role):
+		return
+	player.stream = _audio_streams[role]
+	player.volume_db = (-4.0 if role == &"dialogue" else -7.0) + minf(float(priority), 8.0) * 0.25
+	player.pitch_scale = 0.92 if role == &"warning" else 1.0
+	player.play()
+	_active_voice_lifetimes[role] = -1.0 if role in [&"ambience", &"music"] else float(_audio_durations.get(role, 0.0))
+	_append_voice_receipt({
+		"event_id": source_id,
+		"role": role,
+		"bus": player.bus,
+		"voice_path": String(player.get_path()),
+		"stream_bound": player.stream != null,
+		"playing": player.playing,
+		"lifetime_seconds": float(_audio_durations.get(role, 0.0)),
+		"attenuation": &"non_spatial",
+		"priority": priority,
+	})
+
+
+func _start_mission_bed(event_id: String) -> void:
+	_play_role(&"ambience", 1, event_id)
+	_play_role(&"music", 1, event_id)
+	_play_role(&"dialogue", 6, event_id)
+
+
+func _resume_mission_bed(event_id: String) -> void:
+	_play_role(&"ambience", 1, event_id)
+	_play_role(&"music", 1, event_id)
+
+
+func _stop_mission_bed() -> void:
+	for role in [&"ambience", &"music", &"dialogue"]:
+		var player := _audio_players.get(role) as AudioStreamPlayer
+		if player != null:
+			player.stop()
+		_active_voice_lifetimes[role] = 0.0
+
+
+func _observe_footsteps(delta: float) -> void:
+	var player := get_tree().get_first_node_in_group(&"player") as CharacterBody3D
+	if player != null:
+		var grounded := player.is_on_floor()
+		var horizontal_speed := Vector2(player.velocity.x, player.velocity.z).length()
+		var stance := StringName(player.get("_stance"))
+		var locomotion := StringName(player.get("_locomotion_mode"))
+		if grounded and not _player_was_grounded:
+			_emit_footstep(player, &"player_land", 0.0, &"landing")
+		_player_was_grounded = grounded
+		_player_step_elapsed = maxf(0.0, _player_step_elapsed - delta)
+		if grounded and horizontal_speed > 0.35 and _player_step_elapsed <= 0.0:
+			var role := &"player_crouch" if stance in [&"crouching", &"prone"] else &"player_sprint" if locomotion == &"sprint" else &"player_walk"
+			var cadence := 0.58 if role == &"player_crouch" else 0.29 if role == &"player_sprint" else 0.43
+			_emit_footstep(player, role, cadence, &"left" if _player_step_side % 2 == 0 else &"right")
+			_player_step_side += 1
+			_player_step_elapsed = cadence
+	for node: Node in get_tree().get_nodes_in_group(&"fps_enemy"):
+		var enemy := node as CharacterBody3D
+		if enemy == null or enemy.get("mission_active") != true or not enemy.is_on_floor():
+			continue
+		var actor_id := String(enemy.get("stable_id"))
+		var remaining := maxf(0.0, float(_enemy_step_elapsed.get(actor_id, 0.0)) - delta)
+		_enemy_step_elapsed[actor_id] = remaining
+		if Vector2(enemy.velocity.x, enemy.velocity.z).length() > 0.55 and remaining <= 0.0:
+			_emit_footstep(enemy, &"enemy_step", 0.46, &"alternating")
+			_enemy_step_elapsed[actor_id] = 0.46
+
+
+func _emit_footstep(actor: CharacterBody3D, role: StringName, cadence: float, side: StringName) -> void:
+	var actor_key := String(actor.get_path())
+	var emitter := _footstep_emitters.get(actor_key) as AudioStreamPlayer3D
+	if emitter == null or not is_instance_valid(emitter):
+		emitter = AudioStreamPlayer3D.new()
+		emitter.name = "FusepointFootstepEmitter"
+		emitter.bus = &"Foley"
+		emitter.unit_size = 4.0
+		emitter.max_distance = 24.0
+		actor.add_child(emitter)
+		_footstep_emitters[actor_key] = emitter
+	var surface := _surface_at(actor)
+	emitter.stream = _audio_streams.get(role)
+	emitter.volume_db = -9.0 if role == &"enemy_step" else -7.0
+	emitter.pitch_scale = (1.08 if surface == &"metal" else 0.94) * (1.025 if side == &"right" else 0.985)
+	emitter.play()
+	_append_voice_receipt({
+		"event_id": "step-%d" % Time.get_ticks_usec(),
+		"role": role,
+		"bus": emitter.bus,
+		"voice_path": String(emitter.get_path()),
+		"stream_bound": emitter.stream != null,
+		"playing": emitter.playing,
+		"actor_id": String(actor.get("stable_id")) if actor.is_in_group(&"fps_enemy") else "player",
+		"emitter_transform": actor.global_transform,
+		"surface": surface,
+		"side": side,
+		"cadence_seconds": cadence,
+		"grounded": actor.is_on_floor(),
+		"attenuation": {"unit_size": emitter.unit_size, "max_distance": emitter.max_distance},
+		"lifetime_seconds": float(_audio_durations.get(role, 0.0)),
+	})
+
+
+func _surface_at(actor: CharacterBody3D) -> StringName:
+	var query := PhysicsRayQueryParameters3D.create(actor.global_position + Vector3.UP * 0.25, actor.global_position + Vector3.DOWN * 1.4)
+	query.collide_with_areas = false
+	query.exclude = [actor.get_rid()]
+	var hit := actor.get_world_3d().direct_space_state.intersect_ray(query)
+	var path := String((hit.get("collider") as Node).get_path()).to_lower() if hit.get("collider") is Node else ""
+	return &"metal" if "metal" in path or "container" in path or "catwalk" in path else &"concrete"
+
+
+func _append_voice_receipt(receipt: Dictionary) -> void:
+	_voice_receipts.append(receipt)
+	while _voice_receipts.size() > VOICE_RECEIPT_LIMIT:
+		_voice_receipts.pop_front()
+
+
+func _audio_role_snapshot() -> Dictionary:
+	var roles: Dictionary = {}
+	for role: StringName in _audio_streams:
+		var player := _audio_players.get(role) as AudioStreamPlayer
+		roles[role] = {
+			"stream_bound": _audio_streams[role] != null,
+			"non_silent": float(_audio_durations.get(role, 0.0)) > 0.0,
+			"bus": player.bus if player != null else &"Foley",
+			"playing": player.playing if player != null else _recent_role_playing(role),
+			"lifetime_remaining": float(_active_voice_lifetimes.get(role, 0.0)),
+		}
+	return roles
+
+
+func _recent_role_playing(role: StringName) -> bool:
+	var expected_stream: AudioStream = _audio_streams.get(role)
+	for emitter: AudioStreamPlayer3D in _footstep_emitters.values():
+		if is_instance_valid(emitter) and emitter.playing and emitter.stream == expected_stream:
+			return true
+	return false
+
+
+func _synth_cue(duration: float, frequency: float, tone_gain: float, noise_gain: float, looped := false, role := &"cue") -> AudioStreamWAV:
 	const MIX_RATE := 22050
 	var sample_count := int(MIX_RATE * duration)
 	var bytes := PackedByteArray()
@@ -248,9 +476,13 @@ func _synth_cue(duration: float, frequency: float, tone_gain: float, noise_gain:
 	for sample_index in sample_count:
 		var t := float(sample_index) / float(MIX_RATE)
 		var progress := float(sample_index) / float(sample_count)
-		var decay := pow(1.0 - progress, 1.8)
-		var overtone := sin(TAU * frequency * 1.5 * t) * tone_gain * 0.35
-		var tone := sin(TAU * frequency * t) * tone_gain + overtone
+		var decay := 0.72 + 0.28 * sin(PI * progress) if looped else pow(1.0 - progress, 1.8)
+		var modulation := 1.0 + 0.04 * sin(TAU * (2.0 + float(String(role).length() % 5)) * t)
+		var overtone := sin(TAU * frequency * 1.5 * modulation * t) * tone_gain * 0.35
+		var tone := sin(TAU * frequency * modulation * t) * tone_gain + overtone
+		if role == &"dialogue":
+			var speech_gate := 1.0 if sin(TAU * 7.0 * t) * 0.5 + 0.5 >= 0.38 else 0.0
+			tone *= 0.25 + 0.75 * speech_gate
 		var noise_seed := float(((sample_index * 1103515245 + 12345) >> 16) & 0x7fff) / 32767.0
 		var value := clampf((tone + (noise_seed * 2.0 - 1.0) * noise_gain) * decay, -1.0, 1.0)
 		var pcm := int(value * 32767.0)
@@ -263,6 +495,9 @@ func _synth_cue(duration: float, frequency: float, tone_gain: float, noise_gain:
 	stream.mix_rate = MIX_RATE
 	stream.stereo = false
 	stream.data = bytes
+	if looped:
+		stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		stream.loop_end = sample_count
 	return stream
 
 

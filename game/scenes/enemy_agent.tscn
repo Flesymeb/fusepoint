@@ -52,6 +52,7 @@ position = Vector3(0.24, -0.16, -0.42)
 unit_size = 7.0
 max_distance = 26.0
 volume_db = -7.0
+bus = &"Combat"
 
 [node name="ShotFeedback" type="Node3D" parent="."]
 script = ExtResource("3_shot_feedback")

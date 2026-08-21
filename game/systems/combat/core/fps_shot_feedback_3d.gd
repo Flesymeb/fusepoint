@@ -310,6 +310,7 @@ func _spawn_audio_cue(position: Vector3, stream: AudioStreamWAV, role: StringNam
 	audio_root.name = String(role).to_pascal_case()
 	var player := AudioStreamPlayer3D.new()
 	player.stream = stream
+	player.bus = &"Combat"
 	player.volume_db = volume_db
 	player.unit_size = 6.0
 	player.max_distance = 42.0

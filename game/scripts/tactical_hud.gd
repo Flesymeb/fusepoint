@@ -1,6 +1,8 @@
 class_name FusepointTacticalHUD
 extends CanvasLayer
 
+signal combat_row_presented(receipt: Dictionary)
+
 const STORY_COPY := "11:40 — KESTREL RIDGE MILITARY BASE\nThe Rift Front planted a timed bomb in the Sector C rocket maintenance bay.\nCommunications are down. Support is not coming. You are the only operator who can enter.\nRetake Alpha, secure Bravo, then recover both defusal keys.\nIn five minutes, the base disappears with the bomb."
 const SAFE_AREA_RATIO := 0.05
 
@@ -30,6 +32,7 @@ var arena: Node3D
 var _story_elapsed := 99.0
 var _story_active := false
 var _event_rows: Array[String] = []
+var _event_row_receipts: Array[Dictionary] = []
 var _minimap_bound := false
 var _hud_enabled := false
 var _applied_ui_scale := 1.0
@@ -176,6 +179,7 @@ func reset_transient_feedback_for_restore(epoch: int) -> void:
 	narrative.visible = false
 	narrative.text = ""
 	_event_rows.clear()
+	_event_row_receipts.clear()
 	for child: Node in feed.get_children():
 		if child is Label:
 			(child as Label).text = ""
@@ -288,21 +292,49 @@ func _on_mission_event(event: Dictionary) -> void:
 		_story_elapsed = 0.0
 		_story_active = true
 		narrative.visible = true
-	var important := kind in [&"capture_started", &"capture_contested", &"capture_completed", &"key_committed", &"route_unlocked", &"checkpoint_committed", &"enemy_death", &"terminal_submitted"]
+	var important := kind in [&"capture_started", &"capture_contested", &"capture_completed", &"key_committed", &"route_unlocked", &"checkpoint_committed", &"enemy_died", &"terminal_submitted"]
 	if important:
-		_event_rows.push_front(_format_event(event))
+		var receipt := _row_receipt(event)
+		_event_rows.push_front(String(receipt.get("text", "")))
+		_event_row_receipts.push_front(receipt)
 		while _event_rows.size() > 5:
 			_event_rows.pop_back()
+		while _event_row_receipts.size() > 5:
+			_event_row_receipts.pop_back()
 		for index in feed.get_child_count():
 			var row := feed.get_child(index) as Label
 			row.text = _event_rows[index] if index < _event_rows.size() else ""
+			var row_kind := StringName((_event_row_receipts[index] as Dictionary).get("kind", &"")) if index < _event_row_receipts.size() else &""
+			row.add_theme_color_override("font_color", Color(1.0, 0.76, 0.25, 0.96) if row_kind == &"enemy_died" else Color(0.92, 0.93, 0.9, maxf(0.64, 0.9 - float(index) * 0.07)))
+		combat_row_presented.emit(receipt.duplicate(true))
 
 
 func _format_event(event: Dictionary) -> String:
+	if StringName(event.get("kind", &"")) == &"enemy_died":
+		var source: Dictionary = event.get("payload", {})
+		var actor_id := String(source.get("actor_id", "RIFT HOSTILE")).replace("_", " ").replace("-", " ").to_upper()
+		return "YOU KILLED  %s" % actor_id
 	var kind := String(event.get("kind", "event")).replace("_", " ").to_upper()
 	var payload: Dictionary = event.get("payload", {})
 	var subject := String(payload.get("objective_id", payload.get("actor_id", ""))).to_upper()
 	return "◆  %s%s" % [subject + "  " if not subject.is_empty() else "", kind]
+
+
+func _row_receipt(event: Dictionary) -> Dictionary:
+	var kind := StringName(event.get("kind", &""))
+	var source: Dictionary = event.get("payload", {})
+	var source_payload: Dictionary = source.get("payload", {})
+	var immutable_id := String(source_payload.get("shot_id", source_payload.get("event_id", source.get("event_id", event.get("event_id", "")))))
+	return {
+		"event_id": immutable_id,
+		"mission_observer_event_id": String(event.get("event_id", "")),
+		"enemy_event_id": String(source.get("event_id", "")),
+		"kind": kind,
+		"actor_id": String(source.get("actor_id", source_payload.get("actor_id", ""))),
+		"text": _format_event(event),
+		"style": &"restrained_yellow_kill" if kind == &"enemy_died" else &"compact_feed",
+		"presentation_only": true,
+	}
 
 
 func _update_story(delta: float) -> void:
@@ -335,6 +367,7 @@ func _mcp_state() -> Dictionary:
 		"story_active": _story_active,
 		"story_elapsed": _story_elapsed,
 		"event_rows": _event_rows,
+		"combat_row_receipts": _event_row_receipts,
 		"applied_ui_scale": _applied_ui_scale,
 		"applied_subtitle_size": _applied_subtitle_size,
 		"restore_epoch": _restore_epoch,

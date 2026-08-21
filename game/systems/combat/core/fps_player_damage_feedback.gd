@@ -278,6 +278,7 @@ func _make_feedback_audio(node_name: StringName, stream: AudioStreamWAV, volume_
 	var player := AudioStreamPlayer.new()
 	player.name = node_name
 	player.stream = stream
+	player.bus = &"Combat"
 	player.volume_db = volume_db
 	add_child(player)
 	return player
