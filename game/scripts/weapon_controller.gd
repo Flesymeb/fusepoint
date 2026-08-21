@@ -63,6 +63,7 @@ var _input_history: Array[Dictionary] = []
 var _combat_clock_seconds := 0.0
 var _restore_epoch := 0
 var _transient_reset_complete := false
+var _last_restore_receipt: Dictionary = {}
 var _observed_ads_down := false
 var _ads_rearm_required := false
 var _ads_edge_serial := 0
@@ -764,9 +765,17 @@ func snapshot_weapon_state() -> Dictionary:
 	}
 
 
-func restore_weapon_state(snapshot: Dictionary, epoch := 0) -> void:
+func restore_weapon_state(snapshot: Dictionary, epoch := 0, allow_same_epoch := false) -> Dictionary:
+	var epoch_rejected := epoch < _restore_epoch or (epoch == _restore_epoch and not allow_same_epoch)
+	if epoch_rejected or not snapshot.has("weapons") or not snapshot.has("equipped_id"):
+		_last_restore_receipt = {
+			"accepted": false,
+			"restore_epoch": epoch,
+			"failure_reason": &"non_monotonic_epoch" if epoch_rejected else &"snapshot_schema_invalid",
+		}
+		return _last_restore_receipt.duplicate(true)
 	var serial_before := _shot_serial
-	_restore_epoch = maxi(_restore_epoch, epoch)
+	_restore_epoch = epoch
 	_transient_reset_complete = false
 	_ads_held = false
 	_ads_rearm_required = _observed_ads_down
@@ -776,8 +785,18 @@ func restore_weapon_state(snapshot: Dictionary, epoch := 0) -> void:
 	_pending_equipped_id = &""
 	_shot_serial = maxi(serial_before, int(snapshot.get("shot_serial", 0)))
 	reset_transient_state_for_restore()
-	viewmodel.call(&"equip_weapon_id", _equipped_id, true)
+	var viewmodel_bound: bool = viewmodel.call(&"equip_weapon_id", _equipped_id, true) == true
+	_last_restore_receipt = {
+		"accepted": _transient_reset_complete and viewmodel_bound,
+		"restore_epoch": _restore_epoch,
+		"equipped_id": _equipped_id,
+		"shot_serial_monotonic": _shot_serial >= serial_before,
+		"transient_reset_complete": _transient_reset_complete,
+		"viewmodel_bound": viewmodel_bound,
+		"failure_reason": &"" if viewmodel_bound else &"viewmodel_binding_failed",
+	}
 	weapon_state_changed.emit(_mcp_state())
+	return _last_restore_receipt.duplicate(true)
 
 
 func reset_transient_state_for_restore() -> void:
@@ -1003,4 +1022,5 @@ func _mcp_state() -> Dictionary:
 		"gameplay_input_enabled": gameplay_input_enabled,
 		"restore_epoch": _restore_epoch,
 		"transient_reset_complete": _transient_reset_complete,
+		"last_restore_receipt": _last_restore_receipt,
 	}

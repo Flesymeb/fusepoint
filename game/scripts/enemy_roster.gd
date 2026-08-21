@@ -48,6 +48,7 @@ var restore_epoch := 0
 var restore_in_progress := false
 var restore_applied_actor_count := 0
 var last_restore_receipt: Dictionary = {}
+var last_occupancy_receipt: Dictionary = {}
 var _roster_event_sequence := 0
 var _last_progression_signature := ""
 var progression_receipts: Array[Dictionary] = []
@@ -306,6 +307,25 @@ func _update_region_activation() -> void:
 	_commit_roster_event(&"region_activated", {"region": active_region, "sequence": activation_sequence})
 
 
+func sync_progression_for_checkpoint() -> Dictionary:
+	_last_progression_signature = ""
+	_update_region_activation()
+	var expected_region := _active_region()
+	var expected_count := 3 if expected_region == &"alpha" else 5 if expected_region == &"bravo" else 10
+	var active_ids: Array[StringName] = []
+	for enemy: FusepointEnemyAgent in enemies.values():
+		if enemy.mission_active:
+			active_ids.append(enemy.stable_id)
+	return {
+		"accepted": active_ids.size() == expected_count,
+		"expected_region": expected_region,
+		"expected_count": expected_count,
+		"active_count": active_ids.size(),
+		"active_ids": active_ids,
+		"activation_sequence": activation_sequence,
+	}
+
+
 func contest_count(point_id: StringName, objective_position: Vector3, radius := 4.5) -> int:
 	var count := 0
 	for enemy: FusepointEnemyAgent in enemies.values():
@@ -328,6 +348,7 @@ func begin_restore_epoch() -> int:
 	restore_in_progress = true
 	restore_applied_actor_count = 0
 	last_restore_receipt.clear()
+	last_occupancy_receipt.clear()
 	for enemy: FusepointEnemyAgent in enemies.values():
 		enemy.begin_checkpoint_restore(restore_epoch)
 	return restore_epoch
@@ -351,13 +372,22 @@ func apply_restore_snapshot(saved: Dictionary, epoch: int) -> bool:
 func commit_restore_epoch(epoch: int) -> Dictionary:
 	if not restore_in_progress or epoch != restore_epoch or restore_applied_actor_count != enemies.size():
 		return {}
+	last_occupancy_receipt = validate_restore_occupancy(player.global_position)
+	if last_occupancy_receipt.get("accepted", false) != true:
+		return {}
 	var actor_receipts: Array[Dictionary] = []
 	for enemy: FusepointEnemyAgent in enemies.values():
 		if not enemy.finish_checkpoint_restore(epoch):
 			return {}
+		var actor_snapshot := enemy.authoritative_snapshot()
 		actor_receipts.append({
 			"id": enemy.stable_id,
 			"restored_epoch": epoch,
+			"position": enemy.global_position,
+			"active": actor_snapshot.get("active", false),
+			"alive": actor_snapshot.get("alive", false),
+			"ammo": actor_snapshot.get("ammo", 0),
+			"health": (actor_snapshot.get("health", {}) as Dictionary).get("current", 0.0),
 			"quiescent": true,
 			"readiness": &"fresh_perception_pending",
 		})
@@ -367,6 +397,7 @@ func commit_restore_epoch(epoch: int) -> Dictionary:
 		"restore_epoch": epoch,
 		"actor_count": actor_receipts.size(),
 		"all_snapshots_applied": actor_receipts.size() == enemies.size(),
+		"occupancy": last_occupancy_receipt.duplicate(true),
 		"actors": actor_receipts,
 	}
 	for enemy: FusepointEnemyAgent in enemies.values():
@@ -376,6 +407,95 @@ func commit_restore_epoch(epoch: int) -> Dictionary:
 		})
 	_commit_roster_event(&"checkpoint_restore_transaction", last_restore_receipt)
 	return last_restore_receipt.duplicate(true)
+
+
+func validate_restore_occupancy(player_position: Vector3) -> Dictionary:
+	var ids := {}
+	var positions: Array[Vector3] = []
+	var actor_receipts: Array[Dictionary] = []
+	var minimum_actor_distance := INF
+	var minimum_player_distance := INF
+	var failure_reason := &""
+	var expected_region := _active_region()
+	var expected_active_count := 3 if expected_region == &"alpha" else 5 if expected_region == &"bravo" else 10
+	var active_count := 0
+	var wrong_region_active_count := 0
+	var nav_map := navigation_region.get_navigation_map()
+	var space_state := get_world_3d().direct_space_state
+	var actor_rids: Array[RID] = []
+	for enemy: FusepointEnemyAgent in enemies.values():
+		actor_rids.append(enemy.get_rid())
+	for enemy: FusepointEnemyAgent in enemies.values():
+		var actor_id := enemy.stable_id
+		if enemy.mission_active:
+			active_count += 1
+			if enemy.region_id != expected_region:
+				wrong_region_active_count += 1
+		if ids.has(actor_id):
+			failure_reason = &"duplicate_actor_id"
+		ids[actor_id] = true
+		var position := enemy.global_position
+		if not position.is_finite():
+			failure_reason = &"actor_position_not_finite"
+		var nearest_actor := _nearest_reserved_distance(position, positions)
+		if not positions.is_empty():
+			minimum_actor_distance = minf(minimum_actor_distance, nearest_actor)
+		positions.append(position)
+		var player_distance := position.distance_to(player_position)
+		minimum_player_distance = minf(minimum_player_distance, player_distance)
+		var nav_position := NavigationServer3D.map_get_closest_point(nav_map, position)
+		var navigation_error := nav_position.distance_to(position)
+		var ground_query := PhysicsRayQueryParameters3D.create(
+			position + Vector3.UP * 0.75,
+			position + Vector3.DOWN * 0.65,
+			1,
+			actor_rids,
+		)
+		ground_query.collide_with_areas = false
+		var grounded := not space_state.intersect_ray(ground_query).is_empty()
+		var clearance_shape := SphereShape3D.new()
+		clearance_shape.radius = 0.28
+		var clearance_query := PhysicsShapeQueryParameters3D.new()
+		clearance_query.shape = clearance_shape
+		clearance_query.transform = Transform3D(Basis.IDENTITY, position + Vector3.UP * 0.9)
+		clearance_query.collision_mask = 1
+		clearance_query.exclude = actor_rids
+		clearance_query.collide_with_areas = false
+		var static_blockers := space_state.intersect_shape(clearance_query, 4)
+		if (not grounded or navigation_error > 0.75 or not static_blockers.is_empty()) and failure_reason == &"":
+			failure_reason = &"actor_ground_or_static_occupancy_invalid"
+		actor_receipts.append({
+			"id": actor_id,
+			"position": position,
+			"grounded": grounded,
+			"navigation_error": navigation_error,
+			"static_blocker_count": static_blockers.size(),
+			"nearest_actor_distance": -1.0 if is_inf(nearest_actor) else nearest_actor,
+			"player_distance": player_distance,
+		})
+	if ids.size() != 18:
+		failure_reason = &"stable_identity_count_invalid"
+	elif minimum_actor_distance < ACTOR_CAPSULE_RADIUS * 2.0:
+		failure_reason = &"hostile_capsule_overlap"
+	elif minimum_player_distance < 1.2:
+		failure_reason = &"player_hostile_separation_blocked"
+	elif active_count != expected_active_count or wrong_region_active_count > 0:
+		failure_reason = &"active_region_binding_invalid"
+	var accepted := failure_reason == &""
+	return {
+		"accepted": accepted,
+		"failure_reason": failure_reason,
+		"actor_count": ids.size(),
+		"minimum_actor_distance": -1.0 if is_inf(minimum_actor_distance) else minimum_actor_distance,
+		"required_actor_distance": ACTOR_CAPSULE_RADIUS * 2.0,
+		"minimum_player_distance": -1.0 if is_inf(minimum_player_distance) else minimum_player_distance,
+		"required_player_distance": 1.2,
+		"expected_active_region": expected_region,
+		"expected_active_count": expected_active_count,
+		"active_count": active_count,
+		"wrong_region_active_count": wrong_region_active_count,
+		"actors": actor_receipts,
+	}
 
 
 func abort_restore_epoch(epoch: int, rollback_snapshot: Dictionary, reason: StringName) -> Dictionary:
@@ -467,6 +587,7 @@ func _summary() -> Dictionary:
 		"restore_in_progress": restore_in_progress,
 		"restore_applied_actor_count": restore_applied_actor_count,
 		"last_restore_receipt": last_restore_receipt,
+		"last_occupancy_receipt": last_occupancy_receipt,
 		"slot_projection_reports": slot_projection_reports,
 		"reservation_transaction_state": reservation_transaction_state,
 		"reservation_failure": reservation_failure,
@@ -509,14 +630,27 @@ func _append_progression_receipt(kind: StringName, enemy: FusepointEnemyAgent, s
 		"actor_id": actor.get("id", &""),
 		"role": actor.get("role", &""),
 		"action": actor.get("action", &"idle"),
+		"perception": {
+			"target": actor.get("target", ""),
+			"target_visible": actor.get("target_visible", false),
+			"fire_block_reason": actor.get("fire_block_reason", &"unknown"),
+		},
+		"movement_mode": actor.get("action", &"idle"),
+		"aim_authorized": actor.get("action", &"idle") in [&"aim", &"fire"],
+		"reload_active": actor.get("action", &"idle") == &"reload",
+		"hurt_active": actor.get("action", &"idle") == &"hurt",
+		"death_active": actor.get("action", &"idle") == &"dead",
 		"target_visible": actor.get("target_visible", false),
 		"route_target": actor.get("route_target", enemy.global_position),
 		"navigation_velocity": actor.get("navigation_velocity", Vector3.ZERO),
 		"nearest_neighbor_distance": actor.get("nearest_neighbor_distance", -1.0),
+		"grounded_occupancy": actor.get("grounded_occupancy", false),
+		"occlusion": actor.get("occlusion", actor.get("fire_block_reason", &"unknown")),
 		"ammo": actor.get("ammo", 0),
 		"health": health_state.get("current", 0.0),
 		"alive": actor.get("alive", false),
 		"shot_event_id": actor.get("shot_event_id", ""),
+		"immutable_shot_id": actor.get("shot_event_id", ""),
 		"fire_block_reason": actor.get("fire_block_reason", &"unknown"),
 		"restore_epoch": actor.get("restore_epoch", 0),
 		"source_event": source_event.duplicate(true),

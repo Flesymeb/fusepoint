@@ -662,9 +662,9 @@ theme_override_font_sizes/font_size = 22
 text = "RESULT\nTIME REMAINING\nALPHA    BRAVO\nKEYS\nENEMY ROSTER"
 [node name="Menu" type="HBoxContainer" parent="Root/Pages/ResultPage"]
 offset_left = 72.0
-offset_top = 540.0
+offset_top = 610.0
 offset_right = 600.0
-offset_bottom = 602.0
+offset_bottom = 670.0
 theme_override_constants/separation = 14
 [node name="ReplayButton" type="Button" parent="Root/Pages/ResultPage/Menu"]
 custom_minimum_size = Vector2(260, 52)

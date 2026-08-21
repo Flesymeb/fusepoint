@@ -23,7 +23,7 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	var state := mission_controller.call(&"objective_state_for", objective_id) as Dictionary
 	if label != null:
-		label.text = "%s  //  %s" % [String(objective_id).left(1).to_upper(), _display_state(state)]
+		label.text = "%s  ·  %s" % [String(objective_id).left(1).to_upper(), _display_state(state)]
 		label.modulate = Color(0.12, 0.88, 1.0) if state.get("legal", false) == true else Color(1.0, 0.32, 0.18)
 	if _marker_material != null:
 		_marker_material.albedo_color = Color(0.04, 0.72, 0.86, 0.26) if state.get("legal", false) == true else Color(0.92, 0.12, 0.04, 0.24)

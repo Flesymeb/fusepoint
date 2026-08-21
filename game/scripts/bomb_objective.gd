@@ -24,7 +24,7 @@ func _process(_delta: float) -> void:
 	var legal: bool = state.get("legal", false) == true
 	var bomb_state := StringName(state.get("state", &"armed"))
 	var stage := String(state.get("stage_id", &"locked")).replace("_", " ").to_upper()
-	label.text = "C  //  DEVICE SAFE" if bomb_state == &"defused" else "C  //  DETONATED" if bomb_state == &"detonated" else "C  //  %s" % (stage if legal else "LOCKED")
+	label.text = "C  ·  DEVICE SAFE" if bomb_state == &"defused" else "C  ·  DETONATED" if bomb_state == &"detonated" else "C  ·  %s" % (stage if legal else "LOCKED")
 	label.modulate = Color(0.2, 1.0, 0.72) if bomb_state == &"defused" else Color(1.0, 0.12, 0.035) if bomb_state == &"detonated" else Color(0.22, 0.92, 1.0) if legal else Color(1.0, 0.24, 0.14)
 	if _core_material != null:
 		_core_material.emission = Color(0.01, 0.5, 0.24) if bomb_state == &"defused" else Color(0.72, 0.015, 0.002) if bomb_state == &"detonated" else Color(0.02, 0.42, 0.6) if legal else Color(0.5, 0.025, 0.005)

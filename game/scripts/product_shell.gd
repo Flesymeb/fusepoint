@@ -5,12 +5,16 @@ const STATE_TITLE := &"title"
 const STATE_LOADOUT := &"loadout"
 const STATE_LOADING := &"loading"
 const STATE_BRIEFING := &"briefing"
+const STATE_DEPLOYMENT := &"deployment"
 const STATE_GAMEPLAY := &"gameplay"
 const STATE_PAUSE := &"pause"
 const STATE_SETTINGS := &"settings"
 const STATE_DEATH := &"death_recovery"
 const STATE_RECOVERING := &"recovery_transition"
-const STATE_RESULT := &"result"
+const STATE_VICTORY := &"victory"
+const STATE_DETONATION := &"detonation"
+const STATE_SUCCESS_RESULT := &"success_result"
+const STATE_FAILURE_RESULT := &"failure_result"
 const DEATH_LOCK_SECONDS := 3.0
 const BRIEFING_CAPTIONS: Array[String] = [
 	"11:40 — KESTREL RIDGE MILITARY BASE\nRIFT FRONT SIGNALS CONFIRMED INSIDE THE PERIMETER.",
@@ -21,6 +25,27 @@ const BRIEFING_CAPTIONS: Array[String] = [
 const BRIEFING_BEAT_SECONDS := 2.4
 const TRANSITION_HISTORY_LIMIT := 32
 const SAFE_AREA_RATIO := 0.05
+const LIFECYCLE_TABLE := {
+	&"title": {"predecessors":[&"title",&"loadout",&"briefing",&"settings",&"pause",&"death_recovery",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/TitlePage/Menu/StartButton"},
+	&"loadout": {"predecessors":[&"title",&"briefing",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/LoadoutPage/Content/Weapons/AKButton"},
+	&"loading": {"predecessors":[&"loadout"], "authority":&"shell", "blocking":true, "focus":""},
+	&"briefing": {"predecessors":[&"loading"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/BriefingPage/Actions/DeployButton"},
+	&"deployment": {"predecessors":[&"briefing"], "authority":&"mission", "blocking":true, "focus":""},
+	&"gameplay": {"predecessors":[&"deployment",&"pause",&"recovery_transition"], "authority":&"mission", "blocking":false, "focus":""},
+	&"pause": {"predecessors":[&"gameplay",&"settings"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/PausePage/Menu/ResumeButton"},
+	&"settings": {"predecessors":[&"title",&"pause"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/SettingsPage/Actions/ApplyButton"},
+	&"death_recovery": {"predecessors":[&"gameplay"], "authority":&"player_death", "blocking":true, "focus":"Root/Pages/DeathPage/Menu/RestartButton"},
+	&"recovery_transition": {"predecessors":[&"death_recovery",&"pause",&"failure_result"], "authority":&"mission_recovery", "blocking":true, "focus":"Root/Pages/DeathPage/Menu/RestartButton"},
+	&"victory": {"predecessors":[&"gameplay"], "authority":&"terminal", "blocking":true, "focus":""},
+	&"detonation": {"predecessors":[&"gameplay"], "authority":&"terminal", "blocking":true, "focus":""},
+	&"success_result": {"predecessors":[&"victory"], "authority":&"terminal", "blocking":true, "focus":"Root/Pages/ResultPage/Menu/ReplayButton"},
+	&"failure_result": {"predecessors":[&"detonation"], "authority":&"terminal", "blocking":true, "focus":"Root/Pages/ResultPage/Menu/ReplayButton"},
+}
+const LIFECYCLE_ACTIONS := {
+	&"replay": {"legal_from":[&"success_result",&"failure_result"], "target":&"loadout"},
+	&"checkpoint_restart": {"legal_from":[&"pause",&"death_recovery",&"failure_result"], "target":&"recovery_transition"},
+	&"home": {"legal_from":[&"pause",&"death_recovery",&"success_result",&"failure_result"], "target":&"title"},
+}
 
 @onready var root: Control = $Root
 @onready var pages: Control = $Root/Pages
@@ -54,12 +79,17 @@ var _transition_history: Array[Dictionary] = []
 var _last_transition_rejection := &""
 var _death_lock_remaining := 0.0
 var _active_recovery_epoch := 0
+var _lifecycle_action_serial := 0
+var _last_lifecycle_action_receipt: Dictionary = {}
+var _lifecycle_action_history: Array[Dictionary] = []
+var _observed_terminal_results: Dictionary = {}
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_connect_controls()
 	player.player_died.connect(_on_player_died)
+	mission.mission_event_committed.connect(_on_mission_event_committed)
 	terminal.presentation_completed.connect(_on_terminal_presentation_completed)
 	damage_feedback.restore_feedback_completed.connect(_on_restore_feedback_completed)
 	settings_store.settings_applied.connect(_on_settings_applied)
@@ -94,9 +124,9 @@ func _connect_controls() -> void:
 
 func _input(event: InputEvent) -> void:
 	_observe_input_family(event)
-	if app_state != STATE_GAMEPLAY and event.is_action_pressed(&"menu_accept"):
+	if pages.visible and app_state != STATE_GAMEPLAY and event.is_action_pressed(&"menu_accept"):
 		var focused := get_viewport().gui_get_focus_owner()
-		if focused is BaseButton:
+		if focused is BaseButton and focused.is_visible_in_tree() and not (focused as BaseButton).disabled:
 			var button := focused as BaseButton
 			if button.toggle_mode:
 				button.button_pressed = not button.button_pressed
@@ -134,22 +164,29 @@ func _process(delta: float) -> void:
 			recovery_button.grab_focus()
 
 
-func _show_page(state: StringName) -> void:
+func _show_page(state: StringName, reason := &"page_change", authority := &"shell") -> bool:
 	var previous_state := app_state
+	var rule: Dictionary = LIFECYCLE_TABLE.get(state, {})
+	if rule.is_empty() or not (previous_state in (rule.get("predecessors", []) as Array)) or StringName(rule.get("authority", &"")) != authority:
+		_record_transition_rejection(reason, &"illegal_lifecycle_edge")
+		return false
 	var focused_before := get_viewport().gui_get_focus_owner()
 	if focused_before != null and previous_state != STATE_GAMEPLAY:
 		_focus_by_state[previous_state] = focused_before.get_path()
 	_transition_serial += 1
 	app_state = state
-	pages.visible = state not in [STATE_GAMEPLAY, STATE_RECOVERING]
+	pages.visible = state not in [STATE_GAMEPLAY, STATE_DEPLOYMENT, STATE_VICTORY, STATE_DETONATION]
+	if not pages.visible and focused_before != null:
+		focused_before.release_focus()
 	for child in pages.get_children():
 		(child as Control).visible = child.name == _page_name(state)
 	if state == STATE_BRIEFING:
 		_start_briefing()
-	if state not in [STATE_GAMEPLAY, STATE_RECOVERING]:
+	if state not in [STATE_GAMEPLAY, STATE_DEPLOYMENT, STATE_VICTORY, STATE_DETONATION]:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		_focus_first_button.call_deferred()
-	_commit_transition(previous_state, state, &"page_change")
+	_commit_transition(previous_state, state, reason)
+	return true
 
 
 func _page_name(state: StringName) -> String:
@@ -162,7 +199,8 @@ func _page_name(state: StringName) -> String:
 		STATE_SETTINGS: "SettingsPage",
 		STATE_DEATH: "DeathPage",
 		STATE_RECOVERING: "DeathPage",
-		STATE_RESULT: "ResultPage",
+		STATE_SUCCESS_RESULT: "ResultPage",
+		STATE_FAILURE_RESULT: "ResultPage",
 	}.get(state, "TitlePage")
 
 
@@ -170,6 +208,13 @@ func _focus_first_button() -> void:
 	var page := pages.get_node_or_null(_page_name(app_state))
 	if page == null:
 		return
+	var focus_path := String((LIFECYCLE_TABLE.get(app_state, {}) as Dictionary).get("focus", ""))
+	if not focus_path.is_empty():
+		var prescribed := get_node_or_null(focus_path) as BaseButton
+		if prescribed != null and prescribed.visible and not prescribed.disabled:
+			prescribed.grab_focus()
+			_finalize_transition_focus()
+			return
 	var remembered_path: NodePath = _focus_by_state.get(app_state, NodePath())
 	if not remembered_path.is_empty():
 		var remembered := get_node_or_null(remembered_path) as BaseButton
@@ -261,8 +306,10 @@ func _deploy() -> void:
 		$Root/Pages/BriefingPage/Error.text = "DEPLOYMENT ALREADY COMMITTED"
 		return
 	get_tree().paused = false
+	if not _show_page(STATE_DEPLOYMENT, &"deployment_committed", &"mission"):
+		return
 	_set_gameplay_enabled(true)
-	_show_page(STATE_GAMEPLAY)
+	_show_page(STATE_GAMEPLAY, &"deployment_handoff", &"mission")
 
 
 func _set_gameplay_enabled(enabled: bool) -> void:
@@ -289,7 +336,7 @@ func _resume_gameplay() -> void:
 	get_tree().paused = false
 	player.call(&"set_gameplay_input_enabled", true)
 	weapon.call(&"set_gameplay_input_enabled", true)
-	_show_page(STATE_GAMEPLAY)
+	_show_page(STATE_GAMEPLAY, &"resume", &"mission")
 
 
 func _open_settings_from(return_state: StringName) -> void:
@@ -372,21 +419,30 @@ func _on_player_died(_event: Dictionary) -> void:
 		"Restore the latest secured checkpoint without gaining time." if int(mission.get("checkpoint_version")) > 0
 		else "Return to the deployment entry without gaining time."
 	)
-	_show_page(STATE_DEATH)
+	_show_page(STATE_DEATH, &"ordinary_death", &"player_death")
 
 
 func _restart_checkpoint() -> void:
 	if app_state == STATE_DEATH and _death_lock_remaining > 0.0:
 		_record_transition_rejection(&"mission_recovery", &"death_lock_active")
 		return
+	if not _commit_lifecycle_action(&"checkpoint_restart"):
+		return
 	if mission.call(&"request_recovery") != true:
+		_last_lifecycle_action_receipt["accepted"] = false
+		_last_lifecycle_action_receipt["failure_reason"] = &"mission_recovery_rejected"
+		if not _lifecycle_action_history.is_empty():
+			_lifecycle_action_history[-1] = _last_lifecycle_action_receipt.duplicate(true)
 		_record_transition_rejection(&"checkpoint_restart", &"checkpoint_unavailable_or_illegal")
 		return
 	var receipt: Dictionary = mission.get("last_checkpoint_restore_receipt")
 	_active_recovery_epoch = int(receipt.get("restore_epoch", 0))
 	get_tree().paused = false
 	_set_gameplay_enabled(false)
-	_show_page(STATE_RECOVERING)
+	var recovery_button := $Root/Pages/DeathPage/Menu/RestartButton as Button
+	recovery_button.disabled = true
+	recovery_button.text = "RESTORING MISSION STATE"
+	_show_page(STATE_RECOVERING, &"recovery_receipt_committed", &"mission_recovery")
 
 
 func _recovery_button_text() -> String:
@@ -402,7 +458,29 @@ func _on_restore_feedback_completed(epoch: int) -> void:
 	_active_recovery_epoch = 0
 	get_tree().paused = false
 	_set_gameplay_enabled(true)
-	_show_page(STATE_GAMEPLAY)
+	_show_page(STATE_GAMEPLAY, &"recovery_handoff", &"mission")
+
+
+func _commit_lifecycle_action(action: StringName) -> bool:
+	var rule: Dictionary = LIFECYCLE_ACTIONS.get(action, {})
+	if rule.is_empty() or not (app_state in (rule.get("legal_from", []) as Array)):
+		_record_transition_rejection(action, &"illegal_lifecycle_action")
+		return false
+	_lifecycle_action_serial += 1
+	_last_lifecycle_action_receipt = {
+		"action_id": "shell-action-%06d" % _lifecycle_action_serial,
+		"action": action,
+		"source_state": app_state,
+		"target_state": rule.get("target", &""),
+		"authoritative_mission_state": mission.get("mission_state"),
+		"recovery_epoch": int(mission.get("enemy_restore_epoch")),
+		"terminal_event_id": String(mission.get("terminal_event_id")),
+		"accepted": true,
+	}
+	_lifecycle_action_history.append(_last_lifecycle_action_receipt.duplicate(true))
+	while _lifecycle_action_history.size() > TRANSITION_HISTORY_LIMIT:
+		_lifecycle_action_history.pop_front()
+	return true
 
 
 func _observe_input_family(event: InputEvent) -> void:
@@ -427,6 +505,9 @@ func _commit_transition(previous_state: StringName, next_state: StringName, reas
 		"paused": get_tree().paused,
 		"gameplay_input_enabled": player.get("gameplay_input_enabled") == true,
 		"ui_scale": _applied_ui_scale,
+		"lifecycle_authority": (LIFECYCLE_TABLE.get(next_state, {}) as Dictionary).get("authority", &"unknown"),
+		"blocking": (LIFECYCLE_TABLE.get(next_state, {}) as Dictionary).get("blocking", true),
+		"focus_target": (LIFECYCLE_TABLE.get(next_state, {}) as Dictionary).get("focus", ""),
 	}
 	_transition_history.append(_last_transition_receipt.duplicate(true))
 	while _transition_history.size() > TRANSITION_HISTORY_LIMIT:
@@ -491,26 +572,54 @@ func _layout_snapshot() -> Dictionary:
 
 
 func _return_home() -> void:
+	if not _commit_lifecycle_action(&"home"):
+		return
 	get_tree().paused = false
 	roster.call(&"reset_transient_feedback")
 	terminal.reset_presentation(true, true)
-	mission.call(&"reset_for_replay")
+	if mission.call(&"reset_for_replay") != true:
+		_last_lifecycle_action_receipt["accepted"] = false
+		_last_lifecycle_action_receipt["failure_reason"] = &"replay_reset_rejected"
+		_record_transition_rejection(&"home", &"replay_reset_rejected")
+		return
+	_observed_terminal_results.clear()
 	_set_gameplay_enabled(false)
 	_show_page(STATE_TITLE)
 
 
 func _replay() -> void:
+	if not _commit_lifecycle_action(&"replay"):
+		return
 	get_tree().paused = false
 	roster.call(&"reset_transient_feedback")
 	terminal.reset_presentation(true, true)
-	mission.call(&"reset_for_replay")
+	if mission.call(&"reset_for_replay") != true:
+		_last_lifecycle_action_receipt["accepted"] = false
+		_last_lifecycle_action_receipt["failure_reason"] = &"replay_reset_rejected"
+		_record_transition_rejection(&"replay", &"replay_reset_rejected")
+		return
+	_observed_terminal_results.clear()
 	_set_gameplay_enabled(false)
 	_show_page(STATE_LOADOUT)
 
 
-func _on_terminal_presentation_completed(_event_id: String, result: StringName) -> void:
-	if app_state == STATE_GAMEPLAY:
-		_show_result(result)
+func _on_mission_event_committed(event: Dictionary) -> void:
+	if StringName(event.get("kind", &"")) != &"terminal_submitted":
+		return
+	var payload: Dictionary = event.get("payload", {})
+	var result := StringName(payload.get("result", &"bomb_detonated"))
+	_set_gameplay_enabled(false)
+	_show_page(STATE_VICTORY if result == &"bomb_defused" else STATE_DETONATION, &"terminal_submitted", &"terminal")
+
+
+func _on_terminal_presentation_completed(event_id: String, result: StringName) -> void:
+	if _observed_terminal_results.has(event_id):
+		return
+	if (result == &"bomb_defused" and app_state != STATE_VICTORY) or (result == &"bomb_detonated" and app_state != STATE_DETONATION):
+		_record_transition_rejection(&"terminal_completion", &"terminal_predecessor_mismatch")
+		return
+	_observed_terminal_results[event_id] = result
+	_show_result(result)
 
 
 func _show_result(result: StringName) -> void:
@@ -537,7 +646,7 @@ func _show_result(result: StringName) -> void:
 		float(snapshot.get("fastest_success_delta", 0.0)), rank_text,
 	]
 	$Root/Pages/ResultPage/Menu/RestartButton.visible = not success and remaining > 0 and (not (mission.get("deployment_snapshot") as Dictionary).is_empty() or int(mission.get("checkpoint_version")) > 0)
-	_show_page(STATE_RESULT)
+	_show_page(STATE_SUCCESS_RESULT if success else STATE_FAILURE_RESULT, &"terminal_presentation_completed", &"terminal")
 
 
 func _mcp_state() -> Dictionary:
@@ -548,6 +657,10 @@ func _mcp_state() -> Dictionary:
 		"transition_serial": _transition_serial,
 		"last_transition_receipt": _last_transition_receipt,
 		"transition_history": _transition_history,
+		"lifecycle_table_state_count": LIFECYCLE_TABLE.size(),
+		"lifecycle_action_count": LIFECYCLE_ACTIONS.size(),
+		"last_lifecycle_action_receipt": _last_lifecycle_action_receipt,
+		"lifecycle_action_history": _lifecycle_action_history,
 		"last_transition_rejection": _last_transition_rejection,
 		"last_input_family": _last_input_family,
 		"briefing_elapsed": _briefing_elapsed,

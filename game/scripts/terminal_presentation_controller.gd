@@ -133,7 +133,7 @@ func _begin_success() -> void:
 	victory_avatar.global_transform = player.global_transform
 	victory_avatar.global_position = _victory_ground_position()
 	victory_avatar.visible = true
-	media_title.text = "ALL CLEAR  //  ROCKET BAY PRESERVED"
+	media_title.text = "ALL CLEAR — ROCKET BAY PRESERVED"
 	media_copy.text = "AEGIS EOD SIGNAL RESTORED\nBASE ALARM CLEARING  •  DEVICE SAFE"
 	media_skip.text = "[ENTER / E]  SKIP PRESENTATION"
 	if not victory_sequence.begin(camera, victory_avatar, "DEVICE SAFE  •  %02d:%02d REMAINING" % [int(mission.remaining_time) / 60, int(mission.remaining_time) % 60]):
@@ -171,7 +171,7 @@ func _begin_failure() -> void:
 	tail_audio.volume_db = linear_to_db(maxf(0.01, _volume_scale())) - 3.0
 	blast_audio.play()
 	tail_audio.play()
-	media_title.text = "BASE IMPACT  //  SIGNAL LOST"
+	media_title.text = "BASE IMPACT — SIGNAL LOST"
 	media_copy.text = "ROCKET MAINTENANCE BAY DESTROYED\nAEGIS TELEMETRY ARCHIVE RECOVERED"
 	media_skip.text = "[ENTER / E]  SKIP AFTER IMPACT"
 

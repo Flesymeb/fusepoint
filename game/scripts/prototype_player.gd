@@ -65,6 +65,7 @@ var _last_look_receipt: Dictionary = {}
 var _look_history: Array[Dictionary] = []
 var _deployment_reset_count := 0
 var _last_deployment_reset_receipt: Dictionary = {}
+var _last_restore_receipt: Dictionary = {}
 
 
 func _ready() -> void:
@@ -288,6 +289,19 @@ func _release_mouse() -> void:
 
 
 func _reset_to_spawn(source: StringName = &"mission_setup") -> void:
+	var validation := validate_recovery_destination(_spawn_transform, [])
+	if validation.get("accepted", false) != true:
+		_deployment_reset_count += 1
+		_last_deployment_reset_receipt = {
+			"event_id": "deployment-reset-%06d" % _deployment_reset_count,
+			"source": source,
+			"destination": &"deployment_spawn",
+			"accepted": false,
+			"failure_reason": validation.get("failure_reason", &"destination_rejected"),
+			"validation": validation,
+			"mission_checkpoint_transaction_requested": false,
+		}
+		return
 	exit_terminal_lock()
 	global_transform = _spawn_transform
 	head.rotation = _spawn_head_rotation
@@ -315,6 +329,8 @@ func _reset_to_spawn(source: StringName = &"mission_setup") -> void:
 		"checkpoint_restore_epoch": restore_epoch,
 		"mission_checkpoint_transaction_requested": false,
 		"transient_state_reset": true,
+		"accepted": true,
+		"validation": validation,
 	}
 	spawn_reset.emit()
 
@@ -324,11 +340,28 @@ func reset_to_deployment_without_mission_reset() -> void:
 	checkpoint_restored.emit({"event_id": "checkpoint-restore-deployment", "health_after": health})
 
 
-func restore_checkpoint_state(checkpoint_transform: Transform3D, checkpoint_health: float, epoch := 0) -> void:
+func restore_checkpoint_state(checkpoint_transform: Transform3D, checkpoint_health: float, epoch := 0, allow_same_epoch := false) -> Dictionary:
+	if epoch < restore_epoch or (epoch == restore_epoch and not allow_same_epoch):
+		_last_restore_receipt = {
+			"accepted": false,
+			"restore_epoch": epoch,
+			"failure_reason": &"non_monotonic_epoch",
+		}
+		return _last_restore_receipt.duplicate(true)
 	restore_epoch = maxi(restore_epoch, epoch)
 	reset_transient_state_for_restore()
 	_restore_movement_state(checkpoint_transform, checkpoint_health)
-	checkpoint_restored.emit({"event_id": "checkpoint-restore-%06d" % restore_epoch, "health_after": health, "restore_epoch": restore_epoch})
+	_last_restore_receipt = {
+		"accepted": true,
+		"event_id": "player-restore-%06d" % restore_epoch,
+		"restore_epoch": restore_epoch,
+		"position": global_position,
+		"health_after": health,
+		"collision_restored": collision_layer == _deployment_collision_layer and collision_mask == _deployment_collision_mask,
+		"transient_reset_complete": _damage_commits.is_empty() and _last_damage_event.is_empty(),
+	}
+	checkpoint_restored.emit(_last_restore_receipt.duplicate(true))
+	return _last_restore_receipt.duplicate(true)
 
 
 func reset_transient_state_for_restore() -> void:
@@ -360,7 +393,56 @@ func _restore_movement_state(target_transform: Transform3D, target_health: float
 	_set_stance(false)
 	head.position.y = standing_eye_height
 	health = clampf(target_health, 1.0, max_health)
-	_capture_mouse()
+	if gameplay_input_enabled:
+		_capture_mouse()
+	else:
+		_release_mouse()
+
+
+func validate_recovery_destination(target_transform: Transform3D, hostile_positions: Array) -> Dictionary:
+	var destination := target_transform.origin
+	if not destination.is_finite():
+		return {"accepted": false, "failure_reason": &"destination_not_finite"}
+	var space_state := get_world_3d().direct_space_state
+	var excluded: Array[RID] = [get_rid()]
+	for hostile: Node in get_tree().get_nodes_in_group(&"fps_enemy"):
+		if hostile is CollisionObject3D:
+			excluded.append((hostile as CollisionObject3D).get_rid())
+	var clearance_shape := CapsuleShape3D.new()
+	clearance_shape.radius = maxf(0.1, (collision_shape.shape as CapsuleShape3D).radius - 0.04)
+	clearance_shape.height = maxf(clearance_shape.radius * 2.0, standing_height - 0.12)
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = clearance_shape
+	query.transform = Transform3D(target_transform.basis, destination + Vector3.UP * 0.08)
+	query.collision_mask = collision_mask if collision_mask != 0 else _deployment_collision_mask
+	query.exclude = excluded
+	query.collide_with_areas = false
+	query.collide_with_bodies = true
+	var blockers := space_state.intersect_shape(query, 8)
+	var ground_query := PhysicsRayQueryParameters3D.create(
+		destination + Vector3.UP * 0.4,
+		destination + Vector3.DOWN * 1.7,
+		query.collision_mask,
+		excluded,
+	)
+	ground_query.collide_with_areas = false
+	var ground_hit := space_state.intersect_ray(ground_query)
+	var nearest_hostile := INF
+	for value: Variant in hostile_positions:
+		if value is Vector3:
+			nearest_hostile = minf(nearest_hostile, destination.distance_to(value as Vector3))
+	var hostile_clear := is_inf(nearest_hostile) or nearest_hostile >= 1.2
+	var accepted := blockers.is_empty() and not ground_hit.is_empty() and hostile_clear
+	return {
+		"accepted": accepted,
+		"failure_reason": &"" if accepted else &"static_occupancy_blocked" if not blockers.is_empty() else &"ground_missing" if ground_hit.is_empty() else &"hostile_separation_blocked",
+		"destination": destination,
+		"static_blocker_count": blockers.size(),
+		"grounded": not ground_hit.is_empty(),
+		"ground_position": ground_hit.get("position", Vector3.ZERO),
+		"nearest_hostile_distance": -1.0 if is_inf(nearest_hostile) else nearest_hostile,
+		"required_hostile_separation": 1.2,
+	}
 
 
 func apply_authoritative_damage(amount: float, damage_event_id := "", metadata: Dictionary = {}) -> bool:
@@ -516,4 +598,5 @@ func _mcp_state() -> Dictionary:
 		"last_look_receipt": _last_look_receipt,
 		"deployment_reset_count": _deployment_reset_count,
 		"last_deployment_reset_receipt": _last_deployment_reset_receipt,
+		"last_restore_receipt": _last_restore_receipt,
 	}
