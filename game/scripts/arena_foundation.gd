@@ -17,7 +17,8 @@ const ROUTE_LEG_BUDGETS := {
 	&"a_to_b": Vector2(35.0, 55.0),
 	&"b_to_c": Vector2(40.0, 60.0),
 }
-const ROUTE_ENGAGEMENT_DWELL := {&"spawn_to_a": 0.0, &"a_to_b": 20.0, &"b_to_c": 30.0}
+const ROUTE_ENGAGEMENT_DWELL := {&"spawn_to_a": 18.0, &"a_to_b": 20.0, &"b_to_c": 30.0}
+const DEPLOYMENT_MIN_CHARLIE_DISTANCE := 35.0
 const SOURCE_CLOUD_SHADER := "res://shaders/clouds.gdshader"
 const SOURCE_SUN_FLARE_SCRIPT := "res://scripts/source_sun_flare.gd"
 const MIGRATION_MANIFEST_PATH := "res://scenes/arena_foundation_migration_manifest.json"
@@ -406,7 +407,10 @@ func _bind_product_anchors() -> bool:
 		and projected["bravo"].distance_to(projected["charlie"]) > 10.0
 	)
 	var spawn_to_a_length := _path_length(edges["spawn_to_a"])
-	var predicted_effective_seconds := spawn_to_a_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED
+	var predicted_effective_seconds := (
+		spawn_to_a_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED
+		+ float(ROUTE_ENGAGEMENT_DWELL[&"spawn_to_a"])
+	)
 	# Prediction ranks a provisional native anchor pair only. The RouteProbe's
 	# fresh ordinary-input first-overlap receipt is the acceptance authority.
 	var route_pair_provisional_accepted: bool = deployment_anchor_selection.get("accepted", false) == true
@@ -557,13 +561,32 @@ func _validate_product_anchor_pair(
 	direct_projected["alpha"] = alpha_position
 	var report := _evaluate_product_anchor_pair(nav_map, direct_projected, player)
 	var predicted_seconds := float(report.get("predicted_effective_seconds", 0.0))
+	var charlie_position: Vector3 = projected["charlie"]
+	var alpha_sightline_blocked := _is_world_sightline_blocked(spawn_position, alpha_position, player)
+	var charlie_sightline_blocked := _is_world_sightline_blocked(spawn_position, charlie_position, player)
+	var charlie_distance := spawn_position.distance_to(charlie_position)
+	var semantic_region_accepted := (
+		charlie_distance >= DEPLOYMENT_MIN_CHARLIE_DISTANCE
+		and alpha_sightline_blocked
+		and charlie_sightline_blocked
+	)
+	var predicted_within_budget := predicted_seconds >= ROUTE_MIN_EFFECTIVE_SECONDS and predicted_seconds <= ROUTE_MAX_EFFECTIVE_SECONDS
+	report["accepted"] = report.get("accepted", false) == true and semantic_region_accepted and predicted_within_budget
+	if report.get("accepted", false) != true and StringName(report.get("failure_reason", &"")) == &"":
+		report["failure_reason"] = &"alpha_approach_semantic_binding_rejected"
 	report["binding_mode"] = &"direct_verified_native_street"
-	report["anchor_pair_id"] = &"deployment_alpha_authored"
+	report["anchor_pair_id"] = &"deployment_alpha_east_perimeter"
 	report["spawn_hint"] = spawn_hint
 	report["alpha_hint"] = alpha_hint
 	report["spawn_projection_distance"] = snappedf(spawn_projection_distance, 0.001)
 	report["alpha_projection_distance"] = snappedf(alpha_projection_distance, 0.001)
-	report["predicted_within_budget"] = predicted_seconds >= ROUTE_MIN_EFFECTIVE_SECONDS and predicted_seconds <= ROUTE_MAX_EFFECTIVE_SECONDS
+	report["predicted_within_budget"] = predicted_within_budget
+	report["semantic_region"] = &"alpha_east_perimeter_approach"
+	report["semantic_region_accepted"] = semantic_region_accepted
+	report["alpha_capture_sightline_blocked"] = alpha_sightline_blocked
+	report["charlie_first_sightline_blocked"] = charlie_sightline_blocked
+	report["charlie_distance"] = snappedf(charlie_distance, 0.01)
+	report["minimum_charlie_distance"] = DEPLOYMENT_MIN_CHARLIE_DISTANCE
 	report["evaluated_pair_count"] = 1
 	report["offset_search_used"] = false
 	return report
@@ -610,7 +633,9 @@ func _evaluate_product_anchor_pair(
 		"raw_path_length": _path_length(raw_path),
 		"repaired_path": repaired_path,
 		"repaired_path_length": repaired_length,
-		"predicted_effective_seconds": repaired_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED,
+		"traversal_prediction_seconds": repaired_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED,
+		"encounter_observation_seconds": ROUTE_ENGAGEMENT_DWELL[&"spawn_to_a"],
+		"predicted_effective_seconds": repaired_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED + float(ROUTE_ENGAGEMENT_DWELL[&"spawn_to_a"]),
 		"direct_distance": spawn_position.distance_to(alpha_position),
 		"clearance": clearance,
 		"first_escape": first_escape,
@@ -667,13 +692,13 @@ func _route_clearance_for_path(path: PackedVector3Array, player: CharacterBody3D
 	}
 
 
-func _is_alpha_sightline_blocked(spawn_position: Vector3, alpha_position: Vector3, player: CharacterBody3D) -> bool:
+func _is_world_sightline_blocked(from_position: Vector3, target_position: Vector3, player: CharacterBody3D) -> bool:
 	var excluded: Array[RID] = []
 	if player != null:
 		excluded.append(player.get_rid())
 	var query := PhysicsRayQueryParameters3D.create(
-		spawn_position + Vector3.UP * 1.55,
-		alpha_position + Vector3.UP * 1.2,
+		from_position + Vector3.UP * 1.55,
+		target_position + Vector3.UP * 1.2,
 		player.collision_mask if player != null else 1,
 		excluded,
 	)

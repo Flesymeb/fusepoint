@@ -6,10 +6,12 @@ extends Node
 
 const RAW_SAMPLE_CAPACITY := 18000
 const RAW_TAIL_SIZE := 240
+const RAW_PAGE_SIZE := 240
 const CYCLE_HISTORY_LIMIT := 3
 const LOW_FPS_FRAME_MS := 1000.0 / 45.0
 const COMBAT_SAMPLE_INTERVAL := 0.1
 const COMBAT_HISTORY_LIMIT := 24
+const TARGET_RESOLUTION := Vector2i(1920, 1080)
 
 @export var mission_path: NodePath
 @export var roster_path: NodePath
@@ -28,6 +30,8 @@ const COMBAT_HISTORY_LIMIT := 24
 @onready var feedback_matrix: Node = get_node(feedback_matrix_path)
 
 var _raw_frame_times_ms: Array[float] = []
+var _raw_phase_ids: Array[StringName] = []
+var _raw_explosion_flags: Array[bool] = []
 var _sample_count := 0
 var _sample_sum_ms := 0.0
 var _sample_max_ms := 0.0
@@ -40,6 +44,13 @@ var _run_epoch := 0
 var _cycle_serial := 0
 var _cycle_marker := ""
 var _cycle_history: Array[Dictionary] = []
+var _cycle_boundaries: Array[Dictionary] = []
+var _cycle_cleanup_start: Dictionary = {}
+var _cycle_cleanup_settled := false
+var _cycle_viewport_start := Vector2i.ZERO
+var _observed_viewport := Vector2i.ZERO
+var _last_checkpoint_restore_count := 0
+var _terminal_boundary_latched := false
 var _phase_samples: Dictionary = {}
 var _counter_refresh_remaining := 0.0
 var _cleanup_counters: Dictionary = {}
@@ -64,30 +75,34 @@ func _process(delta: float) -> void:
 	var mission_state: Dictionary = mission.call(&"_mcp_state")
 	var observed_epoch := int(mission_state.get("run_epoch", 0))
 	var restore_count := int(mission_state.get("checkpoint_restore_count", 0))
-	var marker := "%06d:%06d" % [observed_epoch, restore_count]
+	var marker := "run-%06d" % observed_epoch
 	if observed_epoch != _run_epoch or marker != _cycle_marker:
-		_begin_cycle(observed_epoch, marker)
+		_begin_cycle(observed_epoch, marker, restore_count)
+	_update_lifecycle_boundaries(mission_state, restore_count)
 	var frame_ms := delta * 1000.0
 	_record_sample(frame_ms, _phase_id(mission_state), _is_explosion_window(mission_state))
 	_counter_refresh_remaining -= delta
 	if _counter_refresh_remaining <= 0.0:
 		_counter_refresh_remaining = 0.5
 		_refresh_cleanup_counters()
+		_settle_cycle_cleanup_start()
 	_combat_sample_remaining -= delta
 	if _combat_sample_remaining <= 0.0:
 		_combat_sample_remaining = COMBAT_SAMPLE_INTERVAL
 		_sample_combat_presentation()
 
 
-func _begin_cycle(epoch: int, marker: String) -> void:
+func _begin_cycle(epoch: int, marker: String, restore_count: int) -> void:
 	if _sample_count > 0:
-		_cycle_history.append(_cycle_summary())
+		_cycle_history.append(_cycle_record(true))
 		while _cycle_history.size() > CYCLE_HISTORY_LIMIT:
 			_cycle_history.pop_front()
 	_cycle_serial += 1
 	_run_epoch = epoch
 	_cycle_marker = marker
 	_raw_frame_times_ms.clear()
+	_raw_phase_ids.clear()
+	_raw_explosion_flags.clear()
 	_sample_count = 0
 	_sample_sum_ms = 0.0
 	_sample_max_ms = 0.0
@@ -99,6 +114,71 @@ func _begin_cycle(epoch: int, marker: String) -> void:
 	_phase_samples.clear()
 	_combat_animation_history.clear()
 	_combat_sample_remaining = 0.0
+	_observed_viewport = Vector2i(get_viewport().get_visible_rect().size)
+	_cycle_viewport_start = _observed_viewport
+	_last_checkpoint_restore_count = restore_count
+	_terminal_boundary_latched = false
+	_cycle_cleanup_settled = false
+	_cycle_boundaries = [{
+		"kind": &"cycle_started",
+		"cycle_serial": _cycle_serial,
+		"run_epoch": _run_epoch,
+		"checkpoint_restore_count": restore_count,
+		"process_frame": Engine.get_process_frames(),
+		"physics_frame": Engine.get_physics_frames(),
+		"observed_viewport": _observed_viewport,
+		"at_usec": Time.get_ticks_usec(),
+	}]
+	_refresh_cleanup_counters()
+	_cycle_cleanup_start = _cleanup_counters.duplicate(true)
+	_settle_cycle_cleanup_start()
+
+
+func _settle_cycle_cleanup_start() -> void:
+	if _cycle_cleanup_settled or int(_cleanup_counters.get("stable_actor_count", 0)) <= 0:
+		return
+	_cycle_cleanup_start = _cleanup_counters.duplicate(true)
+	_cycle_cleanup_settled = true
+	_append_cycle_boundary(&"observer_settled", {
+		"stable_actor_count": _cleanup_counters.get("stable_actor_count", 0),
+		"signal_connection_count": _cleanup_counters.get("signal_connection_count", 0),
+	})
+
+
+func _update_lifecycle_boundaries(mission_state: Dictionary, restore_count: int) -> void:
+	var viewport := Vector2i(get_viewport().get_visible_rect().size)
+	if viewport != _observed_viewport:
+		_observed_viewport = viewport
+		_append_cycle_boundary(&"viewport_changed", {"observed_viewport": viewport})
+	if restore_count != _last_checkpoint_restore_count:
+		_append_cycle_boundary(&"checkpoint_restored", {
+			"previous_restore_count": _last_checkpoint_restore_count,
+			"checkpoint_restore_count": restore_count,
+		})
+		_last_checkpoint_restore_count = restore_count
+	var mission_state_id := StringName(mission_state.get("mission_state", &"unknown"))
+	var bomb_state_id := StringName(mission_state.get("bomb_state", &"unknown"))
+	var terminal := mission_state_id in [&"bomb_defused", &"bomb_detonated"] or bomb_state_id in [&"defused", &"detonated"]
+	if terminal and not _terminal_boundary_latched:
+		_terminal_boundary_latched = true
+		_append_cycle_boundary(&"terminal_committed", {
+			"mission_state": mission_state_id,
+			"bomb_state": bomb_state_id,
+		})
+
+
+func _append_cycle_boundary(kind: StringName, payload: Dictionary = {}) -> void:
+	var receipt := payload.duplicate(true)
+	receipt["kind"] = kind
+	receipt["cycle_serial"] = _cycle_serial
+	receipt["run_epoch"] = _run_epoch
+	receipt["sample_index"] = _sample_count
+	receipt["process_frame"] = Engine.get_process_frames()
+	receipt["physics_frame"] = Engine.get_physics_frames()
+	receipt["at_usec"] = Time.get_ticks_usec()
+	_cycle_boundaries.append(receipt)
+	while _cycle_boundaries.size() > 24:
+		_cycle_boundaries.pop_front()
 
 
 func _record_sample(frame_ms: float, phase: StringName, explosion_window: bool) -> void:
@@ -107,8 +187,12 @@ func _record_sample(frame_ms: float, phase: StringName, explosion_window: bool) 
 	_sample_max_ms = maxf(_sample_max_ms, frame_ms)
 	_sample_min_ms = minf(_sample_min_ms, frame_ms)
 	_raw_frame_times_ms.append(frame_ms)
+	_raw_phase_ids.append(phase)
+	_raw_explosion_flags.append(explosion_window)
 	if _raw_frame_times_ms.size() > RAW_SAMPLE_CAPACITY:
 		_raw_frame_times_ms.pop_front()
+		_raw_phase_ids.pop_front()
+		_raw_explosion_flags.pop_front()
 	var phase_entry: Dictionary = _phase_samples.get(phase, {
 		"sample_count": 0,
 		"sum_ms": 0.0,
@@ -300,24 +384,121 @@ func _raw_tail() -> Array[float]:
 	return tail
 
 
-func _cycle_summary() -> Dictionary:
-	return {
+func _cleanup_delta(start: Dictionary, finish: Dictionary) -> Dictionary:
+	var delta := {}
+	for key: Variant in finish:
+		var start_value: Variant = start.get(key, 0)
+		var end_value: Variant = finish[key]
+		if (end_value is int or end_value is float) and (start_value is int or start_value is float):
+			delta[key] = end_value - start_value
+	return delta
+
+
+func _cycle_record(include_raw: bool) -> Dictionary:
+	var record := {
 		"cycle_serial": _cycle_serial,
 		"cycle_marker": _cycle_marker,
 		"run_epoch": _run_epoch,
+		"complete": _terminal_boundary_latched,
+		"observed_viewport_start": _cycle_viewport_start,
+		"observed_viewport_end": _observed_viewport,
+		"target_resolution_match": _observed_viewport == TARGET_RESOLUTION,
 		"sample_count": _sample_count,
+		"retained_sample_count": _raw_frame_times_ms.size(),
 		"average_frame_ms": _sample_sum_ms / float(_sample_count) if _sample_count > 0 else 0.0,
+		"min_frame_ms": 0.0 if is_inf(_sample_min_ms) else _sample_min_ms,
 		"max_frame_ms": _sample_max_ms,
+		"phase_aggregates": _phase_aggregates(),
+		"explosion_sample_count": _explosion_sample_count,
 		"explosion_max_low_fps_streak": _explosion_max_low_streak,
-		"cleanup": _cleanup_counters.duplicate(true),
+		"explosion_threshold_breach_visible": _explosion_breach_visible,
+		"cleanup_start": _cycle_cleanup_start.duplicate(true),
+		"cleanup_end": _cleanup_counters.duplicate(true),
+		"cleanup_delta": _cleanup_delta(_cycle_cleanup_start, _cleanup_counters),
+		"lifecycle_boundaries": _cycle_boundaries.duplicate(true),
+		"raw_page_size": RAW_PAGE_SIZE,
+		"raw_page_count": ceili(float(_raw_frame_times_ms.size()) / float(RAW_PAGE_SIZE)),
+	}
+	if include_raw:
+		record["raw_frame_times_ms"] = _raw_frame_times_ms.duplicate()
+		record["raw_phase_ids"] = _raw_phase_ids.duplicate()
+		record["raw_explosion_flags"] = _raw_explosion_flags.duplicate()
+	return record
+
+
+func _public_cycle_summary(record: Dictionary) -> Dictionary:
+	var result := record.duplicate(true)
+	result.erase("raw_frame_times_ms")
+	result.erase("raw_phase_ids")
+	result.erase("raw_explosion_flags")
+	return result
+
+
+func _retained_cycle_records() -> Array[Dictionary]:
+	var records: Array[Dictionary] = []
+	for archived: Dictionary in _cycle_history:
+		records.append(archived)
+	records.append(_cycle_record(false))
+	while records.size() > CYCLE_HISTORY_LIMIT:
+		records.pop_front()
+	return records
+
+
+func _retained_cycle_index() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for record: Dictionary in _retained_cycle_records():
+		result.append(_public_cycle_summary(record))
+	return result
+
+
+func qualification_sample_page(cycle_serial: int, offset := 0, limit := RAW_PAGE_SIZE) -> Dictionary:
+	var source: Dictionary = {}
+	if cycle_serial == _cycle_serial:
+		source = _cycle_record(true)
+	else:
+		for archived: Dictionary in _cycle_history:
+			if int(archived.get("cycle_serial", -1)) == cycle_serial:
+				source = archived
+				break
+	if source.is_empty():
+		return {"accepted": false, "failure_reason": &"cycle_not_retained", "cycle_serial": cycle_serial}
+	var frame_times: Array = source.get("raw_frame_times_ms", [])
+	var phase_ids: Array = source.get("raw_phase_ids", [])
+	var explosion_flags: Array = source.get("raw_explosion_flags", [])
+	var safe_offset := clampi(offset, 0, frame_times.size())
+	var safe_limit := clampi(limit, 1, RAW_PAGE_SIZE)
+	var end := mini(safe_offset + safe_limit, frame_times.size())
+	var samples: Array[Dictionary] = []
+	for index in range(safe_offset, end):
+		var frame_ms := float(frame_times[index])
+		samples.append({
+			"sample_index": index,
+			"frame_ms": frame_ms,
+			"phase": phase_ids[index] if index < phase_ids.size() else &"unknown",
+			"explosion_window": bool(explosion_flags[index]) if index < explosion_flags.size() else false,
+			"below_45_fps": frame_ms > LOW_FPS_FRAME_MS,
+		})
+	return {
+		"accepted": true,
+		"cycle_serial": cycle_serial,
+		"offset": safe_offset,
+		"limit": safe_limit,
+		"returned_count": samples.size(),
+		"total_count": frame_times.size(),
+		"next_offset": end if end < frame_times.size() else -1,
+		"samples": samples,
 	}
 
 
 func qualification_snapshot() -> Dictionary:
+	_observed_viewport = Vector2i(get_viewport().get_visible_rect().size)
 	return {
-		"schema_version": 2,
+		"schema_version": 3,
 		"presentation_neutral": true,
-		"target_resolution": Vector2i(1920, 1080),
+		"target_resolution": TARGET_RESOLUTION,
+		"target_resolution_source": &"configured_qualification_target",
+		"observed_viewport": _observed_viewport,
+		"target_resolution_match": _observed_viewport == TARGET_RESOLUTION,
 		"target_fps": 60,
 		"explosion_min_fps": 45,
 		"run_epoch": _run_epoch,
@@ -336,7 +517,16 @@ func qualification_snapshot() -> Dictionary:
 		"explosion_max_low_fps_streak": _explosion_max_low_streak,
 		"explosion_threshold_breach_visible": _explosion_breach_visible,
 		"cleanup": _cleanup_counters.duplicate(true),
-		"cycle_history": _cycle_history.duplicate(true),
+		"retained_cycle_limit": CYCLE_HISTORY_LIMIT,
+		"retained_cycle_count": _retained_cycle_index().size(),
+		"retained_cycle_index": _retained_cycle_index(),
+		"cycle_history": _retained_cycle_index(),
+		"raw_sample_access": {
+			"method": &"qualification_sample_page",
+			"page_size": RAW_PAGE_SIZE,
+			"independently_addressed_by": &"cycle_serial",
+			"bounded": true,
+		},
 		"raw_frame_time_tail_ms": _raw_tail(),
 		"combat_animation_observation": {
 			"presentation_neutral": true,

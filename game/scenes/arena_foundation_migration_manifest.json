@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "manifest_id": "fusepoint_standoff_2_intact_migration_v1",
+  "manifest_id": "fusepoint_standoff_2_intact_migration_v2_alpha_first",
   "family_id": "fusepoint_authored_environment",
   "authoritative_visual_map": {
     "instance_count": 1,
@@ -39,8 +39,8 @@
     {"node_path": "MapCollision", "creation": "scene", "gameplay_purpose": "Own additive static collision generated from intact structural source meshes."},
     {"node_path": "MapCollision/AuthoredMapConcaveCollision", "creation": "runtime", "gameplay_purpose": "Provide player, enemy and ballistic collision without editing imported children."},
     {"node_path": "ProductAnchors", "creation": "scene", "gameplay_purpose": "Own all product deployment and objective hints outside the authored source subtree."},
-    {"node_path": "ProductAnchors/Deployment", "creation": "scene", "gameplay_purpose": "Bind the verified capsule-clear native deployment street directly; no offset search may replace it."},
-    {"node_path": "ProductAnchors/Alpha", "creation": "scene", "gameplay_purpose": "Bind the verified legal Alpha objective surface directly on the same authored navigation datum."},
+    {"node_path": "ProductAnchors/Deployment", "creation": "scene", "gameplay_purpose": "Bind the verified capsule-clear Alpha east-perimeter approach directly, with Alpha and Charlie first sightlines blocked; no offset search may replace it."},
+    {"node_path": "ProductAnchors/Alpha", "creation": "scene", "gameplay_purpose": "Bind the verified legal Alpha objective surface on the same authored navigation datum as the direct east-perimeter deployment."},
     {"node_path": "ProductAnchors/Bravo", "creation": "scene", "gameplay_purpose": "Bind Bravo to a separate native walkable surface."},
     {"node_path": "ProductAnchors/Charlie", "creation": "scene", "gameplay_purpose": "Bind the bomb interaction to Point C's native walkable surface."},
     {"node_path": "Alpha", "creation": "scene", "gameplay_purpose": "Provide authoritative Alpha overlap and capture state."},

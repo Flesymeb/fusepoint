@@ -81,6 +81,8 @@ func _ready() -> void:
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 	last_spawn_occupancy_receipt = validate_restore_occupancy(player.global_position, false)
+	last_spawn_occupancy_receipt["receipt_kind"] = &"initial_spawn_settlement"
+	last_occupancy_receipt = last_spawn_occupancy_receipt.duplicate(true)
 	roster_initialized = (
 		reservation_succeeded
 		and enemies.size() == 18

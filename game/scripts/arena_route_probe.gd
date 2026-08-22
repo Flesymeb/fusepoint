@@ -318,8 +318,8 @@ func _route_progress(player_position: Vector3) -> Dictionary:
 			best_segment = index - 1
 			best_progress = lengths[index - 1] + from.distance_to(projected)
 	var next_index := mini(best_segment + 1, path.size() - 1)
-	if player_position.distance_to(path[next_index]) < 1.25:
-		next_index = mini(next_index + 1, path.size() - 1)
+	while next_index < path.size() - 1 and player_position.distance_to(path[next_index]) < 1.25:
+		next_index += 1
 	return {
 		"ready": true,
 		"leg_id": leg_id,

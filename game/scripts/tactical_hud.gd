@@ -5,7 +5,7 @@ signal combat_row_presented(receipt: Dictionary)
 
 const STORY_COPY := "11:40 — KESTREL RIDGE MILITARY BASE\nThe Rift Front planted a timed bomb in the Sector C rocket maintenance bay.\nCommunications are down. Support is not coming. You are the only operator who can enter.\nRetake Alpha, secure Bravo, then recover both defusal keys.\nIn five minutes, the base disappears with the bomb."
 const SAFE_AREA_RATIO := 0.05
-const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v2"
+const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v3_priority_lanes"
 const COMBAT_ROW_LIFETIME_SECONDS := 6.0
 const COMBAT_ROW_LIMIT := 5
 const COMBAT_FEED_ALLOWED_KINDS: Array[StringName] = [
@@ -149,8 +149,10 @@ func _apply_responsive_layout() -> void:
 	$Root/CountdownRail/Keys.size = Vector2(404.0, 20.0 if expanded else 18.0)
 	compass_label.position = Vector2(center.x - 210.0, safe.y + (112.0 if expanded else 90.0))
 	compass_label.size = Vector2(420.0, 48.0)
-	route_label.position = Vector2(center.x - 310.0, safe.y + (160.0 if expanded else 132.0))
-	route_label.size = Vector2(620.0, 32.0)
+	# Route guidance owns a compact left safe-area lane below the minimap instead
+	# of competing with projected world objectives in the center of the view.
+	route_label.position = Vector2(safe.x + 2.0, safe.y + (292.0 if expanded else 284.0))
+	route_label.size = Vector2(430.0 if expanded else 470.0, 40.0 if expanded else 32.0)
 	feed.position = Vector2(viewport_size.x - safe.x - 326.0, safe.y + 2.0)
 	feed.size = Vector2(324.0, 152.0 if expanded else 128.0)
 	reticle.position = center - Vector2(14.0, 14.0)
@@ -181,6 +183,7 @@ func _layout_snapshot() -> Dictionary:
 		regions.append(narrative)
 	var violations: Array[String] = []
 	var content_clipping: Array[String] = []
+	var priority_overlaps: Array[String] = []
 	var region_rects: Dictionary = {}
 	for control: Control in regions:
 		var rect := control.get_global_rect()
@@ -190,6 +193,8 @@ func _layout_snapshot() -> Dictionary:
 		var required := control.get_combined_minimum_size()
 		if required.x > control.size.x + 1.0 or required.y > control.size.y + 1.0:
 			content_clipping.append(str(control.get_path()))
+	if route_label.visible and narrative.visible and route_label.get_global_rect().intersects(narrative.get_global_rect()):
+		priority_overlaps.append("route_marker:narrative")
 	var world_notices := _world_notice_budget()
 	for notice_id in world_notices:
 		var notice: Dictionary = world_notices[notice_id]
@@ -202,11 +207,12 @@ func _layout_snapshot() -> Dictionary:
 		"safe_margin": safe_margin,
 		"safe_rect": safe_rect,
 		"region_rects": region_rects,
-		"violation_count": violations.size() + content_clipping.size(),
+		"violation_count": violations.size() + content_clipping.size() + priority_overlaps.size(),
 		"violations": violations,
 		"content_clipping": content_clipping,
+		"priority_overlaps": priority_overlaps,
 		"world_notices": world_notices,
-		"within_safe_area": violations.is_empty() and content_clipping.is_empty(),
+		"within_safe_area": violations.is_empty() and content_clipping.is_empty() and priority_overlaps.is_empty(),
 	}
 
 
@@ -325,9 +331,9 @@ func _update_navigation_state() -> void:
 	var bearing := fposmod(rad_to_deg(atan2(delta.x, -delta.z)), 360.0)
 	var cross_track := float(route.get("cross_track_distance", 0.0))
 	var bravo_handoff := _bravo_locked_handoff_active()
-	var route_copy := "NEXT ROUTE  %03d°  •  %dm%s" % [int(bearing), int(delta.length()), "  OFF ROUTE" if cross_track > 3.5 else ""]
+	var route_copy := "ROUTE  %03d°  •  %dm%s" % [int(bearing), int(delta.length()), "  •  OFF ROUTE" if cross_track > 3.5 else ""]
 	if bravo_handoff:
-		route_copy += "  •  SECURE A BEFORE B"
+		route_copy += "  •  A FIRST"
 	route_label.text = route_copy
 	var bravo := arena.get_node_or_null("Bravo") if arena != null else null
 	if bravo != null and bravo.has_method(&"set_hud_handoff_visible"):
@@ -561,6 +567,7 @@ func _mcp_state() -> Dictionary:
 		"layout": _layout_snapshot(),
 		"guidance_source": &"authoritative_route_probe",
 		"guidance_style": &"transparent_borderless_text",
+		"guidance_lane": &"left_safe_area_below_minimap",
 		"bravo_locked_guidance": {
 			"active": _bravo_locked_handoff_active(),
 			"source": &"authoritative_capture_points",

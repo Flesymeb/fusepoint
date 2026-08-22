@@ -205,7 +205,7 @@ scale = Vector3(100, 100, 100)
 [node name="ProductAnchors" type="Node3D" parent="."]
 
 [node name="Deployment" type="Marker3D" parent="ProductAnchors"]
-position = Vector3(3.215604, 0.2847, 29.668905)
+position = Vector3(13, 0.2847, -14)
 
 [node name="Alpha" type="Marker3D" parent="ProductAnchors"]
 position = Vector3(0, 0.2847, -31.7311)
