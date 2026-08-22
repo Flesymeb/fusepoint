@@ -4,6 +4,12 @@ extends FPSCombatEnemy
 signal authoritative_enemy_event(event: Dictionary)
 
 const PRESENTATION_SCENE := preload("res://systems/actors/humanoid/enemy_humanoid_actor.tscn")
+const REQUIRED_ACTOR_SEPARATION := 1.4
+const ROUTE_RESERVATION_SECONDS := 0.55
+const ROUTE_PREDICTION_SECONDS := 0.32
+const STALL_LIMIT_SECONDS := 3.0
+
+static var _route_reservations: Dictionary = {}
 
 @export var stable_id: StringName = &"enemy-unconfigured"
 @export var region_id: StringName = &"alpha"
@@ -29,6 +35,11 @@ var _restore_readiness := &"ordinary"
 var reserved_position := Vector3.ZERO
 var _aim_pitch_degrees := 0.0
 var _upright_correction_count := 0
+var _route_reservation: Dictionary = {}
+var _last_pre_shot_authorization: Dictionary = {}
+var _last_progress_position := Vector3.ZERO
+var _stalled_seconds := 0.0
+var _progress_watchdog_count := 0
 
 
 func _ready() -> void:
@@ -43,6 +54,14 @@ func _ready() -> void:
 	enemy_died.connect(_on_enemy_died)
 	ai_state_changed.connect(_on_ai_state_changed)
 	_apply_activation_state()
+	_last_progress_position = global_position
+	if _navigation_agent != null:
+		# Avoidance owns the complete 1.40 m center-to-center separation envelope;
+		# the CharacterBody capsule remains the authored 0.40 m collision body.
+		_navigation_agent.radius = REQUIRED_ACTOR_SEPARATION * 0.5
+		_navigation_agent.neighbor_distance = maxf(_navigation_agent.neighbor_distance, 7.0)
+		_navigation_agent.max_neighbors = maxi(_navigation_agent.max_neighbors, 18)
+		_navigation_agent.time_horizon_agents = maxf(_navigation_agent.time_horizon_agents, 1.4)
 
 
 func _physics_process(delta: float) -> void:
@@ -57,6 +76,7 @@ func _physics_process(delta: float) -> void:
 		if _cleanup_remaining <= 0.0 and _presentation_actor != null and not is_alive():
 			_presentation_actor.visible = false
 			cleanup_hidden = true
+	_update_progress_watchdog(delta)
 
 
 func _enforce_upright_navigation_root() -> void:
@@ -122,6 +142,8 @@ func set_mission_active(active: bool, sequence := 0) -> void:
 		activation_sequence = sequence
 		_ensure_presentation()
 		acquire_candidate_if_visible(_mission_target)
+	else:
+		_release_route_reservation()
 	_apply_activation_state()
 	_commit_enemy_event(&"activated" if active else &"deactivated", {
 		"activation_sequence": activation_sequence,
@@ -202,12 +224,19 @@ func authoritative_snapshot() -> Dictionary:
 		"targetless_action": combat.get("targetless_action", &"none"),
 		"targetless_watchdog_remaining": combat.get("targetless_watchdog_remaining", 0.0),
 		"navigation_velocity": combat.get("navigation_safe_velocity", Vector3.ZERO),
+		"desired_navigation_velocity": combat.get("navigation_desired_velocity", Vector3.ZERO),
+		"safe_navigation_velocity": combat.get("navigation_safe_velocity", Vector3.ZERO),
+		"safe_velocity_ready": combat.get("navigation_safe_velocity_ready", false),
+		"reservation": _route_reservation.duplicate(true),
+		"stalled_seconds": _stalled_seconds,
+		"progress_watchdog_count": _progress_watchdog_count,
 		"grounded_occupancy": is_on_floor(),
 		"avoidance_enabled": _navigation_agent != null and _navigation_agent.avoidance_enabled,
 		"ammo": combat.get("rounds_remaining", 0),
 		"magazine_size": combat.get("magazine_size", 0),
 		"shot_event_id": String((combat.get("last_attack", {}) as Dictionary).get("shot_id", "")),
 		"occlusion": combat.get("fire_block_reason", &"unknown"),
+		"pre_shot_authorization": _last_pre_shot_authorization.duplicate(true),
 		"shot_feedback": _shot_feedback.snapshot(),
 		"nearest_neighbor_distance": combat.get("nearest_enemy_distance", -1.0),
 		"health": combat.get("health", {}),
@@ -257,6 +286,7 @@ func begin_checkpoint_restore(epoch: int) -> void:
 		_collision_shape.set_deferred("disabled", true)
 	if _navigation_agent != null:
 		_navigation_agent.avoidance_enabled = false
+	_release_route_reservation()
 
 
 func apply_checkpoint_snapshot(saved: Dictionary, epoch: int) -> bool:
@@ -371,7 +401,223 @@ func _on_reload_finished(combat: Dictionary) -> void:
 
 func _on_enemy_died(event: Dictionary) -> void:
 	_cleanup_remaining = 4.0
+	_release_route_reservation()
 	_commit_enemy_event(&"died", event)
+
+
+func _submit_navigation_velocity(desired_velocity: Vector3) -> void:
+	_cleanup_route_reservations()
+	_navigation_desired_velocity = Vector3(desired_velocity.x, 0.0, desired_velocity.z)
+	var admitted_velocity := _separation_safe_velocity(desired_velocity)
+	_reserve_route_window(admitted_velocity)
+	super._submit_navigation_velocity(admitted_velocity)
+	# The parent consumes the last NavigationServer receipt. Apply the same
+	# admission rule to that receipt before CharacterBody3D moves this frame.
+	var admitted_safe := _separation_safe_velocity(Vector3(velocity.x, 0.0, velocity.z))
+	velocity.x = admitted_safe.x
+	velocity.z = admitted_safe.z
+
+
+func _on_navigation_velocity_computed(safe_velocity: Vector3) -> void:
+	_navigation_safe_velocity = _separation_safe_velocity(safe_velocity)
+	_navigation_safe_velocity_ready = true
+	_reserve_route_window(_navigation_safe_velocity)
+
+
+func _separation_safe_velocity(candidate: Vector3) -> Vector3:
+	var admitted := Vector3(candidate.x, 0.0, candidate.z)
+	var peers: Array[Node] = get_tree().get_nodes_in_group(&"fusepoint_enemy")
+	peers.sort_custom(func(a: Node, b: Node) -> bool: return String(a.get("stable_id")) < String(b.get("stable_id")))
+	for peer_node: Node in peers:
+		if peer_node == self or not peer_node is FusepointEnemyAgent:
+			continue
+		var peer := peer_node as FusepointEnemyAgent
+		if not peer.mission_active or not peer.is_alive():
+			continue
+		var offset := global_position - peer.global_position
+		offset.y = 0.0
+		var distance := offset.length()
+		var away := offset.normalized() if distance > 0.001 else _deterministic_separation_axis(peer)
+		var peer_velocity := Vector3(peer.velocity.x, 0.0, peer.velocity.z)
+		var peer_reservation: Dictionary = _route_reservations.get(peer.stable_id, {})
+		var peer_predicted := peer_reservation.get("position", peer.global_position + peer_velocity * ROUTE_PREDICTION_SECONDS) as Vector3
+		var predicted_offset := global_position + admitted * ROUTE_PREDICTION_SECONDS - peer_predicted
+		var predicted_distance := predicted_offset.length()
+		if distance >= REQUIRED_ACTOR_SEPARATION and predicted_distance >= REQUIRED_ACTOR_SEPARATION:
+			continue
+		# Remove only the inward component, then add the minimum bounded recovery
+		# speed needed to reopen an already-collapsed envelope. This is ordinary
+		# velocity admission; no actor transform is ever nudged or teleported.
+		var inward_speed := admitted.dot(away)
+		if inward_speed < 0.0:
+			admitted -= away * inward_speed
+		if distance < REQUIRED_ACTOR_SEPARATION:
+			var recovery_speed := minf(move_speed, (REQUIRED_ACTOR_SEPARATION - distance) / ROUTE_PREDICTION_SECONDS)
+			admitted += away * recovery_speed
+	admitted.y = 0.0
+	return admitted.limit_length(move_speed)
+
+
+func _deterministic_separation_axis(peer: FusepointEnemyAgent) -> Vector3:
+	var sign_value := -1.0 if String(stable_id) < String(peer.stable_id) else 1.0
+	var angle := float((roster_index * 37 + peer.roster_index * 17) % 360)
+	return Vector3(cos(deg_to_rad(angle)) * sign_value, 0.0, sin(deg_to_rad(angle)) * sign_value).normalized()
+
+
+func _reserve_route_window(admitted_velocity: Vector3) -> void:
+	var physics_hz := float(Engine.physics_ticks_per_second)
+	var expiry_frame := Engine.get_physics_frames() + maxi(1, int(ceil(ROUTE_RESERVATION_SECONDS * physics_hz)))
+	var predicted_position := global_position + admitted_velocity * ROUTE_PREDICTION_SECONDS
+	_route_reservation = {
+		"key": "%s:%s" % [String(region_id), String(route_slot)],
+		"actor_id": stable_id,
+		"slot": route_slot,
+		"position": predicted_position,
+		"desired_velocity": _navigation_desired_velocity,
+		"admitted_velocity": admitted_velocity,
+		"issued_frame": Engine.get_physics_frames(),
+		"expires_frame": expiry_frame,
+		"state": &"active",
+	}
+	_route_reservations[stable_id] = {"actor": self, "expires_frame": expiry_frame, "position": predicted_position}
+
+
+func _release_route_reservation() -> void:
+	_route_reservations.erase(stable_id)
+	if not _route_reservation.is_empty():
+		_route_reservation["state"] = &"released"
+		_route_reservation["released_frame"] = Engine.get_physics_frames()
+
+
+func _cleanup_route_reservations() -> void:
+	var now_frame := Engine.get_physics_frames()
+	for actor_id: Variant in _route_reservations.keys():
+		var record: Dictionary = _route_reservations.get(actor_id, {})
+		var actor := record.get("actor") as Node
+		if actor == null or not is_instance_valid(actor) or int(record.get("expires_frame", -1)) < now_frame:
+			_route_reservations.erase(actor_id)
+
+
+func _update_progress_watchdog(delta: float) -> void:
+	var horizontal_progress := Vector2(global_position.x - _last_progress_position.x, global_position.z - _last_progress_position.z).length()
+	var movement_requested := Vector2(_navigation_desired_velocity.x, _navigation_desired_velocity.z).length() > 0.15
+	var legal_hold := ai_state in [AIState.AIM, AIState.FIRE, AIState.RELOAD, AIState.HURT, AIState.IN_COVER, AIState.DEAD]
+	if movement_requested and not legal_hold and horizontal_progress < 0.015:
+		_stalled_seconds += delta
+	else:
+		_stalled_seconds = 0.0
+	if _stalled_seconds >= STALL_LIMIT_SECONDS:
+		_progress_watchdog_count += 1
+		_stalled_seconds = 0.0
+		if target != null:
+			_force_reposition = true
+			_last_reposition_reason = &"route_progress_watchdog"
+		else:
+			_targetless_watchdog_remaining = 0.0
+	_last_progress_position = global_position
+
+
+func _fire_block_reason() -> String:
+	var parent_reason := super._fire_block_reason()
+	if parent_reason != "ready":
+		return parent_reason
+	var authorization := _pre_shot_authorization()
+	return "ready" if authorization.get("accepted", false) == true else String(authorization.get("reason", &"pre_shot_clearance_blocked"))
+
+
+func _perform_attack() -> Dictionary:
+	var authorization := _pre_shot_authorization()
+	_last_pre_shot_authorization = authorization
+	if authorization.get("accepted", false) != true:
+		_attack_remaining = minf(maxf(attack_interval * 0.25, 0.08), 0.3)
+		return {
+			"accepted": false,
+			"applied": false,
+			"hit": false,
+			"reason": authorization.get("reason", &"pre_shot_clearance_blocked"),
+			"authorization": authorization,
+			"ammo_before": rounds_remaining,
+			"ammo_after": rounds_remaining,
+			"ammo_commit": 0,
+		}
+	var report := super._perform_attack()
+	report["pre_shot_authorization"] = authorization
+	_last_pre_shot_authorization = authorization
+	return report
+
+
+func _pre_shot_authorization() -> Dictionary:
+	var receipt := {
+		"accepted": false,
+		"reason": &"no_target",
+		"body_clear": false,
+		"eye_clear": false,
+		"muzzle_clear": false,
+		"reciprocal_clear": false,
+		"checked_frame": Engine.get_physics_frames(),
+	}
+	if target == null or not is_instance_valid(target) or _eye == null or _muzzle == null:
+		return receipt
+	var space_state := get_world_3d().direct_space_state
+	var capsule := CapsuleShape3D.new()
+	capsule.radius = 0.37
+	capsule.height = 1.7
+	var body_query := PhysicsShapeQueryParameters3D.new()
+	body_query.shape = capsule
+	body_query.transform = Transform3D(Basis.IDENTITY, global_position + Vector3.UP * 0.92)
+	body_query.collision_mask = sight_collision_mask
+	body_query.exclude = [get_rid(), target.get_rid()] if target is CollisionObject3D else [get_rid()]
+	body_query.collide_with_areas = false
+	body_query.collide_with_bodies = true
+	var static_blocker_count := 0
+	for hit: Dictionary in space_state.intersect_shape(body_query, 12):
+		if hit.get("collider") is StaticBody3D:
+			static_blocker_count += 1
+	var endpoint := _target_aim_position(target)
+	var eye_clear := _ray_reaches_target(_eye.global_position, endpoint)
+	var muzzle_clear := _ray_reaches_target(_muzzle.global_position, endpoint)
+	var reciprocal_clear := _reverse_ray_reaches_self(endpoint, _eye.global_position)
+	receipt["body_clear"] = static_blocker_count == 0
+	receipt["static_blocker_count"] = static_blocker_count
+	receipt["eye_clear"] = eye_clear
+	receipt["muzzle_clear"] = muzzle_clear
+	receipt["reciprocal_clear"] = reciprocal_clear
+	receipt["accepted"] = static_blocker_count == 0 and eye_clear and muzzle_clear and reciprocal_clear
+	if static_blocker_count > 0:
+		receipt["reason"] = &"body_clearance_blocked"
+	elif not eye_clear:
+		receipt["reason"] = &"eye_occluded"
+	elif not muzzle_clear:
+		receipt["reason"] = &"muzzle_occluded"
+	elif not reciprocal_clear:
+		receipt["reason"] = &"reciprocal_occlusion_blocked"
+	else:
+		receipt["reason"] = &"authorized"
+	return receipt
+
+
+func _ray_reaches_target(origin: Vector3, endpoint: Vector3) -> bool:
+	var query := PhysicsRayQueryParameters3D.create(origin, endpoint, sight_collision_mask, [get_rid()])
+	query.collide_with_areas = false
+	query.collide_with_bodies = true
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	return not hit.is_empty() and _belongs_to_target(hit.get("collider") as Node)
+
+
+func _reverse_ray_reaches_self(origin: Vector3, endpoint: Vector3) -> bool:
+	var excluded: Array[RID] = []
+	if target is CollisionObject3D:
+		excluded.append((target as CollisionObject3D).get_rid())
+	var query := PhysicsRayQueryParameters3D.create(origin, endpoint, sight_collision_mask, excluded)
+	query.collide_with_areas = false
+	query.collide_with_bodies = true
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	var collider := hit.get("collider") as Node
+	while collider != null:
+		if collider == self:
+			return true
+		collider = collider.get_parent()
+	return false
 
 
 func _on_ai_state_changed(previous: StringName, current: StringName, _combat: Dictionary) -> void:

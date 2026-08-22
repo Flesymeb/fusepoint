@@ -34,13 +34,15 @@ max_health = 100.0
 team = &"enemy"
 
 [node name="NavigationAgent3D" type="NavigationAgent3D" parent="."]
-radius = 0.4
+radius = 0.7
 height = 1.8
 path_desired_distance = 0.45
 target_desired_distance = 7.0
 avoidance_enabled = true
-neighbor_distance = 5.0
-max_neighbors = 12
+neighbor_distance = 7.0
+max_neighbors = 18
+time_horizon_agents = 1.4
+time_horizon_obstacles = 0.8
 
 [node name="Eye" type="Node3D" parent="."]
 position = Vector3(0, 1.48, 0)

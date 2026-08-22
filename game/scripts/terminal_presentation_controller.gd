@@ -75,8 +75,11 @@ func _ready() -> void:
 	_tactical_hud = get_tree().get_first_node_in_group(&"tactical_hud")
 	victory_avatar.visible = false
 	_clear_overlay()
-	blast_audio.stream = _synth_blast(0.72, 62.0, 0.84)
-	tail_audio.stream = _synth_blast(1.65, 34.0, 0.38)
+	# No approved decoded terminal impact source is bound in this candidate.
+	# Keep the retained spatial players silent instead of creating oscillator/
+	# noise placeholders at runtime.
+	blast_audio.stream = null
+	tail_audio.stream = null
 
 
 func _process(delta: float) -> void:
@@ -205,8 +208,10 @@ func _begin_failure() -> void:
 	tail_audio.global_position = world_origin
 	blast_audio.volume_db = linear_to_db(maxf(0.01, _volume_scale()))
 	tail_audio.volume_db = linear_to_db(maxf(0.01, _volume_scale())) - 3.0
-	blast_audio.play()
-	tail_audio.play()
+	if blast_audio.stream != null:
+		blast_audio.play()
+	if tail_audio.stream != null:
+		tail_audio.play()
 	media_title.text = "BASE IMPACT — SIGNAL LOST"
 	media_copy.text = "ROCKET MAINTENANCE BAY DESTROYED\nAEGIS TELEMETRY ARCHIVE RECOVERED"
 	media_skip.text = "[ENTER / E]  SKIP AFTER IMPACT"
@@ -465,31 +470,6 @@ func _particle_scale() -> float:
 
 func _volume_scale() -> float:
 	return float(_settings().get("master_volume", 0.85))
-
-
-func _synth_blast(duration: float, frequency: float, gain: float) -> AudioStreamWAV:
-	const MIX_RATE := 22050
-	var sample_count := int(MIX_RATE * duration)
-	var bytes := PackedByteArray()
-	bytes.resize(sample_count * 2)
-	for sample_index in sample_count:
-		var t := float(sample_index) / float(MIX_RATE)
-		var progress := float(sample_index) / float(sample_count)
-		var decay := pow(1.0 - progress, 2.1)
-		var noise_seed := float(((sample_index * 1103515245 + 12345) >> 16) & 0x7fff) / 32767.0
-		var low := sin(TAU * frequency * t) * 0.72 + sin(TAU * frequency * 0.48 * t) * 0.28
-		var value := clampf((low + (noise_seed * 2.0 - 1.0) * 0.48) * decay * gain, -1.0, 1.0)
-		var pcm := int(value * 32767.0)
-		if pcm < 0:
-			pcm += 65536
-		bytes[sample_index * 2] = pcm & 0xff
-		bytes[sample_index * 2 + 1] = (pcm >> 8) & 0xff
-	var stream := AudioStreamWAV.new()
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = MIX_RATE
-	stream.stereo = false
-	stream.data = bytes
-	return stream
 
 
 func snapshot() -> Dictionary:

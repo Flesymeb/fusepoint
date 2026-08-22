@@ -214,7 +214,6 @@ func _process(_delta: float) -> void:
 			break
 		_next_shot_time += _fire_interval()
 		scheduled_shots += 1
-	_sync_movement_feedback()
 	_enforce_product_recoil_baseline_if_settled()
 	_sync_hud()
 
@@ -584,8 +583,7 @@ func _cancel_action(next_state: StringName) -> void:
 	_reload_kind = &"none"
 	if _inspect_tween != null and _inspect_tween.is_valid():
 		_inspect_tween.kill()
-	if feedback.has_method(&"stop_feedback"):
-		feedback.call(&"stop_feedback")
+	_stop_weapon_feedback_only()
 	_cancel_product_recoil()
 	viewmodel.rotation_degrees = Vector3.ZERO
 	_request_viewmodel_aim(false, true)
@@ -633,16 +631,13 @@ func _configure_component_feedback_boundary() -> void:
 	# The registered component keeps ownership of clips, audio and muzzle flash.
 	# Its exported recoil channel is disabled through public properties so the
 	# product adapter is the sole writer of the model mount transform. Product
-	# bus routing is likewise applied at this wrapper boundary without changing
-	# the materialized component scene or taking over playback ownership.
+	# Locomotion playback and bus routing belong exclusively to PrototypePlayer.
+	# This boundary configures weapon recoil only and never touches the retained
+	# WalkAudio/RunAudio players.
 	feedback.set("fire_recoil_back_distance", 0.0)
 	feedback.set("fire_recoil_pitch_degrees", 0.0)
 	feedback.set("fire_recoil_yaw_degrees", 0.0)
 	feedback.set("fire_recoil_roll_degrees", 0.0)
-	for player_name: StringName in [&"WalkAudio", &"RunAudio"]:
-		var player := feedback.get_node_or_null(NodePath(player_name)) as AudioStreamPlayer
-		if player != null:
-			player.bus = &"Foley"
 
 
 func set_run_epoch(epoch: int, reset_transients := true) -> bool:
@@ -825,19 +820,21 @@ func equip_loadout(weapon_id: StringName) -> bool:
 	return true
 
 
-func _sync_movement_feedback() -> void:
-	if _action_state in [&"reload", &"switch", &"inspect", &"fire"]:
-		return
-	var player := get_tree().get_first_node_in_group(&"player") as CharacterBody3D
-	if player == null:
-		return
-	var speed := Vector2(player.velocity.x, player.velocity.z).length()
-	if speed > 5.5:
-		feedback.call(&"start_run")
-	elif speed > 0.3:
-		feedback.call(&"start_walk")
-	else:
-		feedback.call(&"stop_movement")
+
+func _stop_weapon_feedback_only() -> void:
+	# Do not call the component's broad stop_feedback(), because that method also
+	# stops WalkAudio/RunAudio and would create a second locomotion control path.
+	if feedback.has_method(&"end_fire"):
+		feedback.call(&"end_fire")
+	if feedback.has_method(&"_stop_reload_mount"):
+		feedback.call(&"_stop_reload_mount")
+	var muzzle_flash := feedback.get_node_or_null("MuzzleFlash") as Node3D
+	if muzzle_flash != null:
+		muzzle_flash.visible = false
+	for player_name: StringName in [&"FireAudio", &"AutoFireAudio", &"ReloadAudio", &"SwitchAudio", &"AimAudio", &"InspectAudio"]:
+		var player := feedback.get_node_or_null(NodePath(player_name)) as AudioStreamPlayer
+		if player != null:
+			player.stop()
 
 
 func _sync_hud() -> void:

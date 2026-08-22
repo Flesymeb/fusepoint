@@ -43,6 +43,7 @@ signal player_died(event: Dictionary)
 @onready var collision_shape: CollisionShape3D = $CollisionShape3D
 @onready var head: Node3D = $Head
 @onready var camera: Camera3D = $Head/Camera3D
+@onready var _foley_feedback: Node = $Head/Camera3D/FPSViewmodelSwitcher/FPSViewmodelFeedback
 
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
 var _spawn_transform: Transform3D
@@ -85,6 +86,10 @@ var _unstuck_cooldown := 0.0
 var _last_stuck_diagnostic: Dictionary = {}
 var _auto_step_count := 0
 var _last_step_height := 0.0
+var _foley_state := &"idle"
+var _foley_locomotion := &"idle"
+var _foley_sync_serial := 0
+var _foley_last_receipt: Dictionary = {}
 
 
 func _ready() -> void:
@@ -102,6 +107,7 @@ func _ready() -> void:
 	floor_stop_on_slope = true
 	safe_margin = 0.03
 	max_slides = 8
+	_configure_authoritative_foley_owner()
 	_capture_mouse()
 	_begin_look_observation_generation(&"initial_ready")
 
@@ -131,6 +137,7 @@ func _input(event: InputEvent) -> void:
 func _physics_process(delta: float) -> void:
 	if not gameplay_input_enabled:
 		velocity = Vector3.ZERO
+		_sync_grounded_foley(&"gameplay_disabled")
 		return
 	_apply_gamepad_look(delta)
 	if Input.is_action_just_pressed("restart"):
@@ -174,6 +181,7 @@ func _physics_process(delta: float) -> void:
 		move_and_slide()
 	_update_ground_recovery(delta, desired_direction)
 	_update_authoritative_state(was_on_floor, input_vector, sprinting, delta)
+	_sync_grounded_foley(&"physics_state")
 
 
 func _apply_gamepad_look(delta: float) -> void:
@@ -443,6 +451,66 @@ func _update_authoritative_state(was_on_floor: bool, input_vector: Vector2, spri
 		_locomotion_mode = "walk"
 
 
+func _sync_grounded_foley(source: StringName) -> void:
+	if _foley_feedback == null:
+		return
+	var grounded := is_on_floor() and gameplay_input_enabled and not terminal_locked and not combat_death_locked
+	var horizontal_speed := Vector2(velocity.x, velocity.z).length()
+	var requested := &"idle"
+	if grounded and _landing_time_left <= 0.0 and horizontal_speed > 0.24:
+		requested = &"run" if _locomotion_mode == "sprint" else &"crouch" if _stance == "crouched" else &"walk"
+	var playback_state := &"run" if requested == &"run" else &"walk" if requested in [&"walk", &"crouch"] else &"idle"
+	var walk := _foley_feedback.get_node_or_null("WalkAudio") as AudioStreamPlayer
+	var run := _foley_feedback.get_node_or_null("RunAudio") as AudioStreamPlayer
+	if walk != null:
+		walk.pitch_scale = 0.82 if requested == &"crouch" else 0.96
+	if run != null:
+		run.pitch_scale = 1.04
+	# Fail closed every airborne/idle physics frame. The retained component may
+	# resync its clip state during the same render interval; authoritative player
+	# contact still owns whether either retained playback node may remain active.
+	if playback_state == &"idle":
+		_foley_feedback.call(&"stop_movement")
+		if walk != null and walk.playing:
+			walk.stop()
+		if run != null and run.playing:
+			run.stop()
+	elif playback_state == &"run":
+		_foley_feedback.call(&"start_run")
+	elif playback_state == &"walk":
+		_foley_feedback.call(&"start_walk")
+	if requested != _foley_locomotion or playback_state != _foley_state:
+		_foley_locomotion = requested
+		_foley_state = playback_state
+		_foley_sync_serial += 1
+		_foley_last_receipt = {
+			"serial": _foley_sync_serial,
+			"source": source,
+			"grounded": grounded,
+			"locomotion": requested,
+			"playback_state": playback_state,
+			"stance": _stance,
+			"horizontal_speed": horizontal_speed,
+			"jump_phase": _jump_phase,
+			"walk_playing": walk.playing if walk != null else false,
+			"run_playing": run.playing if run != null else false,
+			"frame": Engine.get_physics_frames(),
+		}
+
+
+func _configure_authoritative_foley_owner() -> void:
+	# PrototypePlayer is the sole product driver for retained locomotion audio.
+	# WeaponController may use the same feedback component for weapon-only VFX
+	# and audio, but never starts, stops, or configures WalkAudio/RunAudio.
+	if _foley_feedback == null:
+		return
+	for player_name: StringName in [&"WalkAudio", &"RunAudio"]:
+		var player := _foley_feedback.get_node_or_null(NodePath(player_name)) as AudioStreamPlayer
+		if player != null:
+			player.bus = &"Foley"
+			player.stop()
+
+
 func _capture_mouse() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_mouse_captured = true
@@ -477,6 +545,10 @@ func _reset_to_spawn(source: StringName = &"mission_setup") -> void:
 	_jump_phase = "grounded"
 	_locomotion_mode = "idle"
 	_current_target_speed = 0.0
+	_foley_locomotion = &"idle"
+	_foley_state = &"idle"
+	if _foley_feedback != null:
+		_foley_feedback.call(&"stop_movement")
 	_stand_clearance = true
 	health = max_health
 	_damage_commits.clear()
@@ -541,6 +613,10 @@ func reset_transient_state_for_restore() -> void:
 	velocity = Vector3.ZERO
 	_last_stuck_diagnostic.clear()
 	_blocked_seconds = 0.0
+	_foley_locomotion = &"idle"
+	_foley_state = &"idle"
+	if _foley_feedback != null:
+		_foley_feedback.call(&"stop_movement")
 
 
 func apply_accessibility_settings(values: Dictionary) -> void:
@@ -561,6 +637,10 @@ func _restore_movement_state(target_transform: Transform3D, target_health: float
 	_jump_phase = "grounded"
 	_locomotion_mode = "idle"
 	_current_target_speed = 0.0
+	_foley_locomotion = &"idle"
+	_foley_state = &"idle"
+	if _foley_feedback != null:
+		_foley_feedback.call(&"stop_movement")
 	_stand_clearance = true
 	_set_stance(false)
 	head.position.y = standing_eye_height
@@ -690,6 +770,7 @@ func set_gameplay_input_enabled(enabled: bool) -> void:
 	if gameplay_input_enabled:
 		_capture_mouse()
 	else:
+		_sync_grounded_foley(&"gameplay_disabled")
 		_release_mouse()
 
 
@@ -704,6 +785,7 @@ func enter_terminal_lock(event_id: String) -> bool:
 	terminal_event_id = event_id
 	gameplay_input_enabled = false
 	velocity = Vector3.ZERO
+	_sync_grounded_foley(&"terminal_lock")
 	collision_layer = 0
 	collision_mask = 0
 	collision_shape.set_deferred(&"disabled", true)
@@ -715,6 +797,7 @@ func enter_combat_death_lock() -> void:
 	combat_death_locked = true
 	gameplay_input_enabled = false
 	velocity = Vector3.ZERO
+	_sync_grounded_foley(&"combat_death_lock")
 	collision_layer = 0
 	collision_mask = 0
 	if collision_shape != null:
@@ -767,6 +850,10 @@ func _mcp_state() -> Dictionary:
 		"max_step_height": max_step_height,
 		"auto_step_count": _auto_step_count,
 		"last_step_height": _last_step_height,
+		"foley_state": _foley_state,
+		"foley_locomotion": _foley_locomotion,
+		"foley_sync_serial": _foley_sync_serial,
+		"foley_last_receipt": _foley_last_receipt,
 		"blocked_seconds": _blocked_seconds,
 		"last_stuck_diagnostic": _last_stuck_diagnostic,
 		"slide_contacts": _slide_contact_snapshot(),

@@ -583,7 +583,10 @@ func _apply_responsive_layout() -> void:
 	_set_rect(^"Root/Pages/LoadingPage/Title", Rect2(Vector2(safe.position.x, safe.end.y - 198.0), Vector2(840.0, 60.0)))
 	_set_rect(^"Root/Pages/LoadingPage/Detail", Rect2(Vector2(safe.position.x, safe.end.y - 130.0), Vector2(930.0, 64.0)))
 	_set_rect(^"Root/Pages/LoadingPage/Progress", Rect2(Vector2(safe.position.x, safe.end.y - 34.0), Vector2(safe.size.x * 0.82, 8.0)))
-	_set_rect(^"Root/Pages/BriefingPage/OpeningVideo", Rect2(Vector2(safe.position.x, safe.position.y + 62.0), Vector2(safe.size.x, safe.size.y - 210.0)))
+	# The opening media is the briefing surface, not a card inside it. Keep copy
+	# and controls on the safe-area grid while the retained VideoStreamPlayer
+	# fills the complete viewport behind those native caption layers.
+	_set_rect(^"Root/Pages/BriefingPage/OpeningVideo", Rect2(Vector2.ZERO, viewport))
 	_set_rect(^"Root/Pages/BriefingPage/Title", Rect2(safe.position, Vector2(safe.size.x, 58.0)))
 	_set_rect(^"Root/Pages/BriefingPage/Copy", Rect2(Vector2(safe.position.x + 12.0, safe.end.y - 194.0), Vector2(safe.size.x - 24.0, 86.0 if expanded else 98.0)))
 	_set_rect(^"Root/Pages/BriefingPage/Actions", Rect2(Vector2(safe.position.x, safe.end.y - 92.0), Vector2(660.0, 64.0)))

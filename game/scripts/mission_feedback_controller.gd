@@ -327,41 +327,21 @@ func _play_audio(family: StringName, priority: int, event_id: String) -> void:
 
 
 func _build_audio_mix() -> void:
+	# Mission/UI presentation has no approved decoded source in this candidate.
+	# Fail silent instead of manufacturing oscillator/noise placeholders.  The
+	# retained viewmodel remains the sole player-Foley owner; this controller
+	# only provisions the decoded spatial step used by enemy actors.
 	var profiles := {
-		&"capture": [0.24, 410.0, 0.25, 0.10, &"Mission", false],
-		&"route": [0.30, 640.0, 0.23, 0.04, &"Mission", false],
-		&"defusal": [0.38, 286.0, 0.24, 0.13, &"Mission", false],
-		&"warning": [0.42, 168.0, 0.31, 0.11, &"Mission", false],
-		&"terminal": [0.62, 782.0, 0.27, 0.07, &"Mission", false],
-		&"dialogue": [1.35, 228.0, 0.18, 0.12, &"Dialogue", false],
-		&"ambience": [2.2, 74.0, 0.08, 0.20, &"Ambience", true],
-		&"music": [2.8, 94.0, 0.10, 0.015, &"Music", true],
-		&"player_walk": [0.16, 108.0, 0.12, 0.48, &"Foley", false],
-		&"player_sprint": [0.19, 86.0, 0.15, 0.58, &"Foley", false],
-		&"player_crouch": [0.13, 142.0, 0.08, 0.30, &"Foley", false],
-		&"player_land": [0.28, 72.0, 0.18, 0.62, &"Foley", false],
 		&"enemy_step": [0.18, 96.0, 0.13, 0.50, &"Foley", false],
 	}
 	for role: StringName in profiles:
 		var profile: Array = profiles[role]
 		var duration := float(profile[0])
-		var stream: AudioStream
-		if role in FOOTSTEP_ROLES:
-			stream = FOOTSTEP_RUN_STREAM if role in [&"player_sprint", &"player_land"] else FOOTSTEP_WALK_STREAM
-			if stream.get_length() > 0.0:
-				duration = stream.get_length()
-		else:
-			stream = _synth_cue(duration, float(profile[1]), float(profile[2]), float(profile[3]), profile[5] == true, role)
+		var stream: AudioStream = FOOTSTEP_WALK_STREAM
+		if stream.get_length() > 0.0:
+			duration = stream.get_length()
 		_audio_streams[role] = stream
 		_audio_durations[role] = duration
-		if role not in FOOTSTEP_ROLES:
-			var player := AudioStreamPlayer.new()
-			player.name = "%sVoice" % String(role).to_pascal_case()
-			player.stream = stream
-			player.bus = StringName(profile[4])
-			player.volume_db = -4.0 if role == &"dialogue" else -12.0 if role in [&"ambience", &"music"] else -7.0
-			add_child(player)
-			_audio_players[role] = player
 
 
 func _play_role(role: StringName, priority: int, source_id: String) -> void:
@@ -596,39 +576,6 @@ func _recent_role_playing(role: StringName) -> bool:
 		if is_instance_valid(emitter) and emitter.playing and emitter.stream == expected_stream:
 			return true
 	return false
-
-
-func _synth_cue(duration: float, frequency: float, tone_gain: float, noise_gain: float, looped := false, role := &"cue") -> AudioStreamWAV:
-	const MIX_RATE := 22050
-	var sample_count := int(MIX_RATE * duration)
-	var bytes := PackedByteArray()
-	bytes.resize(sample_count * 2)
-	for sample_index in sample_count:
-		var t := float(sample_index) / float(MIX_RATE)
-		var progress := float(sample_index) / float(sample_count)
-		var decay := 0.72 + 0.28 * sin(PI * progress) if looped else pow(1.0 - progress, 1.8)
-		var modulation := 1.0 + 0.04 * sin(TAU * (2.0 + float(String(role).length() % 5)) * t)
-		var overtone := sin(TAU * frequency * 1.5 * modulation * t) * tone_gain * 0.35
-		var tone := sin(TAU * frequency * modulation * t) * tone_gain + overtone
-		if role == &"dialogue":
-			var speech_gate := 1.0 if sin(TAU * 7.0 * t) * 0.5 + 0.5 >= 0.38 else 0.0
-			tone *= 0.25 + 0.75 * speech_gate
-		var noise_seed := float(((sample_index * 1103515245 + 12345) >> 16) & 0x7fff) / 32767.0
-		var value := clampf((tone + (noise_seed * 2.0 - 1.0) * noise_gain) * decay, -1.0, 1.0)
-		var pcm := int(value * 32767.0)
-		if pcm < 0:
-			pcm += 65536
-		bytes[sample_index * 2] = pcm & 0xff
-		bytes[sample_index * 2 + 1] = (pcm >> 8) & 0xff
-	var stream := AudioStreamWAV.new()
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = MIX_RATE
-	stream.stereo = false
-	stream.data = bytes
-	if looped:
-		stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
-		stream.loop_end = sample_count
-	return stream
 
 
 func _max_variant_share() -> float:

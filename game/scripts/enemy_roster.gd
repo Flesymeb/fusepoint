@@ -283,6 +283,7 @@ func _build_reservation_plan(nav_map: RID) -> Array[Dictionary]:
 			"nearest_reserved_distance": nearest_distance_report,
 			"required_separation": MIN_RESERVATION_SEPARATION,
 			"search_attempts": int(selection["search_attempts"]),
+			"occupancy": (selection.get("occupancy", {}) as Dictionary).duplicate(true),
 			"navigation_slot_bound": true,
 			"separation_fallback": used_separation_fallback,
 		})
@@ -297,12 +298,14 @@ func _select_distinct_navigation_slot(
 	placed_positions: Array[Vector3],
 ) -> Dictionary:
 	var search_attempts := 1
-	if _is_separated_slot(primary, placed_positions):
+	var primary_occupancy := _slot_geometry_receipt(nav_map, primary)
+	if _is_separated_slot(primary, placed_positions) and primary_occupancy.get("accepted", false) == true:
 		return {
 			"valid": true,
 			"projected": primary,
 			"nearest_neighbor_distance": -1.0 if placed_positions.is_empty() else _nearest_reserved_distance(primary, placed_positions),
 			"search_attempts": search_attempts,
+			"occupancy": primary_occupancy,
 		}
 	var best := Vector3.INF
 	var best_score := INF
@@ -316,8 +319,9 @@ func _select_distinct_navigation_slot(
 				var sample := center + Vector3(cos(angle) * radius, 0.0, sin(angle) * radius)
 				var projected := NavigationServer3D.map_get_closest_point(nav_map, sample)
 				var nearest_distance := _nearest_reserved_distance(projected, placed_positions)
+				var occupancy := _slot_geometry_receipt(nav_map, projected)
 				nearest_rejected = maxf(nearest_rejected, nearest_distance)
-				if projected.distance_to(sample) > 2.5 or nearest_distance < MIN_RESERVATION_SEPARATION:
+				if projected.distance_to(sample) > 2.5 or nearest_distance < MIN_RESERVATION_SEPARATION or occupancy.get("accepted", false) != true:
 					continue
 				var score := requested.distance_to(projected) + projected.distance_to(sample) * 0.25
 				if score < best_score:
@@ -329,12 +333,48 @@ func _select_distinct_navigation_slot(
 			"projected": best,
 			"nearest_neighbor_distance": _nearest_reserved_distance(best, placed_positions),
 			"search_attempts": search_attempts,
+			"occupancy": _slot_geometry_receipt(nav_map, best),
 		}
 	return {
 		"valid": false,
 		"projected": primary,
 		"nearest_neighbor_distance": nearest_rejected,
 		"search_attempts": search_attempts,
+		"occupancy": primary_occupancy,
+	}
+
+
+func _slot_geometry_receipt(nav_map: RID, position: Vector3) -> Dictionary:
+	var space_state := get_world_3d().direct_space_state
+	var nav_position := NavigationServer3D.map_get_closest_point(nav_map, position)
+	var floor_query := PhysicsRayQueryParameters3D.create(
+		position + Vector3.UP * 0.8,
+		position + Vector3.DOWN * 0.8,
+		1,
+	)
+	floor_query.collide_with_areas = false
+	var floor_hit := space_state.intersect_ray(floor_query)
+	var capsule := CapsuleShape3D.new()
+	capsule.radius = ACTOR_CAPSULE_RADIUS * 0.92
+	capsule.height = 1.70
+	var clearance_query := PhysicsShapeQueryParameters3D.new()
+	clearance_query.shape = capsule
+	clearance_query.transform = Transform3D(Basis.IDENTITY, position + Vector3.UP * 0.94)
+	clearance_query.collision_mask = 1
+	clearance_query.collide_with_areas = false
+	clearance_query.collide_with_bodies = true
+	var static_blocker_count := 0
+	for hit: Dictionary in space_state.intersect_shape(clearance_query, 12):
+		if hit.get("collider") is StaticBody3D:
+			static_blocker_count += 1
+	var navigation_error := nav_position.distance_to(position)
+	return {
+		"accepted": not floor_hit.is_empty() and navigation_error <= 0.35 and static_blocker_count == 0,
+		"floor_support": not floor_hit.is_empty(),
+		"navigation_support": navigation_error <= 0.35,
+		"navigation_error": navigation_error,
+		"capsule_clear": static_blocker_count == 0,
+		"static_blocker_count": static_blocker_count,
 	}
 
 
@@ -815,6 +855,10 @@ func _qualification_live_fields(snapshot: Dictionary, source_event: Dictionary) 
 		"action": snapshot.get("action", &"idle"),
 		"target_visible": snapshot.get("target_visible", false),
 		"navigation_velocity": snapshot.get("navigation_velocity", Vector3.ZERO),
+		"desired_navigation_velocity": snapshot.get("desired_navigation_velocity", Vector3.ZERO),
+		"safe_navigation_velocity": snapshot.get("safe_navigation_velocity", Vector3.ZERO),
+		"safe_velocity_ready": snapshot.get("safe_velocity_ready", false),
+		"reservation": snapshot.get("reservation", {}),
 		"nearest_neighbor_distance": snapshot.get("nearest_neighbor_distance", -1.0),
 		"grounded_occupancy": snapshot.get("grounded_occupancy", false),
 		"avoidance_enabled": snapshot.get("avoidance_enabled", false),
@@ -822,6 +866,9 @@ func _qualification_live_fields(snapshot: Dictionary, source_event: Dictionary) 
 		"ammo": snapshot.get("ammo", 0),
 		"health": health_state.get("current", 0.0),
 		"shot_event_id": snapshot.get("shot_event_id", ""),
+		"pre_shot_authorization": snapshot.get("pre_shot_authorization", {}),
+		"stalled_seconds": snapshot.get("stalled_seconds", 0.0),
+		"progress_watchdog_count": snapshot.get("progress_watchdog_count", 0),
 		"activation_sequence": snapshot.get("activation_sequence", 0),
 		"restore_epoch": snapshot.get("restore_epoch", 0),
 		"source_event_id": source_event.get("event_id", ""),

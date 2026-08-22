@@ -23,6 +23,9 @@ const SOURCE_SUN_FLARE_SCRIPT := "res://scripts/source_sun_flare.gd"
 @onready var sun: DirectionalLight3D = $Sun
 @onready var cloud_layer: Node3D = $AtmospherePresentation/DayCloudLayer
 @onready var sun_flare: Control = $AtmospherePresentation/SunFlareCanvas/DirectionalSunFlare
+@onready var alpha_route_light: OmniLight3D = $AtmospherePresentation/AlphaRouteLight
+@onready var bravo_route_light: OmniLight3D = $AtmospherePresentation/BravoRouteLight
+@onready var mission_controller: Node = get_node("../MissionController")
 @onready var deployment_anchor: Marker3D = $ProductAnchors/Deployment
 @onready var alpha_anchor: Marker3D = $ProductAnchors/Alpha
 @onready var bravo_anchor: Marker3D = $ProductAnchors/Bravo
@@ -46,12 +49,16 @@ var collision_source_triangles := {"selected": 0, "excluded": 0}
 var selected_collision_sources: Array[String] = []
 var excluded_collision_sources: Array[String] = []
 var deployment_anchor_selection: Dictionary = {}
+var last_industrial_cue_receipt: Dictionary = {}
+var industrial_cue_response_count := 0
 
 
 func _ready() -> void:
 	navigation_region.bake_finished.connect(_on_navigation_bake_finished)
+	mission_controller.connect(&"mission_event_committed", _on_mission_event_committed)
 	await get_tree().process_frame
 	_bind_source_atmosphere_layers()
+	_sync_industrial_route_lights()
 	_configure_map_materials()
 	_measure_map()
 	_build_map_collision()
@@ -70,6 +77,34 @@ func _process(_delta: float) -> void:
 func _bind_source_atmosphere_layers() -> void:
 	sun_flare.set("sun", sun)
 	sun_flare.set("camera", get_viewport().get_camera_3d())
+
+
+func _on_mission_event_committed(event: Dictionary) -> void:
+	var kind := StringName(event.get("kind", &""))
+	if kind not in [&"capture_started", &"capture_progress", &"capture_completed", &"route_unlocked", &"checkpoint_committed", &"bomb_stage_started"]:
+		return
+	_sync_industrial_route_lights()
+	industrial_cue_response_count += 1
+	last_industrial_cue_receipt = {
+		"source_event_id": event.get("event_id", ""),
+		"source_kind": kind,
+		"authority_path": mission_controller.get_path(),
+		"received_frame": Engine.get_process_frames(),
+		"presented_frame": Engine.get_process_frames(),
+		"frame_latency": 0,
+		"alpha_energy": alpha_route_light.light_energy,
+		"bravo_energy": bravo_route_light.light_energy,
+		"presentation_only": true,
+	}
+
+
+func _sync_industrial_route_lights() -> void:
+	var alpha_state := mission_controller.call(&"objective_state_for", &"alpha") as Dictionary
+	var bravo_state := mission_controller.call(&"objective_state_for", &"bravo") as Dictionary
+	alpha_route_light.light_color = Color(0.08, 0.82, 0.95) if alpha_state.get("legal", false) == true else Color(1.0, 0.16, 0.05)
+	alpha_route_light.light_energy = 1.05 if StringName(alpha_state.get("state", &"")) == &"capturing_aegis" else 0.5 if alpha_state.get("legal", false) == true else 0.18
+	bravo_route_light.light_color = Color(0.08, 0.82, 0.95) if bravo_state.get("legal", false) == true else Color(1.0, 0.16, 0.05)
+	bravo_route_light.light_energy = 1.05 if StringName(bravo_state.get("state", &"")) == &"capturing_aegis" else 0.5 if bravo_state.get("legal", false) == true else 0.18
 
 
 func _configure_map_materials() -> void:
@@ -616,6 +651,15 @@ func _mcp_state() -> Dictionary:
 		"route_corner_chains": route_corner_chains,
 		"route_clearance": route_clearance,
 		"deployment_anchor_selection": deployment_anchor_selection,
+		"industrial_cue": {
+			"family_id": &"objective_bound_route_lights",
+			"authority_path": mission_controller.get_path(),
+			"response_count": industrial_cue_response_count,
+			"last_receipt": last_industrial_cue_receipt,
+			"alpha_energy": alpha_route_light.light_energy,
+			"bravo_energy": bravo_route_light.light_energy,
+			"presentation_only": true,
+		},
 	}
 
 
@@ -642,8 +686,13 @@ func _atmosphere_snapshot() -> Dictionary:
 	return {
 		"daylight_exposure": {
 			"background_energy_multiplier": environment.background_energy_multiplier,
+			"ambient_light_energy": environment.ambient_light_energy,
+			"ambient_light_sky_contribution": environment.ambient_light_sky_contribution,
 			"tonemap_exposure": environment.tonemap_exposure,
-			"accepted_values_unchanged": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.tonemap_exposure, 1.0),
+			"tonemap_mode": environment.tonemap_mode,
+			"direct_sun_energy": sun.light_energy,
+			"profile_id": &"loop11_coherent_daylight",
+			"accepted_values_unchanged": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.ambient_light_energy, 0.75) and is_equal_approx(environment.ambient_light_sky_contribution, 0.7) and environment.tonemap_mode == Environment.TONE_MAPPER_FILMIC and is_equal_approx(sun.light_energy, 1.35),
 		},
 		"source_sky": {"enabled": environment.sky != null, "background_mode": environment.background_mode, "profile": &"3d_fps_map_source"},
 		"source_shadows": {"enabled": sun.shadow_enabled, "max_distance": sun.directional_shadow_max_distance, "energy": sun.light_energy, "profile": &"3d_fps_map_source"},
