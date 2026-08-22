@@ -21,6 +21,7 @@ var authoritative_world_origin := Vector3.ZERO
 var presentation_origin := Vector3.ZERO
 var started_usec := 0
 var started_frame := 0
+var _layer_started: Dictionary = {}
 
 
 func _ready() -> void:
@@ -44,31 +45,51 @@ func play(event_id: String, authority_origin: Vector3, visible_origin: Vector3, 
 	var density := clampf(particle_scale, 0.5, 1.0)
 	for particles: GPUParticles3D in [fire, sparks, debris, dust]:
 		particles.amount_ratio = density
-		particles.restart()
-		particles.emitting = true
+		particles.emitting = false
+	_start_particle_layer(fire, &"fire_sparks_expansion")
+	_start_particle_layer(sparks, &"fire_sparks_expansion")
+	var staged_particles := create_tween()
+	staged_particles.tween_interval(0.28)
+	staged_particles.tween_callback(_start_particle_layer.bind(debris, &"debris_pressure_wave"))
+	staged_particles.tween_interval(0.24)
+	staged_particles.tween_callback(_start_particle_layer.bind(dust, &"dust_camera_down"))
 
 	flash_core.scale = Vector3.ONE * 0.04
 	flash_core.visible = true
 	flash_core.transparency = 0.0
 	var flash_tween := create_tween().set_parallel(true)
-	flash_tween.tween_property(flash_core, "scale", Vector3.ONE * 1.2, 0.16).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-	flash_tween.tween_property(flash_core, "transparency", 1.0, 0.18).set_delay(0.08)
+	flash_tween.tween_property(flash_core, "scale", Vector3.ONE * 0.8, 0.08).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	flash_tween.tween_property(flash_core, "transparency", 1.0, 0.1).set_delay(0.02)
 	flash_tween.chain().tween_callback(flash_core.set_visible.bind(false)).set_delay(0.02)
 
 	pressure_wave.scale = Vector3.ONE * 0.04
 	pressure_wave.visible = true
 	pressure_wave.transparency = 0.0
 	var wave_tween := create_tween().set_parallel(true)
-	wave_tween.tween_property(pressure_wave, "scale", Vector3(4.8, 1.0, 4.8), 0.92).set_delay(0.16).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	wave_tween.tween_property(pressure_wave, "scale", Vector3(8.0, 1.0, 8.0), 0.82).set_delay(0.16).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	wave_tween.tween_property(pressure_wave, "transparency", 1.0, 0.86).set_delay(0.28)
 	var wave_hide := create_tween()
 	wave_hide.tween_interval(1.08)
 	wave_hide.tween_callback(pressure_wave.set_visible.bind(false))
 
-	local_light.light_energy = 8.0
+	local_light.light_energy = 16.0
 	var light_tween := create_tween()
 	light_tween.tween_property(local_light, "light_energy", 2.0, 0.22)
 	light_tween.tween_property(local_light, "light_energy", 0.0, 1.25)
+
+
+func _start_particle_layer(particles: GPUParticles3D, layer_phase: StringName) -> void:
+	if not is_instance_valid(particles) or not is_inside_tree():
+		return
+	particles.set_meta(&"spawned_phase", layer_phase)
+	particles.set_meta(&"spawned_usec", Time.get_ticks_usec())
+	particles.restart()
+	particles.emitting = true
+	_layer_started[particles.name] = {
+		"phase": layer_phase,
+		"usec": Time.get_ticks_usec(),
+		"frame": Engine.get_process_frames(),
+	}
 
 
 func layer_receipts() -> Array[Dictionary]:
@@ -84,6 +105,7 @@ func layer_receipts() -> Array[Dictionary]:
 			"presentation_origin": presentation_origin,
 			"spawned_usec": started_usec,
 			"spawned_frame": started_frame,
+			"layer_started": _layer_started.get(node.name, {}),
 			"visible": node.visible and visible,
 			"production_authored_scene": true,
 			"cleanup_pending": is_inside_tree(),

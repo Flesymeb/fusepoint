@@ -159,20 +159,19 @@ func show_death(event: Dictionary) -> void:
 	if _restore_tween != null and _restore_tween.is_valid():
 		_restore_tween.kill()
 	_restore_tween = null
-	pain_overlay.modulate = Color(1.0, 1.0, 1.0, death_vignette_alpha if death_kind == &"bomb_terminal" else minf(0.56, death_vignette_alpha + 0.16))
+	# The terminal presenter supplies the white flash, bounded red edge, and one
+	# authoritative death-camera fall. Keep this observer's bomb branch subtle so
+	# two presentation listeners cannot stack into a red mask or fight the camera.
+	pain_overlay.modulate = Color(1.0, 1.0, 1.0, 0.08 if death_kind == &"bomb_terminal" else minf(0.56, death_vignette_alpha + 0.16))
 	damage_arc.modulate = Color(1.0, 1.0, 1.0, 0.0)
 	death_wash.modulate = Color(1.0, 1.0, 1.0, 0.0)
 	death_message.modulate = Color(1.0, 1.0, 1.0, 0.0)
 	_set_recovery_saturation(1.0 if death_kind == &"bomb_terminal" else 0.05)
 	_death_tween = create_tween().set_parallel(true)
 	_death_tween.set_pause_mode(Tween.TWEEN_PAUSE_BOUND)
-	_death_tween.tween_property(death_wash, "modulate", Color(1.0, 1.0, 1.0, death_wash_alpha), death_fade_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_death_tween.tween_property(death_wash, "modulate", Color(1.0, 1.0, 1.0, 0.02 if death_kind == &"bomb_terminal" else death_wash_alpha), death_fade_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	if death_kind != &"bomb_terminal":
 		_death_tween.tween_property(death_message, "modulate", Color.WHITE, death_fade_seconds * 0.8).set_delay(death_fade_seconds * 0.2)
-	if _camera != null and death_kind == &"bomb_terminal":
-		var motion_scale := _camera_motion_scale()
-		_death_tween.tween_property(_camera, "position", _camera_rest_position + Vector3(0.0, -death_camera_drop * motion_scale, death_camera_pullback * motion_scale), death_camera_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
-		_death_tween.tween_property(_camera, "rotation", _camera_rest_rotation + Vector3(deg_to_rad(death_camera_pitch_degrees) * motion_scale, 0.0, deg_to_rad(death_camera_roll_degrees) * motion_scale), death_camera_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
 	death_feedback_started.emit(event.duplicate(true))
 
 

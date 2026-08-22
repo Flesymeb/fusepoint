@@ -1,6 +1,7 @@
 extends Node3D
 
 signal walkable_topology_bound(report: Dictionary)
+signal route_budget_observed(receipt: Dictionary)
 
 const EXPECTED_SOURCE_SHA256 := "6298ee68eb4df52d4fe8bdd332a1813492de600f595c214ef934f35fd3ee3e1a"
 const EXPECTED_WORLD_EXTENTS := Vector3(217.404864, 24.222379, 232.932841)
@@ -460,6 +461,44 @@ func _bind_product_anchors() -> bool:
 	}
 	walkable_topology_bound.emit(topology_binding_report.duplicate(true))
 	return transaction_accepted
+
+
+func accept_observed_route_budget(receipt: Dictionary) -> bool:
+	# Route prediction only ranks intact authored-navigation anchor pairs. A fresh
+	# first-overlap receipt, produced by ordinary player input, is the budget
+	# authority. Keep this transaction separate from topology binding so accepting
+	# it cannot reset the in-flight RouteProbe generation.
+	var expected_path: PackedVector3Array = route_corner_chains.get(&"spawn_to_a", PackedVector3Array())
+	var observed_path: PackedVector3Array = receipt.get("ordered_navigation_corners", PackedVector3Array())
+	var elapsed := float(receipt.get("elapsed_from_first_movement_seconds", -1.0))
+	var same_endpoints := (
+		expected_path.size() >= 2
+		and observed_path.size() >= 2
+		and expected_path[0].distance_to(observed_path[0]) <= 0.25
+		and expected_path[expected_path.size() - 1].distance_to(observed_path[observed_path.size() - 1]) <= 0.25
+	)
+	var accepted: bool = (
+		topology_binding_report.get("anchors_applied", false) == true
+		and topology_binding_report.get("all_edges_connected", false) == true
+		and topology_binding_report.get("all_routes_clear", false) == true
+		and receipt.get("latched", false) == true
+		and receipt.get("ordinary_input_authority", false) == true
+		and receipt.get("within_budget", false) == true
+		and elapsed >= ROUTE_MIN_EFFECTIVE_SECONDS
+		and elapsed <= ROUTE_MAX_EFFECTIVE_SECONDS
+		and same_endpoints
+	)
+	var bounded_receipt := receipt.duplicate(true)
+	bounded_receipt["accepted"] = accepted
+	bounded_receipt["expected_route_endpoints_match"] = same_endpoints
+	bounded_receipt["acceptance_authority"] = &"route_probe_first_legal_alpha_overlap"
+	bounded_receipt["observed_at_usec"] = Time.get_ticks_usec()
+	bounded_receipt["observed_frame"] = Engine.get_process_frames()
+	topology_binding_report["route_budget_accepted"] = accepted
+	topology_binding_report["observed_route_budget_receipt"] = bounded_receipt
+	topology_binding_report["failure_reason"] = &"" if accepted else &"spawn_alpha_route_budget_observed_outside_window"
+	route_budget_observed.emit(bounded_receipt.duplicate(true))
+	return accepted
 
 
 func _validate_product_anchor_pair(

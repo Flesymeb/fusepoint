@@ -199,6 +199,7 @@ func _latch_first_legal_alpha_overlap(player: CharacterBody3D) -> void:
 	if objective_state.get("legal", false) != true:
 		return
 	var elapsed_from_first_movement := total_elapsed_seconds - float(_first_movement.get("elapsed_seconds", 0.0))
+	var within_observed_budget := elapsed_from_first_movement >= EXPECTED_MIN_SECONDS and elapsed_from_first_movement <= EXPECTED_MAX_SECONDS
 	_completion_result = {
 		"event_id": "route-alpha-overlap-g%04d" % _measurement_generation,
 		"measurement_generation": _measurement_generation,
@@ -213,10 +214,15 @@ func _latch_first_legal_alpha_overlap(player: CharacterBody3D) -> void:
 		"persistent_stall_seconds": snappedf(persistent_stall_seconds, 0.01),
 		"collision_blocker": _last_blocker.duplicate(true),
 		"ordered_navigation_corners": _route_chain(&"spawn_to_a"),
-		"within_budget": effective_traversal_seconds >= EXPECTED_MIN_SECONDS and effective_traversal_seconds <= EXPECTED_MAX_SECONDS,
+		"within_budget": within_observed_budget,
+		"budget_metric": &"elapsed_from_first_movement_seconds",
+		"ordinary_input_authority": true,
 		"latched": true,
 	}
 	_append_route_milestone(&"legal_alpha_overlap", _completion_result)
+	var arena := get_node_or_null(arena_path)
+	if arena != null and arena.has_method(&"accept_observed_route_budget"):
+		_completion_result["arena_transaction_accepted"] = arena.call(&"accept_observed_route_budget", _completion_result)
 
 
 func _update_collision_stall(player: CharacterBody3D, horizontal_speed: float, delta: float) -> void:
@@ -352,7 +358,12 @@ func _mcp_state() -> Dictionary:
 		return {"route_id": ROUTE_ID, "ready": false}
 	var distance_to_alpha := player.global_position.distance_to(alpha.global_position)
 	var objective_inside := alpha.overlaps_body(player)
-	var within_budget := effective_traversal_seconds >= EXPECTED_MIN_SECONDS and effective_traversal_seconds <= EXPECTED_MAX_SECONDS
+	var elapsed_from_first_movement := (
+		total_elapsed_seconds - float(_first_movement.get("elapsed_seconds", 0.0))
+		if not _first_movement.is_empty()
+		else 0.0
+	)
+	var within_budget := elapsed_from_first_movement >= EXPECTED_MIN_SECONDS and elapsed_from_first_movement <= EXPECTED_MAX_SECONDS
 	return {
 		"route_id": ROUTE_ID,
 		"ready": arena != null and arena.get("collision_ready") == true and arena.get("topology_ready") == true,
@@ -375,6 +386,8 @@ func _mcp_state() -> Dictionary:
 		"player_position": player.global_position,
 		"distance_to_alpha": snappedf(distance_to_alpha, 0.01),
 		"effective_traversal_seconds": snappedf(effective_traversal_seconds, 0.01),
+		"elapsed_from_first_movement_seconds": snappedf(elapsed_from_first_movement, 0.01),
+		"budget_metric": &"elapsed_from_first_movement_seconds",
 		"path_length_traveled": snappedf(path_length_traveled, 0.01),
 		"total_elapsed_seconds": snappedf(total_elapsed_seconds, 0.01),
 		"expected_seconds": Vector2(EXPECTED_MIN_SECONDS, EXPECTED_MAX_SECONDS),

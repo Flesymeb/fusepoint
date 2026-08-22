@@ -473,7 +473,10 @@ func _begin_reload() -> void:
 	_action_state = &"reload"
 	_action_until = _now() + float(weapon["empty_reload_seconds"] if _reload_kind == &"empty" else weapon["tactical_reload_seconds"])
 	feedback.call(&"trigger_reload")
-	viewmodel.call(&"play_clip", &"empty_reload" if _reload_kind == &"empty" else &"reload_variant")
+	# The coupled AK-74M's authored primary tactical clip preserves the support
+	# hand on the magazine/fore-end contact chain. Keep the whole component intact
+	# and select that supplied clip at the wrapper boundary.
+	viewmodel.call(&"play_clip", &"empty_reload" if _reload_kind == &"empty" else &"reload")
 	weapon_state_changed.emit(_mcp_state())
 
 

@@ -10,12 +10,16 @@ signal branch_receipt_updated(receipt: Dictionary)
 
 const FAMILY_ID := &"bomb_terminal_sequence"
 const SUCCESS_DURATION := 6.2
-const FAILURE_DURATION := 6.2
-const FAILURE_MEDIA_START := 2.2
+const FAILURE_MEDIA_START := 1.5
+const FAILURE_FALLBACK_DURATION := 6.8
 const BRANCH_RECEIPT_LIMIT := 4
 const DETONATION_EFFECT_SCENE := preload("res://scenes/bomb_terminal_effect.tscn")
-const CAMERA_EFFECT_DISTANCE := 6.5
+const CAMERA_EFFECT_DISTANCE := 3.8
 const PROJECTION_MARGIN := 72.0
+const DEATH_VIDEO_PATH := "res://assets/cinematics/fusepoint_bomb_death.ogv"
+const DEATH_VIDEO_SHA256 := "4769ef6fa5bd45a78f5ca1d8a9d6fcf1b5381ee7fbc180a2aef8b3a8b5b84c4a"
+const DEATH_VIDEO_SOURCE_SHA256 := "5572ff028041ee3d805bb9d9a6d870b9b8dbaeae11aadc9bd8bb413e811c289f"
+const DEATH_VIDEO_RECEIPT_PATH := "res://assets/cinematics/fusepoint_bomb_death.receipt.json"
 
 @export var mission_path: NodePath
 @export var player_path: NodePath
@@ -39,7 +43,10 @@ const PROJECTION_MARGIN := 72.0
 @onready var victory_sequence: VictorySequence = $VictorySequence
 @onready var flash_overlay: ColorRect = $TerminalOverlay/Flash
 @onready var red_edge: Panel = $TerminalOverlay/RedEdge
+@onready var death_video: VideoStreamPlayer = $TerminalOverlay/DeathVideo
 @onready var media_layer: Control = $TerminalOverlay/MediaFallback
+@onready var media_treatment: ColorRect = $TerminalOverlay/MediaFallback/Treatment
+@onready var media_top_rail: ColorRect = $TerminalOverlay/MediaFallback/TopRail
 @onready var media_title: Label = $TerminalOverlay/MediaFallback/Title
 @onready var media_copy: Label = $TerminalOverlay/MediaFallback/Copy
 @onready var media_skip: Label = $TerminalOverlay/MediaFallback/Skip
@@ -68,6 +75,7 @@ var _dust_started := false
 var _media_started := false
 var _flash_tween: Tween
 var _edge_tween: Tween
+var _camera_tween: Tween
 var _tactical_hud: Node
 var _applied_reduced_motion := false
 var _applied_screen_shake := true
@@ -75,6 +83,16 @@ var _restore_epoch := 0
 var _active_branch_receipt: Dictionary = {}
 var _retained_branch_receipts: Array[Dictionary] = []
 var _phase_timestamps: Dictionary = {}
+var _failure_camera_position := Vector3.ZERO
+var _failure_camera_rotation := Vector3.ZERO
+var _failure_camera_bound := false
+var _camera_fall_distance := 0.0
+var _camera_fall_tilt_degrees := Vector3.ZERO
+var _video_play_requested := false
+var _video_started := false
+var _video_failed := false
+var _video_finished := false
+var _video_completion_reason := &"none"
 
 
 func _ready() -> void:
@@ -82,6 +100,7 @@ func _ready() -> void:
 	mission.mission_event_committed.connect(_on_mission_event)
 	_tactical_hud = get_tree().get_first_node_in_group(&"tactical_hud")
 	victory_avatar.visible = false
+	death_video.finished.connect(_on_death_video_finished)
 	_clear_overlay()
 
 
@@ -99,7 +118,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not active or not skip_available:
 		return
 	if event.is_action_pressed(&"menu_accept") or event.is_action_pressed(&"interact"):
-		_complete_presentation()
+		_complete_presentation(&"media_skipped")
 		get_viewport().set_input_as_handled()
 
 
@@ -207,13 +226,14 @@ func _victory_ground_position() -> Vector3:
 
 func _begin_failure() -> void:
 	_spawn_explosion_layers(world_origin)
-	flash_overlay.color = Color(1.0, 0.92, 0.68, _flash_scale() * 0.88)
-	red_edge.modulate = Color(1.0, 1.0, 1.0, _red_scale() * 0.78)
+	_bind_failure_camera()
+	flash_overlay.color = Color(1.0, 0.92, 0.68, _flash_scale() * 0.72)
+	red_edge.modulate = Color(1.0, 1.0, 1.0, _red_scale() * 0.36)
 	_flash_tween = create_tween()
-	_flash_tween.tween_property(flash_overlay, "color:a", _flash_scale() * 0.34, 0.16).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	_flash_tween.tween_property(flash_overlay, "color:a", _flash_scale() * 0.2, 0.12).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
 	_flash_tween.tween_property(flash_overlay, "color:a", 0.0, 0.38).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_edge_tween = create_tween()
-	_edge_tween.tween_property(red_edge, "modulate:a", 0.18 * _red_scale(), 0.65).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_edge_tween.tween_property(red_edge, "modulate:a", 0.12 * _red_scale(), 0.65).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_edge_tween.tween_property(red_edge, "modulate:a", 0.0, 0.85)
 	blast_audio.global_position = world_origin
 	tail_audio.global_position = world_origin
@@ -228,6 +248,97 @@ func _begin_failure() -> void:
 	media_skip.text = "[ENTER / E]  SKIP AFTER IMPACT"
 
 
+func _bind_failure_camera() -> void:
+	if camera == null:
+		return
+	_failure_camera_position = camera.position
+	_failure_camera_rotation = camera.rotation
+	_failure_camera_bound = true
+	var motion_scale := _motion_scale()
+	var impulse_scale := motion_scale if _applied_screen_shake else 0.0
+	var impulse_position := _failure_camera_position + Vector3(0.035, -0.025, 0.025) * impulse_scale
+	var impulse_rotation := _failure_camera_rotation + Vector3(
+		deg_to_rad(2.2), deg_to_rad(-1.2), deg_to_rad(3.2)
+	) * impulse_scale
+	_camera_fall_distance = 0.36 * motion_scale
+	_camera_fall_tilt_degrees = Vector3(8.0, 0.0, 5.5) * motion_scale
+	var fall_position := _failure_camera_position + Vector3(0.0, -_camera_fall_distance, 0.035 * motion_scale)
+	var fall_rotation := _failure_camera_rotation + Vector3(
+		deg_to_rad(_camera_fall_tilt_degrees.x),
+		0.0,
+		deg_to_rad(_camera_fall_tilt_degrees.z)
+	)
+	_camera_tween = create_tween()
+	_camera_tween.tween_property(camera, "position", impulse_position, 0.08).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	_camera_tween.parallel().tween_property(camera, "rotation", impulse_rotation, 0.08).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	_camera_tween.tween_property(camera, "position", fall_position, 0.48).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_camera_tween.parallel().tween_property(camera, "rotation", fall_rotation, 0.48).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+
+
+func _restore_failure_camera() -> void:
+	if _camera_tween != null and _camera_tween.is_valid():
+		_camera_tween.kill()
+	if _failure_camera_bound and camera != null:
+		camera.position = _failure_camera_position
+		camera.rotation = _failure_camera_rotation
+	_failure_camera_bound = false
+	_camera_fall_distance = 0.0
+	_camera_fall_tilt_degrees = Vector3.ZERO
+
+
+func _begin_death_video() -> void:
+	if death_video.stream == null:
+		_begin_video_fallback(&"stream_missing")
+		return
+	_set_phase(&"terminal_death_video")
+	# The world stack has completed its 0–1.5 s role. Hide its remaining one-shot
+	# particles before the decoder fade so a near-camera dust mote cannot contaminate
+	# the full-bleed cinematic entry frame.
+	for effect_node: Node in _effect_nodes:
+		if is_instance_valid(effect_node) and effect_node is Node3D:
+			(effect_node as Node3D).visible = false
+	_video_play_requested = true
+	death_video.visible = true
+	death_video.modulate.a = 0.0
+	death_video.paused = false
+	death_video.play()
+	media_layer.visible = true
+	media_layer.modulate.a = 1.0
+	media_treatment.visible = false
+	media_top_rail.visible = false
+	media_title.visible = false
+	media_copy.visible = false
+	media_skip.visible = true
+	media_skip.text = "[ENTER / E]  SKIP CINEMATIC"
+	skip_available = true
+	create_tween().tween_property(death_video, "modulate:a", 1.0, 0.32)
+
+
+func _begin_video_fallback(reason: StringName) -> void:
+	_video_failed = true
+	_video_completion_reason = reason
+	death_video.stop()
+	death_video.visible = false
+	_set_phase(&"terminal_media_fallback")
+	media_layer.visible = true
+	media_layer.modulate.a = 0.0
+	media_treatment.visible = true
+	media_top_rail.visible = true
+	media_title.visible = true
+	media_copy.visible = true
+	media_skip.visible = true
+	media_skip.text = "[ENTER / E]  CONTINUE"
+	skip_available = true
+	create_tween().tween_property(media_layer, "modulate:a", 1.0, 0.32)
+
+
+func _on_death_video_finished() -> void:
+	if not active or branch != &"failure" or not _video_play_requested:
+		return
+	_video_finished = true
+	_complete_presentation(&"video_finished")
+
+
 func _tick_failure() -> void:
 	if not _expansion_started and elapsed_seconds >= 0.18:
 		_expansion_started = true
@@ -240,13 +351,15 @@ func _tick_failure() -> void:
 		_set_phase(&"dust_camera_down")
 	if not _media_started and elapsed_seconds >= FAILURE_MEDIA_START:
 		_media_started = true
-		_set_phase(&"terminal_media_fallback")
-		media_layer.visible = true
-		media_layer.modulate.a = 0.0
-		create_tween().tween_property(media_layer, "modulate:a", 1.0, 0.42)
-		skip_available = true
-	if elapsed_seconds >= FAILURE_DURATION:
-		_complete_presentation()
+		_begin_death_video()
+	if _video_play_requested and not _video_started and not _video_failed:
+		if death_video.is_playing():
+			_video_started = true
+			_refresh_active_receipt()
+		elif elapsed_seconds >= FAILURE_MEDIA_START + 0.75:
+			_begin_video_fallback(&"playback_did_not_start")
+	if _video_failed and elapsed_seconds >= FAILURE_FALLBACK_DURATION:
+		_complete_presentation(&"fallback_completed")
 
 
 func _tick_success() -> void:
@@ -258,13 +371,14 @@ func _tick_success() -> void:
 		create_tween().tween_property(media_layer, "modulate:a", 0.72, 0.55)
 		skip_available = true
 	if elapsed_seconds >= SUCCESS_DURATION:
-		_complete_presentation()
+		_complete_presentation(&"success_duration_completed")
 
 
-func _complete_presentation() -> void:
+func _complete_presentation(reason: StringName = &"presentation_completed") -> void:
 	if not active or _completed_current:
 		return
 	_completed_current = true
+	_video_completion_reason = reason
 	active = false
 	_set_phase(&"completed")
 	completion_count += 1
@@ -282,6 +396,8 @@ func reset_presentation(clear_event_cache := true, restore_camera := true) -> vo
 		_flash_tween.kill()
 	if _edge_tween != null and _edge_tween.is_valid():
 		_edge_tween.kill()
+	if restore_camera:
+		_restore_failure_camera()
 	for node: Node in _effect_nodes:
 		if is_instance_valid(node):
 			node.queue_free()
@@ -313,6 +429,11 @@ func reset_presentation(clear_event_cache := true, restore_camera := true) -> vo
 	_debris_started = false
 	_dust_started = false
 	_media_started = false
+	_video_play_requested = false
+	_video_started = false
+	_video_failed = false
+	_video_finished = false
+	_video_completion_reason = &"none"
 	if clear_event_cache:
 		_observed_event_ids.clear()
 
@@ -330,8 +451,17 @@ func apply_accessibility_settings(values: Dictionary) -> void:
 func _clear_overlay() -> void:
 	flash_overlay.color.a = 0.0
 	red_edge.modulate.a = 0.0
+	death_video.stop()
+	death_video.paused = false
+	death_video.visible = false
+	death_video.modulate.a = 0.0
 	media_layer.visible = false
 	media_layer.modulate.a = 1.0
+	media_treatment.visible = true
+	media_top_rail.visible = true
+	media_title.visible = true
+	media_copy.visible = true
+	media_skip.visible = true
 
 
 func _spawn_explosion_layers(origin: Vector3) -> void:
@@ -359,7 +489,7 @@ func _resolve_presentation_origin(origin: Vector3) -> Dictionary:
 		var hit := camera.get_world_3d().direct_space_state.intersect_ray(query)
 		occluded = not hit.is_empty() and (hit.get("position", origin) as Vector3).distance_to(origin) > 0.8
 	var rebound := behind or not in_safe_frame or occluded
-	var rebound_origin := camera.global_position - camera.global_basis.z * CAMERA_EFFECT_DISTANCE - Vector3.UP * 1.12
+	var rebound_origin := camera.global_position - camera.global_basis.z * CAMERA_EFFECT_DISTANCE - Vector3.UP * 0.45
 	return {
 		"authoritative_world_origin": origin,
 		"presentation_origin": rebound_origin if rebound else origin,
@@ -415,6 +545,14 @@ func snapshot() -> Dictionary:
 		"player_terminal_locked": player.get("terminal_locked") if player != null else false,
 		"effect_layer_count": _effect_layer_receipts().size(),
 		"media_visible": media_layer.visible,
+		"video_visible": death_video.visible,
+		"video_playing": death_video.is_playing(),
+		"video_stream_position": death_video.stream_position,
+		"video_stream_length": death_video.get_stream_length() if death_video.stream != null else 0.0,
+		"video_started": _video_started,
+		"video_finished": _video_finished,
+		"video_failed": _video_failed,
+		"video_completion_reason": _video_completion_reason,
 		"skip_available": skip_available,
 		"completion_count": completion_count,
 		"duplicate_event_count": duplicate_event_count,
@@ -507,8 +645,33 @@ func _refresh_active_receipt() -> void:
 		"projection_rebound_reason": projection_rebound_reason,
 		"presentation_screen_point": camera.unproject_position(presentation_origin) if camera != null and not camera.is_position_behind(presentation_origin) else Vector2(-1.0, -1.0),
 		"victory": victory_sequence.snapshot(),
+		"failure_camera_bound": _failure_camera_bound,
+		"fall_distance_meters": _camera_fall_distance,
+		"fall_tilt_degrees": _camera_fall_tilt_degrees,
+		"authored_local_position": _failure_camera_position,
+		"authored_local_rotation": _failure_camera_rotation,
 	}
-	_active_branch_receipt["media"] = {"visible": media_layer.visible, "skip_available": skip_available, "fallback": true}
+	_active_branch_receipt["media"] = {
+		"visible": death_video.visible or media_layer.visible,
+		"video_node_path": String(death_video.get_path()),
+		"video_path": DEATH_VIDEO_PATH,
+		"video_sha256": DEATH_VIDEO_SHA256,
+		"source_sha256": DEATH_VIDEO_SOURCE_SHA256,
+		"receipt_path": DEATH_VIDEO_RECEIPT_PATH,
+		"stream_bound": death_video.stream != null,
+		"stream_resource_path": death_video.stream.resource_path if death_video.stream != null else "",
+		"play_requested": _video_play_requested,
+		"playing": death_video.is_playing(),
+		"paused": death_video.paused,
+		"stream_position": death_video.stream_position,
+		"stream_length": death_video.get_stream_length() if death_video.stream != null else 0.0,
+		"volume_db": death_video.volume_db,
+		"fade_seconds": 0.32,
+		"skip_available": skip_available,
+		"fallback": _video_failed,
+		"finished": _video_finished,
+		"completion_reason": _video_completion_reason,
+	}
 	_active_branch_receipt["duplicate_event_count"] = duplicate_event_count
 	_active_branch_receipt["completion_count"] = completion_count
 
@@ -533,6 +696,7 @@ func _retain_active_receipt(reason: StringName) -> void:
 		"live_effect_count": _effect_layer_receipts().size(),
 		"blast_playing": blast_audio.playing,
 		"tail_playing": tail_audio.playing,
+		"video_playing": death_video.is_playing(),
 	}
 	_retained_branch_receipts.append(_active_branch_receipt.duplicate(true))
 	while _retained_branch_receipts.size() > BRANCH_RECEIPT_LIMIT:
@@ -559,6 +723,7 @@ func _cleanup_completed_presentation() -> void:
 		child.queue_free()
 	blast_audio.stop()
 	tail_audio.stop()
+	_restore_failure_camera()
 	victory_sequence.reset_sequence(true)
 	victory_avatar.visible = false
 	_clear_overlay()
@@ -583,6 +748,8 @@ func _mcp_state() -> Dictionary:
 		"health_zero": state.get("health_zero", false),
 		"player_terminal_locked": state.get("player_terminal_locked", false),
 		"media_visible": media_layer.visible,
+		"video_visible": death_video.visible,
+		"video_playing": death_video.is_playing(),
 		"skip_available": skip_available,
 		"active_branch_receipt": _active_branch_receipt.duplicate(true),
 		"retained_branch_receipt_count": _retained_branch_receipts.size(),

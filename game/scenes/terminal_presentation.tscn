@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://scripts/terminal_presentation_controller.gd" id="1_controller"]
 [ext_resource type="PackedScene" path="res://systems/actors/humanoid/player_victory_avatar.tscn" id="2_avatar"]
@@ -6,6 +6,7 @@
 [ext_resource type="FontFile" path="res://systems/actors/humanoid/fonts/BarlowCondensed-SemiBold.ttf" id="4_font"]
 [ext_resource type="AudioStream" path="res://assets/audio/terminal/mega_bomb.wav" id="5_blast"]
 [ext_resource type="AudioStream" path="res://assets/audio/terminal/rolling_thunder.wav" id="6_tail"]
+[ext_resource type="VideoStream" path="res://assets/cinematics/fusepoint_bomb_death.ogv" id="7_death_video"]
 
 [sub_resource type="StyleBoxFlat" id="RedEdgeStyle"]
 bg_color = Color(0.08, 0.002, 0.001, 0)
@@ -49,6 +50,21 @@ volume_db = -5.0
 
 [node name="TerminalOverlay" type="CanvasLayer" parent="."]
 layer = 94
+
+[node name="DeathVideo" type="VideoStreamPlayer" parent="TerminalOverlay"]
+visible = false
+modulate = Color(1, 1, 1, 0)
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+stream = ExtResource("7_death_video")
+volume_db = -8.0
+autoplay = false
+expand = true
+loop = false
 
 [node name="Flash" type="ColorRect" parent="TerminalOverlay"]
 anchors_preset = 15
