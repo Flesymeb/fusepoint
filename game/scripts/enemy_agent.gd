@@ -8,6 +8,26 @@ const REQUIRED_ACTOR_SEPARATION := 1.4
 const ROUTE_RESERVATION_SECONDS := 0.55
 const ROUTE_PREDICTION_SECONDS := 0.32
 const STALL_LIMIT_SECONDS := 3.0
+const REGION_COMBAT_PROFILES := {
+	&"alpha": {
+		"profile_id": &"alpha_first_contact",
+		"reaction_bonus_seconds": 2.0,
+		"attack_interval_scale": 2.4,
+		"damage_scale": 0.1875,
+	},
+	&"bravo": {
+		"profile_id": &"bravo_crossfire",
+		"reaction_bonus_seconds": 1.35,
+		"attack_interval_scale": 2.0,
+		"damage_scale": 0.25,
+	},
+	&"charlie": {
+		"profile_id": &"charlie_defense",
+		"reaction_bonus_seconds": 0.9,
+		"attack_interval_scale": 1.7,
+		"damage_scale": 0.3125,
+	},
+}
 
 static var _route_reservations: Dictionary = {}
 
@@ -40,6 +60,7 @@ var _last_pre_shot_authorization: Dictionary = {}
 var _last_progress_position := Vector3.ZERO
 var _stalled_seconds := 0.0
 var _progress_watchdog_count := 0
+var _combat_profile: Dictionary = {}
 
 
 func _ready() -> void:
@@ -115,12 +136,13 @@ func configure_roster_entry(entry: Dictionary, target_node: Node3D) -> void:
 	difficulty = int(entry.get("difficulty", Difficulty.MEDIUM))
 	target_group = &"player"
 	_mission_target = target_node
-	# Preserve a readable squad contact window instead of allowing every actor
-	# activated in the same region to resolve its first shot on the same tick.
-	# The stable roster index makes the telegraph deterministic across restarts.
-	reaction_delay += float(roster_index % 5) * 0.35
-	attack_interval *= 1.25
-	attack_damage *= 0.375
+	# Preserve a readable, survivable contact window across the 30--45 second
+	# spawn-to-Alpha budget. Region data keeps pressure progressive while the
+	# stable roster index staggers simultaneous squad telegraphs deterministically.
+	_combat_profile = (REGION_COMBAT_PROFILES.get(region_id, REGION_COMBAT_PROFILES[&"charlie"]) as Dictionary).duplicate(true)
+	reaction_delay += float(_combat_profile["reaction_bonus_seconds"]) + float(roster_index % 5) * 0.35
+	attack_interval *= float(_combat_profile["attack_interval_scale"])
+	attack_damage *= float(_combat_profile["damage_scale"])
 	if tactical_role in [&"defender", &"sentry"]:
 		attack_range = 30.0
 		walk_distance = 16.0
@@ -209,6 +231,10 @@ func authoritative_snapshot() -> Dictionary:
 		"role": tactical_role,
 		"route_slot": route_slot,
 		"route_pressure": route_pressure,
+		"combat_profile": _combat_profile.duplicate(true),
+		"reaction_delay_seconds": reaction_delay,
+		"attack_interval_seconds": attack_interval,
+		"attack_damage": attack_damage,
 		"roster_index": roster_index,
 		"reserved_position": reserved_position,
 		"active": mission_active,

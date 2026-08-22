@@ -92,6 +92,8 @@ var screen_shake_enabled := true
 var _look_input_serial := 0
 var _last_look_receipt: Dictionary = {}
 var _look_history: Array[Dictionary] = []
+var _mouse_capture_sync_serial := 0
+var _last_mouse_capture_sync_receipt: Dictionary = {}
 var _deployment_generation := 0
 var _look_generation_sequence := 0
 var _look_observation_boundary: Dictionary = {}
@@ -136,6 +138,10 @@ func _ready() -> void:
 func _input(event: InputEvent) -> void:
 	if not gameplay_input_enabled:
 		return
+	# Input.mouse_mode is the engine authority. Reconcile the retained player
+	# flag at the raw-input boundary so a shell/page lifecycle transition cannot
+	# leave captured motion gated behind a stale internal boolean.
+	_reconcile_mouse_capture(&"raw_input")
 	if event is InputEventMouseButton:
 		var mouse_button := event as InputEventMouseButton
 		if mouse_button.pressed and mouse_button.button_index == MOUSE_BUTTON_LEFT and not _mouse_captured:
@@ -530,6 +536,7 @@ func _sync_grounded_foley(source: StringName) -> void:
 			"run_playing": run.playing if run != null else false,
 			"walk_audio": _audio_owner_snapshot(walk),
 			"run_audio": _audio_owner_snapshot(run),
+			"active_stream_inventory": _active_audio_inventory(),
 			"owner_count": 1,
 			"runtime_generated_stream": false,
 			"frame": Engine.get_physics_frames(),
@@ -580,6 +587,7 @@ func _audio_owner_snapshot(player: AudioStreamPlayer) -> Dictionary:
 		"stream_path": player.stream.resource_path if player.stream != null else "",
 		"duration_seconds": player.stream.get_length() if player.stream != null else 0.0,
 		"playing": player.playing,
+		"playback_position_seconds": player.get_playback_position() if player.playing else 0.0,
 		"volume_db": player.volume_db,
 		"pitch_scale": player.pitch_scale,
 		"bus": player.bus,
@@ -642,12 +650,32 @@ func _configure_authoritative_foley_owner() -> void:
 
 func _capture_mouse() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	_mouse_captured = true
+	_reconcile_mouse_capture(&"player_capture_request")
 
 
 func _release_mouse() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	_mouse_captured = false
+	_reconcile_mouse_capture(&"player_release_request")
+
+
+func _reconcile_mouse_capture(source: StringName) -> bool:
+	var observed := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if observed == _mouse_captured:
+		return observed
+	var previous := _mouse_captured
+	_mouse_captured = observed
+	_mouse_capture_sync_serial += 1
+	_last_mouse_capture_sync_receipt = {
+		"event_id": "mouse-capture-sync-%06d" % _mouse_capture_sync_serial,
+		"source": source,
+		"previous_captured": previous,
+		"observed_captured": observed,
+		"input_mouse_mode": Input.mouse_mode,
+		"gameplay_enabled": gameplay_input_enabled,
+		"committed_frame": Engine.get_process_frames(),
+		"committed_at_usec": Time.get_ticks_usec(),
+	}
+	return observed
 
 
 func _reset_to_spawn(source: StringName = &"mission_setup") -> void:
@@ -954,6 +982,9 @@ func _mcp_state() -> Dictionary:
 		"yaw_degrees": rotation_degrees.y,
 		"pitch_degrees": head.rotation_degrees.x if head_ready else rad_to_deg(_pitch),
 		"mouse_captured": _mouse_captured,
+		"engine_mouse_captured": Input.mouse_mode == Input.MOUSE_MODE_CAPTURED,
+		"mouse_capture_sync_count": _mouse_capture_sync_serial,
+		"last_mouse_capture_sync_receipt": _last_mouse_capture_sync_receipt,
 		"on_floor": is_on_floor(),
 		"camera_current": camera.current if camera_ready else false,
 		"camera_forward": -camera.global_transform.basis.z if camera_ready else -global_transform.basis.z,
