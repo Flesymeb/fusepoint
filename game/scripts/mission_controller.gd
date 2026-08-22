@@ -43,6 +43,7 @@ var checkpoint_restore_count := 0
 var terminal_commit_count := 0
 var terminal_duplicate_submit_count := 0
 var terminal_event_id := ""
+var tester_countdown_zero_request_count := 0
 var elimination_count := 0
 var player_death_count := 0
 var last_result_snapshot: Dictionary = {}
@@ -125,6 +126,7 @@ func _initialize_mission_state() -> void:
 	terminal_commit_count = 0
 	terminal_duplicate_submit_count = 0
 	terminal_event_id = ""
+	tester_countdown_zero_request_count = 0
 	elimination_count = 0
 	player_death_count = 0
 	last_result_snapshot.clear()
@@ -212,6 +214,10 @@ func _propagate_run_epoch(reset_transients: bool) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed(&"tester_countdown_zero"):
+		tester_request_countdown_zero()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed(&"interact"):
 		_try_begin_bomb_stage()
 
@@ -227,6 +233,27 @@ func _physics_process(delta: float) -> void:
 	_tick_capture(delta)
 	_tick_bomb(delta)
 	_sync_presentation()
+
+
+func tester_request_countdown_zero() -> Dictionary:
+	## Bounded no-key diagnostic seam for Runtime/Tester. It only advances the
+	## ordinary authoritative countdown path and cannot submit a second event.
+	if mission_state != &"active_gameplay" or terminal_commit_count > 0:
+		return {
+			"accepted": false,
+			"reason": &"not_active_or_already_committed",
+			"mission_state": mission_state,
+			"terminal_commit_count": terminal_commit_count,
+		}
+	tester_countdown_zero_request_count += 1
+	remaining_time = 0.0
+	return {
+		"accepted": true,
+		"request_count": tester_countdown_zero_request_count,
+		"remaining_time": remaining_time,
+		"run_epoch": run_epoch,
+		"next_path": &"physics_commit_timer",
+	}
 
 
 func _commit_timer(delta: float) -> void:
@@ -956,6 +983,7 @@ func _mcp_state() -> Dictionary:
 		"terminal_commit_count": terminal_commit_count,
 		"terminal_duplicate_submit_count": terminal_duplicate_submit_count,
 		"terminal_event_id": terminal_event_id,
+		"tester_countdown_zero_request_count": tester_countdown_zero_request_count,
 		"elimination_count": elimination_count,
 		"player_death_count": player_death_count,
 		"last_result_snapshot": last_result_snapshot,

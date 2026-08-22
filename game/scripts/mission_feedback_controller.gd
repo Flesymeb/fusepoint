@@ -670,7 +670,7 @@ func _audio_role_snapshot() -> Dictionary:
 			"bus": player.bus if player != null else &"Foley",
 			"playing": player.playing if player != null else _recent_role_playing(role),
 			"lifetime_remaining": float(_active_voice_lifetimes.get(role, 0.0)),
-			"fallback_behavior": &"candidate_owned_pcm",
+			"fallback_behavior": &"decoded_contact_sample",
 		}
 	return roles
 
@@ -684,7 +684,7 @@ func _stream_is_decoded(stream: AudioStream) -> bool:
 
 
 func _stream_path_for_role(role: StringName) -> String:
-	return String(FOOTSTEP_STREAM_PATHS.get(role, "runtime-generated://%s" % String(role)))
+	return String(FOOTSTEP_STREAM_PATHS.get(role, ""))
 
 
 func _footstep_receipts() -> Array[Dictionary]:

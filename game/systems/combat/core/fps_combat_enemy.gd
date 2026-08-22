@@ -1,6 +1,8 @@
 class_name FPSCombatEnemy
 extends CharacterBody3D
 
+const DEFAULT_DEATH_STREAM: AudioStream = preload("res://assets/audio/combat/deathpunch.wav")
+
 signal ai_state_changed(previous: StringName, current: StringName, snapshot: Dictionary)
 signal target_acquired(target: Node3D)
 signal attack_resolved(event: Dictionary)
@@ -84,7 +86,7 @@ enum Difficulty { EASY, MEDIUM, HARD }
 @export_group("Audio")
 @export_node_path("AudioStreamPlayer3D") var death_audio_path: NodePath = ^"DeathAudio"
 @export var death_sound: AudioStream
-@export var synthesize_default_death_sound := true
+@export var synthesize_default_death_sound := false
 @export_range(-40.0, 12.0, 0.5) var death_sound_volume_db := -5.0
 @export_range(0.25, 2.0, 0.01) var death_sound_pitch_scale := 0.92
 
@@ -102,7 +104,6 @@ var _eye: Node3D
 var _muzzle: Node3D
 var _presentation: Node
 var _death_audio: AudioStreamPlayer3D
-var _generated_death_sound: AudioStreamWAV
 var _target_health: Node
 var _home_position := Vector3.ZERO
 var _has_home_position := false
@@ -166,6 +167,7 @@ func _ready() -> void:
 	_presentation = get_node_or_null(presentation_path) if not presentation_path.is_empty() else null
 	_death_audio = get_node_or_null(death_audio_path) as AudioStreamPlayer3D
 	if _death_audio != null:
+		_death_audio.stream = death_sound if death_sound != null else DEFAULT_DEATH_STREAM
 		_death_audio.volume_db = death_sound_volume_db
 		_death_audio.pitch_scale = death_sound_pitch_scale
 	_home_position = global_position
@@ -392,6 +394,8 @@ func snapshot() -> Dictionary:
 		"can_attack": _health != null and not _health.is_dead and target != null,
 		"death_audio_bound": _death_audio != null,
 		"death_audio_stream_bound": _death_audio != null and _death_audio.stream != null,
+		"death_audio_stream_path": _death_audio.stream.resource_path if _death_audio != null and _death_audio.stream != null else "",
+		"death_audio_generated": false,
 		"death_audio_playing": _death_audio != null and _death_audio.playing,
 		"death_sound_event_count": death_sound_event_count,
 		"difficulty": Difficulty.keys()[difficulty].to_lower(),
@@ -1472,47 +1476,12 @@ func _exit_tree() -> void:
 func _play_death_sound() -> void:
 	if _death_audio == null:
 		return
-	var stream := death_sound
-	if stream == null and synthesize_default_death_sound:
-		stream = _get_generated_death_sound()
-	if stream == null:
-		return
+	var stream: AudioStream = death_sound if death_sound != null else DEFAULT_DEATH_STREAM
 	_death_audio.stream = stream
 	_death_audio.volume_db = death_sound_volume_db
 	_death_audio.pitch_scale = death_sound_pitch_scale
 	_death_audio.play()
 	death_sound_event_count += 1
-
-
-func _get_generated_death_sound() -> AudioStreamWAV:
-	if _generated_death_sound != null:
-		return _generated_death_sound
-	const MIX_RATE := 22050
-	const DURATION_SECONDS := 0.36
-	var sample_count := int(MIX_RATE * DURATION_SECONDS)
-	var bytes := PackedByteArray()
-	bytes.resize(sample_count * 2)
-	var write_index := 0
-	for sample_index in sample_count:
-		var t := float(sample_index) / float(MIX_RATE)
-		var decay := pow(1.0 - (float(sample_index) / float(sample_count)), 2.1)
-		var low_hit := sin(TAU * 94.0 * t) * 0.58
-		var chest_tone := sin(TAU * 142.0 * t) * 0.24
-		var rasp_seed := float(((sample_index * 1103515245 + 12345) >> 16) & 0x7fff) / 32767.0
-		var rasp := (rasp_seed * 2.0 - 1.0) * 0.15
-		var value := clampf((low_hit + chest_tone + rasp) * decay, -1.0, 1.0)
-		var pcm := int(value * 32767.0)
-		if pcm < 0:
-			pcm += 65536
-		bytes[write_index] = pcm & 0xff
-		bytes[write_index + 1] = (pcm >> 8) & 0xff
-		write_index += 2
-	_generated_death_sound = AudioStreamWAV.new()
-	_generated_death_sound.format = AudioStreamWAV.FORMAT_16_BITS
-	_generated_death_sound.mix_rate = MIX_RATE
-	_generated_death_sound.stereo = false
-	_generated_death_sound.data = bytes
-	return _generated_death_sound
 
 
 func _set_calibration_visuals_visible(is_visible: bool) -> void:

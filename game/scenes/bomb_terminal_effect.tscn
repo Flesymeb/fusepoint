@@ -1,0 +1,198 @@
+[gd_scene load_steps=23 format=3]
+
+[ext_resource type="Script" path="res://scripts/bomb_terminal_effect.gd" id="1_effect"]
+
+[sub_resource type="StandardMaterial3D" id="Material_flash"]
+transparency = 1
+shading_mode = 0
+blend_mode = 1
+albedo_color = Color(1, 0.74, 0.28, 0.96)
+emission_enabled = true
+emission = Color(1, 0.3, 0.035, 1)
+emission_energy_multiplier = 8.0
+
+[sub_resource type="SphereMesh" id="Mesh_flash"]
+material = SubResource("Material_flash")
+radius = 0.45
+height = 0.9
+radial_segments = 24
+rings = 12
+
+[sub_resource type="Gradient" id="Gradient_fire"]
+offsets = PackedFloat32Array(0, 0.28, 0.72, 1)
+colors = PackedColorArray(1, 0.92, 0.42, 1, 1, 0.26, 0.015, 0.92, 0.38, 0.025, 0.004, 0.55, 0.03, 0.015, 0.01, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture_fire"]
+gradient = SubResource("Gradient_fire")
+
+[sub_resource type="ParticleProcessMaterial" id="Process_fire"]
+emission_shape = 1
+emission_sphere_radius = 0.35
+direction = Vector3(0, 1, 0)
+spread = 180.0
+initial_velocity_min = 1.4
+initial_velocity_max = 4.6
+gravity = Vector3(0, 1.2, 0)
+scale_min = 0.22
+scale_max = 0.7
+color_ramp = SubResource("GradientTexture_fire")
+
+[sub_resource type="StandardMaterial3D" id="Material_fire"]
+transparency = 1
+shading_mode = 0
+blend_mode = 1
+vertex_color_use_as_albedo = true
+albedo_color = Color(1, 0.22, 0.015, 0.78)
+emission_enabled = true
+emission = Color(1, 0.12, 0.006, 1)
+emission_energy_multiplier = 3.2
+
+[sub_resource type="SphereMesh" id="Mesh_fire"]
+material = SubResource("Material_fire")
+radius = 0.34
+height = 0.68
+radial_segments = 12
+rings = 6
+
+[sub_resource type="ParticleProcessMaterial" id="Process_sparks"]
+particle_flag_align_y = true
+emission_shape = 1
+emission_sphere_radius = 0.24
+direction = Vector3(0, 0.35, 1)
+spread = 180.0
+initial_velocity_min = 8.0
+initial_velocity_max = 15.0
+gravity = Vector3(0, -9.8, 0)
+scale_min = 0.65
+scale_max = 1.35
+
+[sub_resource type="StandardMaterial3D" id="Material_sparks"]
+transparency = 1
+shading_mode = 0
+blend_mode = 1
+albedo_color = Color(1, 0.58, 0.08, 0.96)
+emission_enabled = true
+emission = Color(1, 0.32, 0.01, 1)
+emission_energy_multiplier = 5.0
+
+[sub_resource type="BoxMesh" id="Mesh_sparks"]
+material = SubResource("Material_sparks")
+size = Vector3(0.022, 0.022, 0.34)
+
+[sub_resource type="ParticleProcessMaterial" id="Process_debris"]
+emission_shape = 1
+emission_sphere_radius = 0.3
+direction = Vector3(0, 0.7, 0)
+spread = 180.0
+initial_velocity_min = 4.2
+initial_velocity_max = 8.4
+gravity = Vector3(0, -9.8, 0)
+scale_min = 0.65
+scale_max = 1.4
+
+[sub_resource type="StandardMaterial3D" id="Material_debris"]
+albedo_color = Color(0.16, 0.105, 0.065, 1)
+metallic = 0.18
+roughness = 0.88
+
+[sub_resource type="BoxMesh" id="Mesh_debris"]
+material = SubResource("Material_debris")
+size = Vector3(0.1, 0.075, 0.15)
+
+[sub_resource type="StandardMaterial3D" id="Material_wave"]
+transparency = 1
+shading_mode = 0
+blend_mode = 1
+albedo_color = Color(1, 0.25, 0.025, 0.12)
+emission_enabled = true
+emission = Color(1, 0.11, 0.005, 1)
+emission_energy_multiplier = 2.0
+
+[sub_resource type="CylinderMesh" id="Mesh_wave"]
+material = SubResource("Material_wave")
+top_radius = 1.0
+bottom_radius = 1.0
+height = 0.035
+radial_segments = 64
+
+[sub_resource type="Gradient" id="Gradient_dust"]
+offsets = PackedFloat32Array(0, 0.38, 1)
+colors = PackedColorArray(0.32, 0.22, 0.14, 0, 0.25, 0.18, 0.12, 0.42, 0.16, 0.12, 0.09, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture_dust"]
+gradient = SubResource("Gradient_dust")
+
+[sub_resource type="ParticleProcessMaterial" id="Process_dust"]
+emission_shape = 1
+emission_sphere_radius = 0.7
+direction = Vector3(0, 0.24, 0)
+spread = 180.0
+initial_velocity_min = 0.8
+initial_velocity_max = 2.8
+gravity = Vector3(0, 0.45, 0)
+scale_min = 0.55
+scale_max = 1.45
+color_ramp = SubResource("GradientTexture_dust")
+
+[sub_resource type="StandardMaterial3D" id="Material_dust"]
+transparency = 1
+shading_mode = 0
+vertex_color_use_as_albedo = true
+albedo_color = Color(0.24, 0.17, 0.11, 0.36)
+
+[sub_resource type="SphereMesh" id="Mesh_dust"]
+material = SubResource("Material_dust")
+radius = 0.46
+height = 0.92
+radial_segments = 10
+rings = 5
+
+[node name="BombTerminalEffect" type="Node3D"]
+script = ExtResource("1_effect")
+
+[node name="FlashCore" type="MeshInstance3D" parent="."]
+mesh = SubResource("Mesh_flash")
+
+[node name="Fire" type="GPUParticles3D" parent="."]
+amount = 54
+lifetime = 1.15
+one_shot = true
+explosiveness = 1.0
+process_material = SubResource("Process_fire")
+draw_pass_1 = SubResource("Mesh_fire")
+
+[node name="Sparks" type="GPUParticles3D" parent="."]
+amount = 42
+lifetime = 0.82
+one_shot = true
+explosiveness = 1.0
+process_material = SubResource("Process_sparks")
+draw_pass_1 = SubResource("Mesh_sparks")
+
+[node name="Debris" type="GPUParticles3D" parent="."]
+amount = 24
+lifetime = 1.35
+one_shot = true
+explosiveness = 1.0
+process_material = SubResource("Process_debris")
+draw_pass_1 = SubResource("Mesh_debris")
+
+[node name="PressureWave" type="MeshInstance3D" parent="."]
+position = Vector3(0, -0.2, 0)
+mesh = SubResource("Mesh_wave")
+
+[node name="Dust" type="GPUParticles3D" parent="."]
+amount = 34
+lifetime = 1.95
+one_shot = true
+explosiveness = 1.0
+process_material = SubResource("Process_dust")
+draw_pass_1 = SubResource("Mesh_dust")
+
+[node name="ExplosionLight" type="OmniLight3D" parent="."]
+position = Vector3(0, 0.65, 0)
+light_color = Color(1, 0.28, 0.035, 1)
+light_energy = 0.0
+light_volumetric_fog_energy = 0.0
+omni_range = 12.0
+shadow_enabled = false

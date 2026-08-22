@@ -9,6 +9,11 @@ signal trace_spawned(event: Dictionary, effect: Node3D)
 signal impact_spawned(event: Dictionary, effect: Node3D)
 
 const AUDIO_RECEIPT_LIMIT := 64
+const SHOT_AUDIO: AudioStream = preload("res://systems/weapons/viewmodels/ak74/audio/sfx_fire_single.wav")
+const CHARACTER_IMPACT_AUDIO: AudioStream = preload("res://assets/audio/combat/deathpunch.wav")
+const METAL_IMPACT_AUDIO: AudioStream = preload("res://assets/audio/combat/metal_twang.wav")
+const CONCRETE_IMPACT_AUDIO: AudioStream = preload("res://assets/audio/combat/hammer_fall.wav")
+const NEAR_MISS_AUDIO: AudioStream = preload("res://assets/audio/combat/weapon_whoosh.wav")
 
 @export_node_path("FPSHitscanWeapon") var hitscan_weapon_path: NodePath
 @export_range(0.02, 0.5, 0.01) var muzzle_seconds := 0.075
@@ -32,11 +37,11 @@ var _hitscan: FPSHitscanWeapon
 var _observed_ids: Dictionary = {}
 var _observed_order: Array[String] = []
 var _active_effects: Array[Node3D] = []
-var _shot_audio: AudioStreamWAV
-var _character_impact_audio: AudioStreamWAV
-var _metal_impact_audio: AudioStreamWAV
-var _concrete_impact_audio: AudioStreamWAV
-var _near_miss_audio: AudioStreamWAV
+var _shot_audio: AudioStream = SHOT_AUDIO
+var _character_impact_audio: AudioStream = CHARACTER_IMPACT_AUDIO
+var _metal_impact_audio: AudioStream = METAL_IMPACT_AUDIO
+var _concrete_impact_audio: AudioStream = CONCRETE_IMPACT_AUDIO
+var _near_miss_audio: AudioStream = NEAR_MISS_AUDIO
 var _last_presentation: Dictionary = {}
 var _variant_use_counts := {0: 0, 1: 0, 2: 0, 3: 0}
 var _culled_effect_count := 0
@@ -349,7 +354,9 @@ func _spawn_audio(muzzle_position: Vector3, impact_position: Vector3, result: St
 		_spawn_audio_cue(impact_position, stream, &"surface_impact_audio", -8.0, 1.0, event_identity)
 
 
-func _spawn_audio_cue(position: Vector3, stream: AudioStreamWAV, role: StringName, volume_db: float, pitch: float, event_identity: String) -> void:
+func _spawn_audio_cue(position: Vector3, stream: AudioStream, role: StringName, volume_db: float, pitch: float, event_identity: String) -> void:
+	if stream == null:
+		return
 	var audio_root := Node3D.new()
 	var receipt_id := "%s:%s:%d" % [event_identity, role, Time.get_ticks_usec()]
 	audio_root.name = "%s_%s" % [String(role).to_pascal_case(), _safe_receipt_id(receipt_id)]
@@ -361,7 +368,8 @@ func _spawn_audio_cue(position: Vector3, stream: AudioStreamWAV, role: StringNam
 	player.max_distance = 42.0
 	player.pitch_scale = pitch
 	audio_root.add_child(player)
-	_add_effect(audio_root, role, 0.42)
+	var lifetime := clampf(stream.get_length(), 0.3, 2.2)
+	_add_effect(audio_root, role, lifetime)
 	audio_root.global_position = position
 	audio_root.set_meta(&"audio_receipt_id", receipt_id)
 	player.play()
@@ -373,7 +381,9 @@ func _spawn_audio_cue(position: Vector3, stream: AudioStreamWAV, role: StringNam
 		"bus": player.bus,
 		"voice_path": String(player.get_path()),
 		"stream_bound": player.stream != null,
-		"decoded": stream != null and stream.data.size() > 0 and stream.mix_rate > 0,
+		"decoded": not stream.resource_path.is_empty(),
+		"stream_path": stream.resource_path,
+		"generated": false,
 		"onset_usec": Time.get_ticks_usec(),
 		"onset_frame": Engine.get_process_frames(),
 		"playing_at_onset": player.playing,
@@ -382,11 +392,11 @@ func _spawn_audio_cue(position: Vector3, stream: AudioStreamWAV, role: StringNam
 		"attenuation": {"unit_size": player.unit_size, "max_distance": player.max_distance},
 		"volume_db": volume_db,
 		"pitch_scale": pitch,
-		"lifetime_seconds": 0.42,
+		"lifetime_seconds": lifetime,
 		"cleanup_observed": false,
 		"cleanup_usec": 0,
 	})
-	get_tree().create_timer(0.42).timeout.connect(_retire_effect.bind(audio_root))
+	get_tree().create_timer(lifetime).timeout.connect(_retire_effect.bind(audio_root))
 
 
 func _add_effect(effect: Node3D, role: StringName, lifetime: float) -> void:
@@ -541,59 +551,24 @@ func _safe_id(event: Dictionary) -> String:
 	return String(event.get("shot_id", "shot")).replace(":", "_").replace("-", "_")
 
 
-func _get_shot_audio() -> AudioStreamWAV:
-	if _shot_audio == null:
-		_shot_audio = _synth_sound(0.16, 118.0, 0.58, 0.25)
+func _get_shot_audio() -> AudioStream:
 	return _shot_audio
 
 
-func _get_character_impact_audio() -> AudioStreamWAV:
-	if _character_impact_audio == null:
-		_character_impact_audio = _synth_sound(0.11, 190.0, 0.22, 0.34)
+func _get_character_impact_audio() -> AudioStream:
 	return _character_impact_audio
 
 
-func _get_metal_impact_audio() -> AudioStreamWAV:
-	if _metal_impact_audio == null:
-		_metal_impact_audio = _synth_sound(0.14, 860.0, 0.42, 0.18)
+func _get_metal_impact_audio() -> AudioStream:
 	return _metal_impact_audio
 
 
-func _get_concrete_impact_audio() -> AudioStreamWAV:
-	if _concrete_impact_audio == null:
-		_concrete_impact_audio = _synth_sound(0.16, 105.0, 0.20, 0.50)
+func _get_concrete_impact_audio() -> AudioStream:
 	return _concrete_impact_audio
 
 
-func _get_near_miss_audio() -> AudioStreamWAV:
-	if _near_miss_audio == null:
-		_near_miss_audio = _synth_sound(0.13, 1240.0, 0.18, 0.12)
+func _get_near_miss_audio() -> AudioStream:
 	return _near_miss_audio
-
-
-func _synth_sound(duration: float, frequency: float, tone_gain: float, noise_gain: float) -> AudioStreamWAV:
-	const MIX_RATE := 22050
-	var sample_count := int(MIX_RATE * duration)
-	var bytes := PackedByteArray()
-	bytes.resize(sample_count * 2)
-	for sample_index in sample_count:
-		var t := float(sample_index) / float(MIX_RATE)
-		var progress := float(sample_index) / float(sample_count)
-		var decay := pow(1.0 - progress, 2.6)
-		var tone := sin(TAU * frequency * t) * tone_gain
-		var noise_seed := float(((sample_index * 1103515245 + 12345) >> 16) & 0x7fff) / 32767.0
-		var value := clampf((tone + (noise_seed * 2.0 - 1.0) * noise_gain) * decay, -1.0, 1.0)
-		var pcm := int(value * 32767.0)
-		if pcm < 0:
-			pcm += 65536
-		bytes[sample_index * 2] = pcm & 0xff
-		bytes[sample_index * 2 + 1] = (pcm >> 8) & 0xff
-	var stream := AudioStreamWAV.new()
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = MIX_RATE
-	stream.stereo = false
-	stream.data = bytes
-	return stream
 
 
 func _mcp_state() -> Dictionary:

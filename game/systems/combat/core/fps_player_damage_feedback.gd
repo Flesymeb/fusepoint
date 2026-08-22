@@ -8,6 +8,9 @@ signal damage_feedback_started(event: Dictionary)
 signal death_feedback_started(event: Dictionary)
 signal restore_feedback_completed(epoch: int)
 
+const BODY_HIT_STREAM: AudioStream = preload("res://assets/audio/combat/deathpunch.wav")
+const ARMOR_HIT_STREAM: AudioStream = preload("res://assets/audio/combat/retro_damage.wav")
+
 @export_node_path("Node3D") var player_path: NodePath
 @export_node_path("Camera3D") var camera_path: NodePath
 @export var settings_store_path: NodePath
@@ -69,8 +72,8 @@ func _ready() -> void:
 	if _camera != null:
 		_camera_rest_position = _camera.position
 		_camera_rest_rotation = _camera.rotation
-	_body_hit_audio = _make_feedback_audio(&"BodyHitAudio", _synth_hit_sound(0.15, 112.0, 0.32, 0.42), -7.0)
-	_armor_hit_audio = _make_feedback_audio(&"ArmorHitAudio", _synth_hit_sound(0.11, 720.0, 0.38, 0.16), -9.0)
+	_body_hit_audio = _make_feedback_audio(&"BodyHitAudio", BODY_HIT_STREAM, -7.0)
+	_armor_hit_audio = _make_feedback_audio(&"ArmorHitAudio", ARMOR_HIT_STREAM, -8.0)
 	reset_feedback(true)
 	if not player_path.is_empty():
 		bind_player(get_node_or_null(player_path))
@@ -261,6 +264,10 @@ func snapshot() -> Dictionary:
 		"restore_epoch": _restore_epoch,
 		"reduced_camera_motion": _applied_reduced_motion,
 		"screen_shake_enabled": _applied_screen_shake,
+		"audio": {
+			"body_hit": _audio_snapshot(_body_hit_audio),
+			"armor_hit": _audio_snapshot(_armor_hit_audio),
+		},
 	}
 
 
@@ -274,7 +281,7 @@ func _direction_to_source(source_position: Variant) -> float:
 	return atan2(local_direction.x, -local_direction.z)
 
 
-func _make_feedback_audio(node_name: StringName, stream: AudioStreamWAV, volume_db: float) -> AudioStreamPlayer:
+func _make_feedback_audio(node_name: StringName, stream: AudioStream, volume_db: float) -> AudioStreamPlayer:
 	var player := AudioStreamPlayer.new()
 	player.name = node_name
 	player.stream = stream
@@ -284,29 +291,15 @@ func _make_feedback_audio(node_name: StringName, stream: AudioStreamWAV, volume_
 	return player
 
 
-func _synth_hit_sound(duration: float, frequency: float, tone_gain: float, noise_gain: float) -> AudioStreamWAV:
-	const MIX_RATE := 22050
-	var sample_count := int(MIX_RATE * duration)
-	var bytes := PackedByteArray()
-	bytes.resize(sample_count * 2)
-	for sample_index in sample_count:
-		var t := float(sample_index) / float(MIX_RATE)
-		var progress := float(sample_index) / float(sample_count)
-		var decay := pow(1.0 - progress, 2.4)
-		var tone := sin(TAU * frequency * t) * tone_gain
-		var noise_seed := float(((sample_index * 1664525 + 1013904223) >> 16) & 0x7fff) / 32767.0
-		var value := clampf((tone + (noise_seed * 2.0 - 1.0) * noise_gain) * decay, -1.0, 1.0)
-		var pcm := int(value * 32767.0)
-		if pcm < 0:
-			pcm += 65536
-		bytes[sample_index * 2] = pcm & 0xff
-		bytes[sample_index * 2 + 1] = (pcm >> 8) & 0xff
-	var stream := AudioStreamWAV.new()
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = MIX_RATE
-	stream.stereo = false
-	stream.data = bytes
-	return stream
+func _audio_snapshot(player: AudioStreamPlayer) -> Dictionary:
+	return {
+		"path": String(player.get_path()) if player != null else "",
+		"stream_path": player.stream.resource_path if player != null and player.stream != null else "",
+		"bus": player.bus if player != null else &"",
+		"volume_db": player.volume_db if player != null else -80.0,
+		"playing": player.playing if player != null else false,
+		"generated": false,
+	}
 
 
 func _direction_name(angle: float) -> StringName:

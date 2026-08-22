@@ -10,9 +10,12 @@ signal branch_receipt_updated(receipt: Dictionary)
 
 const FAMILY_ID := &"bomb_terminal_sequence"
 const SUCCESS_DURATION := 6.2
-const FAILURE_DURATION := 5.8
-const FAILURE_MEDIA_START := 1.5
+const FAILURE_DURATION := 6.2
+const FAILURE_MEDIA_START := 2.2
 const BRANCH_RECEIPT_LIMIT := 4
+const DETONATION_EFFECT_SCENE := preload("res://scenes/bomb_terminal_effect.tscn")
+const CAMERA_EFFECT_DISTANCE := 6.5
+const PROJECTION_MARGIN := 72.0
 
 @export var mission_path: NodePath
 @export var player_path: NodePath
@@ -49,6 +52,9 @@ var phase := &"idle"
 var elapsed_seconds := 0.0
 var current_event_id := ""
 var world_origin := Vector3.ZERO
+var presentation_origin := Vector3.ZERO
+var projection_rebound := false
+var projection_rebound_reason := &"none"
 var completion_count := 0
 var duplicate_event_count := 0
 var skip_available := false
@@ -57,6 +63,8 @@ var _observed_event_ids: Dictionary = {}
 var _effect_nodes: Array[Node] = []
 var _completed_current := false
 var _expansion_started := false
+var _debris_started := false
+var _dust_started := false
 var _media_started := false
 var _flash_tween: Tween
 var _edge_tween: Tween
@@ -75,11 +83,6 @@ func _ready() -> void:
 	_tactical_hud = get_tree().get_first_node_in_group(&"tactical_hud")
 	victory_avatar.visible = false
 	_clear_overlay()
-	# No approved decoded terminal impact source is bound in this candidate.
-	# Keep the retained spatial players silent instead of creating oscillator/
-	# noise placeholders at runtime.
-	blast_audio.stream = null
-	tail_audio.stream = null
 
 
 func _process(delta: float) -> void:
@@ -123,6 +126,10 @@ func _start_presentation(event_id: String, result: StringName, origin: Vector3, 
 	phase = &"native_victory" if branch == &"success" else &"flash_impulse"
 	elapsed_seconds = 0.0
 	world_origin = origin
+	var projection_binding := _resolve_presentation_origin(origin)
+	presentation_origin = projection_binding.get("presentation_origin", origin)
+	projection_rebound = projection_binding.get("rebound", false)
+	projection_rebound_reason = StringName(projection_binding.get("reason", &"none"))
 	_phase_timestamps.clear()
 	_phase_timestamps[phase] = _phase_stamp()
 	var payload: Dictionary = event.get("payload", {})
@@ -138,6 +145,9 @@ func _start_presentation(event_id: String, result: StringName, origin: Vector3, 
 		"authority_committed_frame": int(event.get("committed_frame", Engine.get_process_frames())),
 		"terminal_commit_count": int(mission.get("terminal_commit_count")),
 		"terminal_duplicate_submit_count": int(mission.get("terminal_duplicate_submit_count")),
+		"authoritative_world_origin": world_origin,
+		"presentation_origin": presentation_origin,
+		"projection_binding": projection_binding,
 		"health_zero_at_start": float(player.get("health")) <= 0.0,
 		"health_at_start": player.get("health"),
 		"bomb_state": mission.get("bomb_state"),
@@ -197,17 +207,18 @@ func _victory_ground_position() -> Vector3:
 
 func _begin_failure() -> void:
 	_spawn_explosion_layers(world_origin)
-	flash_overlay.color = Color(1.0, 0.96, 0.82, _flash_scale() * 0.92)
+	flash_overlay.color = Color(1.0, 0.92, 0.68, _flash_scale() * 0.88)
 	red_edge.modulate = Color(1.0, 1.0, 1.0, _red_scale() * 0.78)
 	_flash_tween = create_tween()
-	_flash_tween.tween_property(flash_overlay, "color:a", 0.0, 0.12).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	_flash_tween.tween_property(flash_overlay, "color:a", _flash_scale() * 0.34, 0.16).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	_flash_tween.tween_property(flash_overlay, "color:a", 0.0, 0.38).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_edge_tween = create_tween()
 	_edge_tween.tween_property(red_edge, "modulate:a", 0.18 * _red_scale(), 0.65).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_edge_tween.tween_property(red_edge, "modulate:a", 0.0, 0.85)
 	blast_audio.global_position = world_origin
 	tail_audio.global_position = world_origin
-	blast_audio.volume_db = linear_to_db(maxf(0.01, _volume_scale()))
-	tail_audio.volume_db = linear_to_db(maxf(0.01, _volume_scale())) - 3.0
+	blast_audio.volume_db = -1.5 + linear_to_db(maxf(0.01, _volume_scale()))
+	tail_audio.volume_db = -5.0 + linear_to_db(maxf(0.01, _volume_scale()))
 	if blast_audio.stream != null:
 		blast_audio.play()
 	if tail_audio.stream != null:
@@ -218,9 +229,15 @@ func _begin_failure() -> void:
 
 
 func _tick_failure() -> void:
-	if not _expansion_started and elapsed_seconds >= 0.12:
+	if not _expansion_started and elapsed_seconds >= 0.18:
 		_expansion_started = true
-		_set_phase(&"expansion_camera_down")
+		_set_phase(&"fire_sparks_expansion")
+	if not _debris_started and elapsed_seconds >= 0.52:
+		_debris_started = true
+		_set_phase(&"debris_pressure_wave")
+	if not _dust_started and elapsed_seconds >= 0.96:
+		_dust_started = true
+		_set_phase(&"dust_camera_down")
 	if not _media_started and elapsed_seconds >= FAILURE_MEDIA_START:
 		_media_started = true
 		_set_phase(&"terminal_media_fallback")
@@ -287,9 +304,14 @@ func reset_presentation(clear_event_cache := true, restore_camera := true) -> vo
 	elapsed_seconds = 0.0
 	current_event_id = ""
 	world_origin = Vector3.ZERO
+	presentation_origin = Vector3.ZERO
+	projection_rebound = false
+	projection_rebound_reason = &"none"
 	skip_available = false
 	_completed_current = false
 	_expansion_started = false
+	_debris_started = false
+	_dust_started = false
 	_media_started = false
 	if clear_event_cache:
 		_observed_event_ids.clear()
@@ -313,139 +335,43 @@ func _clear_overlay() -> void:
 
 
 func _spawn_explosion_layers(origin: Vector3) -> void:
-	var flash := _mesh_node("FlashCore", _sphere_mesh(0.5, _additive_material(Color(1.0, 0.87, 0.5, 0.96), 11.0)))
-	_add_world_layer(flash, origin)
-	flash.scale = Vector3.ONE * 0.08
-	var flash_tween := flash.create_tween().set_parallel(true)
-	flash_tween.tween_property(flash, "scale", Vector3.ONE * 4.8, 0.18).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-	flash_tween.tween_property(flash, "transparency", 1.0, 0.26)
-	var flash_cleanup := flash.create_tween()
-	flash_cleanup.tween_interval(0.28)
-	flash_cleanup.tween_callback(flash.queue_free)
-
-	# Overlapping asymmetric lobes read as a turbulent fuel/pressure bloom instead
-	# of a diagnostic primitive while retaining a bounded, deterministic lifetime.
-	for lobe_index in 7:
-		var angle := float(lobe_index) * TAU / 7.0 + 0.17
-		var lift := 0.18 + float(lobe_index % 3) * 0.22
-		var radial := 0.22 + float(lobe_index % 2) * 0.16
-		var lobe_color := Color(1.0, 0.14 + float(lobe_index % 3) * 0.1, 0.012, 0.26)
-		var fireball := _mesh_node("FireLobe_%02d" % lobe_index, _sphere_mesh(0.38 + float(lobe_index % 3) * 0.08, _additive_material(lobe_color, 2.1)))
-		var start_offset := Vector3(cos(angle) * radial, lift, sin(angle) * radial)
-		_add_world_layer(fireball, origin + start_offset)
-		fireball.scale = Vector3.ONE * 0.05
-		var destination := fireball.global_position + Vector3(cos(angle) * 1.9, 0.72 + float(lobe_index % 2) * 0.48, sin(angle) * 1.9)
-		var target_scale := Vector3(1.25 + float(lobe_index % 2) * 0.35, 1.1 + float(lobe_index % 3) * 0.24, 1.25 + float((lobe_index + 1) % 2) * 0.35)
-		var fire_tween := fireball.create_tween().set_parallel(true)
-		fire_tween.tween_property(fireball, "global_position", destination, 0.72).set_delay(0.1).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-		fire_tween.tween_property(fireball, "scale", target_scale, 0.58).set_delay(0.1).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-		fire_tween.tween_property(fireball, "transparency", 1.0, 0.95).set_delay(0.35)
-
-	var wave_mesh := CylinderMesh.new()
-	wave_mesh.top_radius = 1.0
-	wave_mesh.bottom_radius = 1.0
-	wave_mesh.height = 0.035
-	wave_mesh.radial_segments = 48
-	wave_mesh.material = _additive_material(Color(1.0, 0.34, 0.08, 0.12), 1.8)
-	var wave := _mesh_node("PressureWave", wave_mesh)
-	_add_world_layer(wave, origin + Vector3.UP * 0.08)
-	wave.scale = Vector3.ONE * 0.05
-	var wave_tween := wave.create_tween().set_parallel(true)
-	wave_tween.tween_property(wave, "scale", Vector3(9.0, 1.0, 9.0), 0.72).set_delay(0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	wave_tween.tween_property(wave, "transparency", 1.0, 0.72).set_delay(0.12)
-
-	for spark_index in int(14.0 * _particle_scale()):
-		var angle := float(spark_index) * TAU / 14.0
-		var direction := Vector3(cos(angle), 0.3 + 0.08 * float(spark_index % 3), sin(angle)).normalized()
-		var spark_mesh := BoxMesh.new()
-		spark_mesh.size = Vector3(0.025, 0.025, 0.42)
-		spark_mesh.material = _additive_material(Color(1.0, 0.68, 0.14, 0.92), 5.0)
-		var spark := _mesh_node("Spark_%02d" % spark_index, spark_mesh)
-		_add_world_layer(spark, origin + Vector3.UP * 0.32)
-		spark.look_at(spark.global_position + direction, Vector3.UP)
-		var spark_tween := spark.create_tween().set_parallel(true)
-		spark_tween.tween_property(spark, "global_position", spark.global_position + direction * (4.0 + float(spark_index % 4)), 0.58).set_delay(0.12)
-		spark_tween.tween_property(spark, "transparency", 1.0, 0.58).set_delay(0.22)
-
-	for debris_index in int(9.0 * _particle_scale()):
-		var debris_mesh := BoxMesh.new()
-		debris_mesh.size = Vector3(0.08, 0.06, 0.12) * (1.0 + float(debris_index % 3) * 0.25)
-		debris_mesh.material = _alpha_material(Color(0.18, 0.14, 0.11, 0.94))
-		var debris := _mesh_node("Debris_%02d" % debris_index, debris_mesh)
-		_add_world_layer(debris, origin + Vector3.UP * 0.28)
-		var angle := float(debris_index) * TAU / 9.0 + 0.21
-		var destination := debris.global_position + Vector3(cos(angle) * 3.4, 1.0 + float(debris_index % 3) * 0.35, sin(angle) * 3.4)
-		var debris_tween := debris.create_tween().set_parallel(true)
-		debris_tween.tween_property(debris, "global_position", destination, 0.62).set_delay(0.14).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-		debris_tween.tween_property(debris, "rotation", Vector3(2.5, 3.2, 1.8), 0.72).set_delay(0.14)
-		debris_tween.tween_property(debris, "transparency", 1.0, 0.65).set_delay(0.72)
-
-	for dust_index in int(5.0 * _particle_scale()):
-		var dust := _mesh_node("Dust_%02d" % dust_index, _sphere_mesh(0.7, _alpha_material(Color(0.25, 0.2, 0.15, 0.28))))
-		var angle := float(dust_index) * TAU / 5.0
-		_add_world_layer(dust, origin + Vector3(cos(angle), 0.22, sin(angle)) * 0.45)
-		dust.scale = Vector3.ONE * 0.2
-		var dust_tween := dust.create_tween().set_parallel(true)
-		dust_tween.tween_property(dust, "scale", Vector3(5.0, 2.1, 5.0), 1.45).set_delay(0.28)
-		dust_tween.tween_property(dust, "transparency", 1.0, 1.15).set_delay(0.72)
-
-	var light := OmniLight3D.new()
-	light.name = "ExplosionLight"
-	light.light_color = Color(1.0, 0.32, 0.06)
-	light.light_energy = 9.0
-	light.omni_range = 13.0
-	light.shadow_enabled = false
-	_add_world_layer(light, origin + Vector3.UP * 0.8)
-	var light_tween := light.create_tween()
-	light_tween.tween_property(light, "light_energy", 2.4, 0.18)
-	light_tween.tween_property(light, "light_energy", 0.0, 1.0)
+	var effect := DETONATION_EFFECT_SCENE.instantiate() as FusepointBombTerminalEffect
+	if effect == null:
+		return
+	effect_root.add_child(effect)
+	effect.add_to_group(&"bomb_terminal_sequence")
+	effect.play(current_event_id, origin, presentation_origin, _particle_scale())
+	_effect_nodes.append(effect)
 
 
-func _add_world_layer(node: Node3D, position: Vector3) -> void:
-	effect_root.add_child(node)
-	node.global_position = position
-	node.set_meta(&"terminal_event_id", current_event_id)
-	node.set_meta(&"spawned_usec", Time.get_ticks_usec())
-	node.set_meta(&"spawned_phase", phase)
-	node.add_to_group(&"bomb_terminal_sequence")
-	_effect_nodes.append(node)
-
-
-func _mesh_node(node_name: String, mesh: Mesh) -> MeshInstance3D:
-	var node := MeshInstance3D.new()
-	node.name = node_name
-	node.mesh = mesh
-	return node
-
-
-func _sphere_mesh(radius: float, material: Material) -> SphereMesh:
-	var mesh := SphereMesh.new()
-	mesh.radius = radius
-	mesh.height = radius * 2.0
-	mesh.radial_segments = 18
-	mesh.rings = 9
-	mesh.material = material
-	return mesh
-
-
-func _additive_material(color: Color, energy: float) -> StandardMaterial3D:
-	var material := StandardMaterial3D.new()
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-	material.albedo_color = color
-	material.emission_enabled = true
-	material.emission = Color(color.r, color.g, color.b)
-	material.emission_energy_multiplier = energy
-	return material
-
-
-func _alpha_material(color: Color) -> StandardMaterial3D:
-	var material := StandardMaterial3D.new()
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.albedo_color = color
-	material.roughness = 0.92
-	return material
+func _resolve_presentation_origin(origin: Vector3) -> Dictionary:
+	var viewport_rect := camera.get_viewport().get_visible_rect()
+	var safe_rect := viewport_rect.grow(-PROJECTION_MARGIN)
+	var behind := camera.is_position_behind(origin)
+	var screen_point := Vector2(-1.0, -1.0) if behind else camera.unproject_position(origin)
+	var in_safe_frame := not behind and safe_rect.has_point(screen_point)
+	var occluded := false
+	if in_safe_frame:
+		var query := PhysicsRayQueryParameters3D.create(camera.global_position, origin)
+		if player is CollisionObject3D:
+			query.exclude = [(player as CollisionObject3D).get_rid()]
+		query.collide_with_areas = false
+		var hit := camera.get_world_3d().direct_space_state.intersect_ray(query)
+		occluded = not hit.is_empty() and (hit.get("position", origin) as Vector3).distance_to(origin) > 0.8
+	var rebound := behind or not in_safe_frame or occluded
+	var rebound_origin := camera.global_position - camera.global_basis.z * CAMERA_EFFECT_DISTANCE - Vector3.UP * 1.12
+	return {
+		"authoritative_world_origin": origin,
+		"presentation_origin": rebound_origin if rebound else origin,
+		"rebound": rebound,
+		"reason": &"behind_camera" if behind else &"outside_safe_frame" if not in_safe_frame else &"occluded" if occluded else &"authoritative_origin_visible",
+		"screen_point": screen_point,
+		"safe_rect": safe_rect,
+		"camera_path": String(camera.get_path()),
+		"camera_position": camera.global_position,
+		"camera_forward": -camera.global_basis.z,
+		"distance_meters": camera.global_position.distance_to(origin),
+	}
 
 
 func _settings() -> Dictionary:
@@ -482,6 +408,9 @@ func snapshot() -> Dictionary:
 		"elapsed_seconds": elapsed_seconds,
 		"current_event_id": current_event_id,
 		"world_origin": world_origin,
+		"presentation_origin": presentation_origin,
+		"projection_rebound": projection_rebound,
+		"projection_rebound_reason": projection_rebound_reason,
 		"health_zero": float(player.get("health")) <= 0.0 if player != null else false,
 		"player_terminal_locked": player.get("terminal_locked") if player != null else false,
 		"effect_layer_count": _effect_layer_receipts().size(),
@@ -540,6 +469,9 @@ func _effect_layer_receipts() -> Array[Dictionary]:
 	for node: Node in _effect_nodes:
 		if not is_instance_valid(node):
 			continue
+		if node.has_method(&"layer_receipts"):
+			layers.append_array(node.call(&"layer_receipts"))
+			continue
 		layers.append({
 			"name": node.name,
 			"spawned_usec": int(node.get_meta(&"spawned_usec", 0)),
@@ -563,11 +495,17 @@ func _refresh_active_receipt() -> void:
 	_active_branch_receipt["effect_layers"] = _effect_layer_receipts()
 	_active_branch_receipt["effect_layer_count"] = (_active_branch_receipt["effect_layers"] as Array).size()
 	_active_branch_receipt["audio"] = {
-		"blast": {"bus": blast_audio.bus, "playing": blast_audio.playing, "stream_bound": blast_audio.stream != null, "spatial": true, "unit_size": blast_audio.unit_size, "max_distance": blast_audio.max_distance},
-		"tail": {"bus": tail_audio.bus, "playing": tail_audio.playing, "stream_bound": tail_audio.stream != null, "spatial": true, "unit_size": tail_audio.unit_size, "max_distance": tail_audio.max_distance},
+		"blast": {"bus": blast_audio.bus, "playing": blast_audio.playing, "stream_bound": blast_audio.stream != null, "stream_path": blast_audio.stream.resource_path if blast_audio.stream != null else "", "spatial": true, "unit_size": blast_audio.unit_size, "max_distance": blast_audio.max_distance, "volume_db": blast_audio.volume_db, "generated": false},
+		"tail": {"bus": tail_audio.bus, "playing": tail_audio.playing, "stream_bound": tail_audio.stream != null, "stream_path": tail_audio.stream.resource_path if tail_audio.stream != null else "", "spatial": true, "unit_size": tail_audio.unit_size, "max_distance": tail_audio.max_distance, "volume_db": tail_audio.volume_db, "generated": false},
 	}
 	_active_branch_receipt["camera"] = {
 		"position": camera.global_position if camera != null else Vector3.ZERO,
+		"forward": -camera.global_basis.z if camera != null else Vector3.FORWARD,
+		"authoritative_world_origin": world_origin,
+		"presentation_origin": presentation_origin,
+		"projection_rebound": projection_rebound,
+		"projection_rebound_reason": projection_rebound_reason,
+		"presentation_screen_point": camera.unproject_position(presentation_origin) if camera != null and not camera.is_position_behind(presentation_origin) else Vector2(-1.0, -1.0),
 		"victory": victory_sequence.snapshot(),
 	}
 	_active_branch_receipt["media"] = {"visible": media_layer.visible, "skip_available": skip_available, "fallback": true}
@@ -635,6 +573,10 @@ func _mcp_state() -> Dictionary:
 		"phase": phase,
 		"elapsed_seconds": elapsed_seconds,
 		"current_event_id": current_event_id,
+		"world_origin": world_origin,
+		"presentation_origin": presentation_origin,
+		"projection_rebound": projection_rebound,
+		"projection_rebound_reason": projection_rebound_reason,
 		"completion_count": completion_count,
 		"duplicate_event_count": duplicate_event_count,
 		"effect_layer_count": _effect_layer_receipts().size(),
