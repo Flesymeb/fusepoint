@@ -5,13 +5,7 @@ signal authoritative_damage_received(event: Dictionary)
 signal checkpoint_restored(event: Dictionary)
 signal player_died(event: Dictionary)
 
-const CONCRETE_FOOTSTEPS: Array[AudioStream] = [
-	preload("res://assets/audio/foley/cogito_stone/footstep_stone-01.ogg"),
-	preload("res://assets/audio/foley/cogito_stone/footstep_stone-02.ogg"),
-	preload("res://assets/audio/foley/cogito_stone/footstep_stone-03.ogg"),
-	preload("res://assets/audio/foley/cogito_stone/footstep_stone-04.ogg"),
-]
-const METAL_FOOTSTEPS: Array[AudioStream] = [
+const CONTACT_FOOTSTEPS: Array[AudioStream] = [
 	preload("res://assets/audio/foley/kenney_hard/footstep00.ogg"),
 	preload("res://assets/audio/foley/kenney_hard/footstep01.ogg"),
 	preload("res://assets/audio/foley/kenney_hard/footstep02.ogg"),
@@ -19,6 +13,15 @@ const METAL_FOOTSTEPS: Array[AudioStream] = [
 	preload("res://assets/audio/foley/kenney_hard/footstep04.ogg"),
 ]
 const FOLEY_INTERVALS := {&"crouch": 0.72, &"walk": 0.52, &"run": 0.34}
+const FOLEY_SOURCE_PROFILE := {
+	"family_id": &"kenney_hard_decoded_contacts",
+	"license": &"CC0-1.0",
+	"format": &"decoded_ogg_one_shot",
+	"duration_range_seconds": Vector2(0.243, 0.323),
+	"waveform_loudness_class": &"audible_transient_contact",
+	"measured_mean_dbfs": -19.7,
+	"measured_peak_dbfs": 0.0,
+}
 
 @export_group("Ground locomotion")
 @export var walk_speed := 4.5
@@ -536,7 +539,10 @@ func _sync_grounded_foley(source: StringName) -> void:
 func _play_contact_sample(primary: AudioStreamPlayer, alternate: AudioStreamPlayer, locomotion: StringName, surface: StringName) -> bool:
 	if primary == null:
 		return false
-	var family := METAL_FOOTSTEPS if surface == &"metal" else CONCRETE_FOOTSTEPS
+	# The prior stone family measured roughly 14 dB quieter and was masked by the
+	# authored ambience. Use the decoded short-contact family on both hard arena
+	# surfaces, while retaining surface identity for cadence/audition receipts.
+	var family := CONTACT_FOOTSTEPS
 	if family.is_empty():
 		return false
 	if alternate != null and alternate.playing:
@@ -546,7 +552,7 @@ func _play_contact_sample(primary: AudioStreamPlayer, alternate: AudioStreamPlay
 	primary.stream = family[_foley_variant_index % family.size()]
 	_foley_variant_index += 1
 	primary.bus = &"Foley"
-	primary.volume_db = -1.5 if locomotion in [&"run", &"landing"] else -3.0 if locomotion == &"walk" else -5.0
+	primary.volume_db = 0.0 if locomotion in [&"run", &"landing"] else -1.0 if locomotion == &"walk" else -3.0
 	primary.pitch_scale = 0.86 if locomotion == &"crouch" else 1.02 if locomotion == &"run" else 0.96
 	primary.play()
 	return primary.playing
@@ -583,6 +589,37 @@ func _audio_owner_snapshot(player: AudioStreamPlayer) -> Dictionary:
 		"bus_effect_count": AudioServer.get_bus_effect_count(bus_index) if bus_index >= 0 else 0,
 		"master_volume_db": master_db,
 		"effective_gain_db": player.volume_db + bus_db + master_db,
+		"source_profile": FOLEY_SOURCE_PROFILE,
+		"runtime_generated": player.stream is AudioStreamGenerator,
+	}
+
+
+func _active_audio_inventory() -> Dictionary:
+	var active: Array[Dictionary] = []
+	var generated_count := 0
+	var scene := get_tree().current_scene
+	if scene == null:
+		return {"active_count": 0, "runtime_generated_count": 0, "active": active}
+	for type_name in [&"AudioStreamPlayer", &"AudioStreamPlayer3D"]:
+		for node: Node in scene.find_children("*", String(type_name), true, false):
+			var playing := bool(node.get("playing"))
+			if not playing:
+				continue
+			var stream := node.get("stream") as AudioStream
+			var generated := stream is AudioStreamGenerator
+			generated_count += 1 if generated else 0
+			active.append({
+				"path": String(node.get_path()),
+				"type": String(type_name),
+				"bus": node.get("bus"),
+				"stream_path": stream.resource_path if stream != null else "",
+				"duration_seconds": stream.get_length() if stream != null else 0.0,
+				"runtime_generated": generated,
+			})
+	return {
+		"active_count": active.size(),
+		"runtime_generated_count": generated_count,
+		"active": active,
 	}
 
 
@@ -600,7 +637,7 @@ func _configure_authoritative_foley_owner() -> void:
 			player.stop()
 			# Atomically replace the unsuitable retained long recording before the
 			# first idle audit; the same retained playback nodes remain the owners.
-			player.stream = CONCRETE_FOOTSTEPS[0]
+			player.stream = CONTACT_FOOTSTEPS[0]
 
 
 func _capture_mouse() -> void:
@@ -946,6 +983,17 @@ func _mcp_state() -> Dictionary:
 		"foley_locomotion": _foley_locomotion,
 		"foley_sync_serial": _foley_sync_serial,
 		"foley_last_receipt": _foley_last_receipt,
+		"foley_runtime_audit": {
+			"sole_owner_path": String(_foley_feedback.get_path()) if _foley_feedback != null else "",
+			"owner_count": 1 if _foley_feedback != null else 0,
+			"retained_player_names": [&"WalkAudio", &"RunAudio"],
+			"cadence_authority": String(get_path()),
+			"source_profile": FOLEY_SOURCE_PROFILE,
+			"walk_audio": _audio_owner_snapshot(_foley_feedback.get_node_or_null("WalkAudio") as AudioStreamPlayer) if _foley_feedback != null else {"bound": false},
+			"run_audio": _audio_owner_snapshot(_foley_feedback.get_node_or_null("RunAudio") as AudioStreamPlayer) if _foley_feedback != null else {"bound": false},
+			"active_stream_inventory": _active_audio_inventory(),
+			"per_contact_long_recording_restart": false,
+		},
 		"blocked_seconds": _blocked_seconds,
 		"last_stuck_diagnostic": _last_stuck_diagnostic,
 		"slide_contacts": _slide_contact_snapshot(),

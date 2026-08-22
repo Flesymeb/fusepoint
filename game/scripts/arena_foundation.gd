@@ -43,6 +43,7 @@ var visible_mesh_count := 0
 var material_slot_count := 0
 var native_material_binding_count := 0
 var surface_override_count := 0
+var material_response_isolation: Dictionary = {}
 var collision_triangle_count := 0
 var collision_ready := false
 var navigation_bake_started := false
@@ -194,6 +195,7 @@ func _configure_map_materials() -> void:
 	# Keep the complete authored environment on its imported material resources.
 	# Previous product-side duplication severed that direct binding and made the
 	# daylight defect impossible to isolate from a material override defect.
+	var directly_lit_targets: Array[Dictionary] = []
 	for node in map_instance.find_children("*", "MeshInstance3D", true, false):
 		var mesh_instance := node as MeshInstance3D
 		if mesh_instance.mesh == null:
@@ -205,6 +207,42 @@ func _configure_map_materials() -> void:
 				native_material_binding_count += 1
 			if mesh_instance.get_surface_override_material(surface_index) != null:
 				surface_override_count += 1
+			var category := _material_isolation_category(mesh_instance.name)
+			if not category.is_empty() and source_material != null:
+				directly_lit_targets.append({
+					"category": category,
+					"node_path": String(mesh_instance.get_path()),
+					"surface_index": surface_index,
+					"native_material_bound": true,
+					"surface_override_bound": mesh_instance.get_surface_override_material(surface_index) != null,
+					"albedo_texture_bound": source_material.albedo_texture != null,
+					"albedo_texture_path": source_material.albedo_texture.resource_path if source_material.albedo_texture != null else "",
+					"roughness": source_material.roughness,
+					"metallic": source_material.metallic,
+					"emission_enabled": source_material.emission_enabled,
+				})
+	material_response_isolation = {
+		"method": &"native_material_probe_then_renderer_response_isolation",
+		"directly_lit_targets": directly_lit_targets,
+		"target_categories": [&"plaster", &"corrugated_metal", &"concrete"],
+		"native_materials_retained": native_material_binding_count > 0 and surface_override_count == 0,
+		"surface_overrides_applied": surface_override_count,
+		"mesh_validation_required": true,
+		"renderer_response": &"loop11_filmic_coherent_daylight",
+		"global_exposure_changed": false,
+		"authored_map_children_changed": false,
+	}
+
+
+func _material_isolation_category(node_name: String) -> StringName:
+	var lowered := node_name.to_lower()
+	if "plaster" in lowered:
+		return &"plaster"
+	if "corrugated" in lowered:
+		return &"corrugated_metal"
+	if "concrete" in lowered:
+		return &"concrete"
+	return &""
 
 
 func _measure_map() -> void:
@@ -816,6 +854,7 @@ func _mcp_state() -> Dictionary:
 		"native_material_binding_count": native_material_binding_count,
 		"surface_override_count": surface_override_count,
 		"native_materials_preserved": native_material_binding_count > 0 and surface_override_count == 0,
+		"material_response_isolation": material_response_isolation,
 		"collision_ready": collision_ready,
 		"collision_triangle_count": collision_triangle_count,
 		"collision_source_counts": collision_source_counts,
@@ -873,10 +912,11 @@ func _atmosphere_snapshot() -> Dictionary:
 			"tonemap_mode": environment.tonemap_mode,
 			"tonemap_white": environment.tonemap_white,
 			"direct_sun_energy": sun.light_energy,
-			"profile_id": &"loop35_filmic_highlight_rolloff",
-			"coherent_profile_bound": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.ambient_light_energy, 0.75) and is_equal_approx(environment.ambient_light_sky_contribution, 0.7) and environment.tonemap_mode == Environment.TONE_MAPPER_FILMIC and is_equal_approx(environment.tonemap_exposure, 1.0) and is_equal_approx(environment.tonemap_white, 6.0) and is_equal_approx(sun.light_energy, 1.35),
+			"profile_id": &"loop11_filmic_coherent_daylight",
+			"coherent_profile_bound": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.ambient_light_energy, 0.75) and is_equal_approx(environment.ambient_light_sky_contribution, 0.7) and environment.tonemap_mode == Environment.TONE_MAPPER_FILMIC and is_equal_approx(environment.tonemap_exposure, 1.0) and is_equal_approx(sun.light_energy, 1.35),
 			"highlight_recovery_calibration": true,
-			"highlight_isolation": &"filmic_white_reference_only",
+			"highlight_isolation": &"native_material_probe_with_loop11_filmic_profile",
+			"coherent_profile_tuple": [0.8, 0.75, 0.7, Environment.TONE_MAPPER_FILMIC, 1.0, 1.35],
 			"global_exposure_changed": false,
 			"calibration_owner": String(get_path()),
 		},

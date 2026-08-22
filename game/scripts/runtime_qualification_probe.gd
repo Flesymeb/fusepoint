@@ -8,6 +8,8 @@ const RAW_SAMPLE_CAPACITY := 18000
 const RAW_TAIL_SIZE := 240
 const CYCLE_HISTORY_LIMIT := 3
 const LOW_FPS_FRAME_MS := 1000.0 / 45.0
+const COMBAT_SAMPLE_INTERVAL := 0.1
+const COMBAT_HISTORY_LIMIT := 24
 
 @export var mission_path: NodePath
 @export var roster_path: NodePath
@@ -41,6 +43,9 @@ var _cycle_history: Array[Dictionary] = []
 var _phase_samples: Dictionary = {}
 var _counter_refresh_remaining := 0.0
 var _cleanup_counters: Dictionary = {}
+var _combat_sample_remaining := 0.0
+var _combat_sample_serial := 0
+var _combat_animation_history: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -68,6 +73,10 @@ func _process(delta: float) -> void:
 	if _counter_refresh_remaining <= 0.0:
 		_counter_refresh_remaining = 0.5
 		_refresh_cleanup_counters()
+	_combat_sample_remaining -= delta
+	if _combat_sample_remaining <= 0.0:
+		_combat_sample_remaining = COMBAT_SAMPLE_INTERVAL
+		_sample_combat_presentation()
 
 
 func _begin_cycle(epoch: int, marker: String) -> void:
@@ -88,6 +97,8 @@ func _begin_cycle(epoch: int, marker: String) -> void:
 	_explosion_max_low_streak = 0
 	_explosion_breach_visible = false
 	_phase_samples.clear()
+	_combat_animation_history.clear()
+	_combat_sample_remaining = 0.0
 
 
 func _record_sample(frame_ms: float, phase: StringName, explosion_window: bool) -> void:
@@ -200,6 +211,74 @@ func _signal_connection_count() -> int:
 	return count
 
 
+func _sample_combat_presentation() -> void:
+	# Observe only production state already owned by WeaponController and the
+	# authoritative roster. This deliberately has no selector or preview path.
+	var weapon_state: Dictionary = weapon.call(&"_mcp_state")
+	var roster_state: Dictionary = roster.call(&"_mcp_state")
+	var actor_cells: Array[Dictionary] = []
+	for actor_value: Variant in roster_state.get("actors", []):
+		if actor_value is not Dictionary:
+			continue
+		var actor := actor_value as Dictionary
+		if actor.get("active", false) != true:
+			continue
+		actor_cells.append({
+			"actor_id": actor.get("id", &""),
+			"region": actor.get("region", &""),
+			"alive": actor.get("alive", false),
+			"action": actor.get("action", &"idle"),
+			"animation_semantic": actor.get("animation_semantic", &""),
+			"animation_clip": actor.get("animation_name", ""),
+			"animation_normalized_time": actor.get("animation_normalized_time", 0.0),
+			"animation_playing": actor.get("animation_playing", false),
+			"rifle_action_progress": actor.get("rifle_action_progress", 0.0),
+			"velocity": actor.get("velocity", Vector3.ZERO),
+			"grounded": actor.get("grounded_occupancy", false),
+			"weapon_family": actor.get("weapon_family", &"unbound"),
+			"weapon_family_compatible": actor.get("weapon_family_compatible", false),
+			"weapon_socket_bound": actor.get("weapon_socket_bound", false),
+			"weapon_attached": actor.get("weapon_attached", false),
+			"root_pitch_degrees": actor.get("root_pitch_degrees", 0.0),
+			"root_roll_degrees": actor.get("root_roll_degrees", 0.0),
+			"root_upright": actor.get("root_upright", false),
+			"aim_pitch_degrees": actor.get("aim_pitch_degrees", 0.0),
+			"shot_event_id": actor.get("shot_event_id", ""),
+			"ammo": actor.get("ammo", 0),
+			"last_event": actor.get("last_event", {}),
+		})
+	_combat_sample_serial += 1
+	_combat_animation_history.append({
+		"sample_serial": _combat_sample_serial,
+		"process_frame": Engine.get_process_frames(),
+		"physics_frame": Engine.get_physics_frames(),
+		"run_epoch": weapon_state.get("run_epoch", 0),
+		"weapon": {
+			"weapon_id": weapon_state.get("active_weapon_id", ""),
+			"profile_id": weapon_state.get("active_profile_id", ""),
+			"action": weapon_state.get("action_state", &"idle"),
+			"reload_kind": weapon_state.get("reload_kind", &"none"),
+			"clip": weapon_state.get("viewmodel_clip", &""),
+			"ads": weapon_state.get("ads", false),
+			"ads_settled": weapon_state.get("viewmodel_settled_aim", false),
+			"trigger_held": weapon_state.get("trigger_held", false),
+			"recoil_phase": weapon_state.get("recoil_phase", &"unavailable"),
+			"recoil_position_offset": weapon_state.get("recoil_current_position_offset", Vector3.ZERO),
+			"recoil_rotation_offset_degrees": weapon_state.get("recoil_current_rotation_offset_degrees", Vector3.ZERO),
+			"recoil_recovery_complete": weapon_state.get("recoil_recovery_complete", false),
+			"baseline_position_error": weapon_state.get("recoil_baseline_position_error", -1.0),
+			"baseline_rotation_error_degrees": weapon_state.get("recoil_baseline_rotation_error_degrees", -1.0),
+			"magazine": weapon_state.get("magazine", 0),
+			"visible_rig": weapon_state.get("visible_rig", {}),
+			"direct_camera_child": weapon_state.get("viewmodel_direct_camera_child", false),
+		},
+		"active_enemy_count": actor_cells.size(),
+		"enemies": actor_cells,
+	})
+	while _combat_animation_history.size() > COMBAT_HISTORY_LIMIT:
+		_combat_animation_history.pop_front()
+
+
 func _phase_aggregates() -> Dictionary:
 	var result := {}
 	for phase: Variant in _phase_samples:
@@ -236,7 +315,7 @@ func _cycle_summary() -> Dictionary:
 
 func qualification_snapshot() -> Dictionary:
 	return {
-		"schema_version": 1,
+		"schema_version": 2,
 		"presentation_neutral": true,
 		"target_resolution": Vector2i(1920, 1080),
 		"target_fps": 60,
@@ -259,6 +338,14 @@ func qualification_snapshot() -> Dictionary:
 		"cleanup": _cleanup_counters.duplicate(true),
 		"cycle_history": _cycle_history.duplicate(true),
 		"raw_frame_time_tail_ms": _raw_tail(),
+		"combat_animation_observation": {
+			"presentation_neutral": true,
+			"production_bindings_only": true,
+			"mutates_mission_authority": false,
+			"sample_interval_seconds": COMBAT_SAMPLE_INTERVAL,
+			"sample_count": _combat_animation_history.size(),
+			"history": _combat_animation_history.duplicate(true),
+		},
 	}
 
 
