@@ -28,6 +28,7 @@ var _first_movement: Dictionary = {}
 var _completion_result: Dictionary = {}
 var _route_milestones: Array[Dictionary] = []
 var _capture_receipts: Array[Dictionary] = []
+var _progression_receipts: Array[Dictionary] = []
 var _last_capture_signature := ""
 var _run_epoch := 0
 
@@ -68,6 +69,7 @@ func _reset_trace(source: StringName = &"spawn_reset") -> void:
 	_completion_result.clear()
 	_route_milestones.clear()
 	_capture_receipts.clear()
+	_progression_receipts.clear()
 	_last_capture_signature = ""
 	_measurement_source = source
 	_measurement_generation += 1
@@ -120,8 +122,47 @@ func _on_mission_event(event: Dictionary) -> void:
 	var kind := StringName(event.get("kind", &""))
 	if kind in [&"deployment_started", &"checkpoint_restored"]:
 		_reset_trace(kind)
-	elif kind in [&"capture_started", &"capture_progress", &"capture_contested", &"capture_interrupted", &"capture_completed"]:
+	if kind in [&"capture_started", &"capture_progress", &"capture_contested", &"capture_interrupted", &"capture_completed"]:
 		_append_capture_receipt(kind, event)
+	if kind in [&"deployment_started", &"capture_completed", &"checkpoint_committed", &"objective_enter", &"defusal_started", &"terminal_submitted", &"checkpoint_restored"]:
+		_append_progression_receipt(kind, event)
+
+
+func _append_progression_receipt(kind: StringName, event: Dictionary) -> void:
+	var mission := get_tree().get_first_node_in_group(&"mission_controller")
+	var roster := get_tree().get_first_node_in_group(&"enemy_roster")
+	var mission_state: Dictionary = mission.call(&"_mcp_state") if mission != null else {}
+	var roster_state: Dictionary = roster.call(&"_mcp_state") if roster != null else {}
+	var payload: Dictionary = event.get("payload", {})
+	var objective_id := StringName(payload.get("objective_id", &""))
+	if kind == &"objective_enter" and objective_id != &"charlie":
+		return
+	var stage := kind
+	if kind == &"capture_completed":
+		stage = &"alpha_secured" if objective_id == &"alpha" else &"bravo_secured" if objective_id == &"bravo" else kind
+	elif kind == &"objective_enter":
+		stage = &"charlie_entered"
+	var receipt := {
+		"event_id": String(event.get("event_id", "run-%06d:progression:%03d" % [_run_epoch, _progression_receipts.size() + 1])),
+		"kind": kind,
+		"stage": stage,
+		"objective_id": objective_id,
+		"run_epoch": _run_epoch,
+		"measurement_generation": _measurement_generation,
+		"player_position": (get_node_or_null(player_path) as Node3D).global_position if get_node_or_null(player_path) is Node3D else Vector3.ZERO,
+		"capture_points": mission_state.get("capture_points", {}).duplicate(true),
+		"overlaps": mission_state.get("overlaps", {}).duplicate(true),
+		"bomb_state": mission_state.get("bomb_state", &"unknown"),
+		"enemy_region_counts": roster_state.get("region_counts", {}).duplicate(true),
+		"enemy_active_count": roster_state.get("active_count", -1),
+		"enemy_alive_count": roster_state.get("alive_count", -1),
+		"stable_identity_count": roster_state.get("stable_identity_count", -1),
+		"committed_frame": int(event.get("committed_frame", Engine.get_process_frames())),
+		"committed_at_usec": int(event.get("committed_at_usec", Time.get_ticks_usec())),
+	}
+	_progression_receipts.append(receipt)
+	while _progression_receipts.size() > 24:
+		_progression_receipts.pop_front()
 
 
 func _append_route_milestone(kind: StringName, payload: Dictionary = {}) -> void:
@@ -400,5 +441,7 @@ func _mcp_state() -> Dictionary:
 		"bounded_samples": route_samples,
 		"route_milestones": _route_milestones,
 		"capture_receipts": _capture_receipts,
+		"progression_receipts": _progression_receipts,
+		"uninterrupted_progression_generation": _progression_receipts.all(func(receipt: Dictionary) -> bool: return int(receipt.get("measurement_generation", -1)) == _measurement_generation),
 		"causal_generation_bound": _route_milestones.all(func(receipt: Dictionary) -> bool: return int(receipt.get("measurement_generation", -1)) == _measurement_generation) and _capture_receipts.all(func(receipt: Dictionary) -> bool: return int(receipt.get("measurement_generation", -1)) == _measurement_generation),
 	}

@@ -22,6 +22,9 @@ const FOLEY_SOURCE_PROFILE := {
 	"measured_mean_dbfs": -19.7,
 	"measured_peak_dbfs": 0.0,
 }
+const MOVEMENT_RECEIPT_HISTORY_LIMIT := 24
+const MOVEMENT_SAMPLE_INTERVAL_SECONDS := 0.25
+const DEPLOYMENT_EGRESS_DISTANCE := 1.25
 
 @export_group("Ground locomotion")
 @export var walk_speed := 4.5
@@ -113,6 +116,16 @@ var _foley_last_receipt: Dictionary = {}
 var _foley_step_remaining := 0.0
 var _foley_variant_index := 0
 var _foley_landing_emitted := false
+var _movement_receipt_serial := 0
+var _movement_receipt_history: Array[Dictionary] = []
+var _last_movement_receipt: Dictionary = {}
+var _movement_hold_active := false
+var _movement_release_pending := false
+var _movement_hold_elapsed := 0.0
+var _movement_sample_elapsed := 0.0
+var _movement_hold_origin := Vector3.ZERO
+var _movement_egress_latched := false
+var _movement_gate_observed := true
 
 
 func _ready() -> void:
@@ -163,7 +176,18 @@ func _input(event: InputEvent) -> void:
 
 func _physics_process(delta: float) -> void:
 	if not gameplay_input_enabled:
+		var disabled_position := global_position
+		var disabled_velocity := velocity
 		velocity = Vector3.ZERO
+		_update_movement_transaction(
+			delta,
+			Input.get_vector("move_left", "move_right", "move_forward", "move_backward"),
+			Vector3.ZERO,
+			disabled_position,
+			disabled_velocity,
+			is_on_floor(),
+			&"gameplay_disabled",
+		)
 		_sync_grounded_foley(&"gameplay_disabled")
 		return
 	_apply_gamepad_look(delta)
@@ -172,6 +196,8 @@ func _physics_process(delta: float) -> void:
 		return
 
 	var was_on_floor := is_on_floor()
+	var position_before := global_position
+	var velocity_before := velocity
 	_update_stance()
 	_update_camera_height(delta)
 
@@ -183,6 +209,7 @@ func _physics_process(delta: float) -> void:
 	var grounded := is_on_floor()
 	var sprinting := grounded and _stance == "standing" and Input.is_action_pressed("sprint") and input_vector.y < -0.1
 	_current_target_speed = 0.0 if desired_direction.is_zero_approx() else _get_target_speed(sprinting)
+	var desired_velocity := desired_direction * _current_target_speed
 	var acceleration := ground_acceleration if grounded else air_acceleration
 	if desired_direction.is_zero_approx():
 		acceleration = ground_deceleration if grounded else air_acceleration
@@ -208,7 +235,105 @@ func _physics_process(delta: float) -> void:
 		move_and_slide()
 	_update_ground_recovery(delta, desired_direction)
 	_update_authoritative_state(was_on_floor, input_vector, sprinting, delta)
+	_update_movement_transaction(delta, input_vector, desired_velocity, position_before, velocity_before, was_on_floor)
 	_sync_grounded_foley(&"physics_state")
+
+
+func _update_movement_transaction(
+	delta: float,
+	input_vector: Vector2,
+	desired_velocity: Vector3,
+	position_before: Vector3,
+	velocity_before: Vector3,
+	grounded_before: bool,
+	boundary := &"physics_window",
+) -> void:
+	var input_active := input_vector.length() > 0.05 and gameplay_input_enabled
+	var started := input_active and not _movement_hold_active
+	var released := not input_active and _movement_hold_active
+	if started:
+		_movement_hold_active = true
+		_movement_release_pending = false
+		_movement_hold_elapsed = 0.0
+		_movement_sample_elapsed = 0.0
+		_movement_hold_origin = position_before
+		_movement_egress_latched = false
+	if input_active:
+		_movement_hold_elapsed += delta
+		_movement_sample_elapsed += delta
+	var frame_displacement := Vector2(global_position.x - position_before.x, global_position.z - position_before.z).length()
+	var hold_displacement := Vector2(global_position.x - _movement_hold_origin.x, global_position.z - _movement_hold_origin.z).length() if (_movement_hold_active or released) else 0.0
+	var egress_completed_now := not _movement_egress_latched and hold_displacement >= DEPLOYMENT_EGRESS_DISTANCE
+	if egress_completed_now:
+		_movement_egress_latched = true
+	var horizontal_speed := Vector2(velocity.x, velocity.z).length()
+	var release_settled := _movement_release_pending and horizontal_speed <= 0.05
+	var gate_changed := gameplay_input_enabled != _movement_gate_observed
+	var should_sample := started or released or egress_completed_now or release_settled or gate_changed or (input_active and _movement_sample_elapsed >= MOVEMENT_SAMPLE_INTERVAL_SECONDS)
+	if boundary != &"physics_window" and (_movement_hold_active or _movement_release_pending or gate_changed):
+		should_sample = true
+	if should_sample:
+		_movement_sample_elapsed = 0.0
+		_movement_receipt_serial += 1
+		var shell := get_tree().get_first_node_in_group(&"product_shell")
+		var app_state := StringName(shell.get("app_state")) if shell != null else &"unknown"
+		var paused := get_tree().paused
+		var input_authorized := gameplay_input_enabled and not paused and app_state == &"gameplay"
+		var result := &"gate_enabled" if gate_changed and gameplay_input_enabled else &"input_gated"
+		if released:
+			result = &"released_decelerating" if horizontal_speed > 0.05 else &"released_stopped"
+		elif release_settled:
+			result = &"release_settled"
+		elif input_active and frame_displacement > 0.001:
+			result = &"moved"
+		elif input_active and get_slide_collision_count() > 0:
+			result = &"collision_blocked"
+		elif input_active:
+			result = &"awaiting_displacement"
+		_last_movement_receipt = {
+			"receipt_id": "movement-g%04d-%06d" % [_deployment_generation, _movement_receipt_serial],
+			"deployment_generation": _deployment_generation,
+			"boundary": boundary,
+			"phase": &"press" if started else &"release" if released else &"release_settled" if release_settled else &"hold",
+			"app_state": app_state,
+			"tree_paused": paused,
+			"gameplay_input_enabled": gameplay_input_enabled,
+			"input_authorized": input_authorized,
+			"mouse_captured": _mouse_captured,
+			"action_strengths": {
+				"forward": Input.get_action_strength(&"move_forward"),
+				"backward": Input.get_action_strength(&"move_backward"),
+				"left": Input.get_action_strength(&"move_left"),
+				"right": Input.get_action_strength(&"move_right"),
+			},
+			"action_vector": input_vector,
+			"desired_velocity": desired_velocity,
+			"velocity_before": velocity_before,
+			"velocity_after": velocity,
+			"position_before": position_before,
+			"position_after": global_position,
+			"frame_displacement": snappedf(frame_displacement, 0.0001),
+			"hold_elapsed_seconds": snappedf(_movement_hold_elapsed, 0.001),
+			"hold_displacement": snappedf(hold_displacement, 0.001),
+			"deployment_egress_distance": DEPLOYMENT_EGRESS_DISTANCE,
+			"deployment_egress_complete": _movement_egress_latched,
+			"grounded_before": grounded_before,
+			"grounded_after": is_on_floor(),
+			"slide_collision_count": get_slide_collision_count(),
+			"slide_contacts": _slide_contact_snapshot(),
+			"result": result,
+			"committed_frame": Engine.get_process_frames(),
+			"committed_at_usec": Time.get_ticks_usec(),
+		}
+		_movement_receipt_history.append(_last_movement_receipt.duplicate(true))
+		while _movement_receipt_history.size() > MOVEMENT_RECEIPT_HISTORY_LIMIT:
+			_movement_receipt_history.pop_front()
+	if released:
+		_movement_hold_active = false
+		_movement_release_pending = horizontal_speed > 0.05
+	elif release_settled:
+		_movement_release_pending = false
+	_movement_gate_observed = gameplay_input_enabled
 
 
 func _apply_gamepad_look(delta: float) -> void:
@@ -283,6 +408,12 @@ func _begin_look_observation_generation(source: StringName) -> void:
 		"gameplay_enabled": gameplay_input_enabled,
 		"mouse_captured": _mouse_captured,
 	}
+	_movement_hold_active = false
+	_movement_release_pending = false
+	_movement_hold_elapsed = 0.0
+	_movement_sample_elapsed = 0.0
+	_movement_hold_origin = global_position
+	_movement_egress_latched = false
 
 
 func _get_target_speed(sprinting: bool) -> float:
@@ -1047,4 +1178,7 @@ func _mcp_state() -> Dictionary:
 		"look_receipt_history": _look_history.duplicate(true),
 		"look_receipt_history_limit": 24,
 		"last_look_receipt": _last_look_receipt,
+		"movement_receipt_history_limit": MOVEMENT_RECEIPT_HISTORY_LIMIT,
+		"movement_receipt_history": _movement_receipt_history.duplicate(true),
+		"last_movement_receipt": _last_movement_receipt,
 	}

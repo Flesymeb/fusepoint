@@ -27,6 +27,13 @@ const TRANSITION_HISTORY_LIMIT := 32
 const TERMINAL_RESULT_RECEIPT_LIMIT := 4
 const SAFE_AREA_RATIO := 0.05
 const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v4_container_reflow"
+const SETTINGS_COMPONENT_ASSET_ID := "github:Maaack/Godot-Menus-Template"
+const SETTINGS_COMPONENT_RECEIPT := "res://ui/shell/maaacks_main_menu/agent_asset_receipt.json"
+const SETTINGS_COMPONENT_MAIN_MENU := "res://ui/shell/maaacks_main_menu/main_menu.tscn"
+const SETTINGS_COMPONENT_MAIN_SCRIPT := "res://ui/shell/maaacks_main_menu/main_menu.gd"
+const SETTINGS_COMPONENT_BASE_SCENE := "res://addons/maaacks_menus_template/base/nodes/menus/main_menu/main_menu.tscn"
+const SETTINGS_COMPONENT_SCENE: PackedScene = preload("res://ui/shell/maaacks_main_menu/main_menu.tscn")
+const SETTINGS_COMPONENT_ROW_HEIGHT := 40.0
 const NON_PAGE_STATES: Array[StringName] = [STATE_DEPLOYMENT, STATE_GAMEPLAY, STATE_VICTORY, STATE_DETONATION]
 const LIFECYCLE_TABLE := {
 	&"title": {"predecessors":[&"title",&"loadout",&"briefing",&"settings",&"pause",&"death_recovery",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/TitlePage/Menu/StartButton"},
@@ -98,6 +105,10 @@ var _activation_frame := -1
 var _last_activation_receipt: Dictionary = {}
 var _settings_focus_history: Array[Dictionary] = []
 var _last_settings_focus_receipt: Dictionary = {}
+var _curated_menu_instance: Control
+var _settings_component_row_height := SETTINGS_COMPONENT_ROW_HEIGHT
+var _curated_menu_start_count := 0
+var _last_curated_menu_lifecycle_receipt: Dictionary = {}
 
 
 func _ready() -> void:
@@ -106,6 +117,7 @@ func _ready() -> void:
 	# either full-screen parent on STOP can swallow mouse look with hidden pages.
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pages.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_instantiate_curated_menu_component()
 	_connect_controls()
 	player.player_died.connect(_on_player_died)
 	mission.mission_event_committed.connect(_on_mission_event_committed)
@@ -114,6 +126,7 @@ func _ready() -> void:
 	settings_store.settings_applied.connect(_on_settings_applied)
 	root.resized.connect(_apply_responsive_layout)
 	briefing_video.finished.connect(_on_opening_video_finished)
+	_assert_curated_menu_binding()
 	_set_gameplay_enabled(false)
 	_load_settings_controls()
 	settings_store.apply_runtime()
@@ -122,9 +135,6 @@ func _ready() -> void:
 
 
 func _connect_controls() -> void:
-	$Root/Pages/TitlePage/Menu/StartButton.pressed.connect(_open_loadout)
-	$Root/Pages/TitlePage/Menu/SettingsButton.pressed.connect(_open_settings_from.bind(STATE_TITLE))
-	$Root/Pages/TitlePage/Menu/QuitButton.pressed.connect(get_tree().quit)
 	$Root/Pages/LoadoutPage/Content/Weapons/AKButton.pressed.connect(_select_weapon.bind(&"ak74m"))
 	$Root/Pages/LoadoutPage/Content/Weapons/SaigaButton.pressed.connect(_select_weapon.bind(&"saiga12"))
 	$Root/Pages/LoadoutPage/Content/Actions/ConfirmButton.pressed.connect(_start_loading)
@@ -157,6 +167,7 @@ func _connect_controls() -> void:
 	]:
 		toggle.toggled.connect(func(_pressed: bool) -> void: _sync_settings_value_copy())
 	_configure_settings_navigation()
+	_configure_settings_layout_contract()
 
 
 func _settings_controls() -> Array[Control]:
@@ -222,9 +233,90 @@ func _configure_settings_navigation() -> void:
 	cancel_button.focus_neighbor_left = cancel_button.get_path_to(apply_button)
 
 
+func _configure_settings_layout_contract() -> void:
+	# The product keeps its authoritative lifecycle while adapting the registered
+	# Maaack main/pause bundle's compact 40-pixel row rhythm.
+	var component_row_height := _settings_component_row_height
+	for label_control: Control in _settings_labels():
+		var label := label_control as Label
+		label.custom_minimum_size = Vector2(0.0, maxf(36.0, component_row_height))
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		label.clip_text = false
+	for control: Control in _settings_controls().slice(0, 7):
+		control.custom_minimum_size.y = maxf(48.0 if control is BaseButton else 38.0, component_row_height)
+		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+
+func _assert_curated_menu_binding() -> void:
+	for source_path: String in [
+		SETTINGS_COMPONENT_RECEIPT,
+		SETTINGS_COMPONENT_MAIN_MENU,
+		SETTINGS_COMPONENT_MAIN_SCRIPT,
+		SETTINGS_COMPONENT_BASE_SCENE,
+	]:
+		if not FileAccess.file_exists(source_path):
+			push_error("Required curated menu source is not materialized: %s" % source_path)
+	if not is_instance_valid(_curated_menu_instance):
+		push_error("Required curated menu PackedScene was not instantiated")
+
+
+func _instantiate_curated_menu_component() -> void:
+	_curated_menu_instance = SETTINGS_COMPONENT_SCENE.instantiate() as Control
+	if _curated_menu_instance == null:
+		push_error("Curated Maaack main_menu.tscn root is not a Control")
+		return
+	_curated_menu_instance.name = "MaaacksMainMenuRuntime"
+	_curated_menu_instance.visible = true
+	_curated_menu_instance.process_mode = Node.PROCESS_MODE_ALWAYS
+	_curated_menu_instance.set_process_input(true)
+	root.add_child(_curated_menu_instance)
+	if _curated_menu_instance.has_signal(&"game_started"):
+		_curated_menu_instance.connect(&"game_started", _on_curated_menu_game_started)
+	if _curated_menu_instance.has_signal(&"game_exited"):
+		_curated_menu_instance.connect(&"game_exited", get_tree().quit)
+	if _curated_menu_instance.has_signal(&"settings_requested"):
+		_curated_menu_instance.connect(&"settings_requested", _open_settings_from.bind(STATE_TITLE))
+	var source_button := _curated_menu_instance.get_node_or_null(
+		^"MenuContainer/MenuButtonsMargin/MenuButtonsContainer/MenuButtonsBoxContainer/NewGameButton"
+	) as Button
+	if source_button != null:
+		_settings_component_row_height = maxf(
+			SETTINGS_COMPONENT_ROW_HEIGHT,
+			source_button.custom_minimum_size.y
+		)
+
+
+func _on_curated_menu_game_started() -> void:
+	_curated_menu_start_count += 1
+	_last_curated_menu_lifecycle_receipt = {
+		"event": &"game_started",
+		"source_path": str(_curated_menu_instance.get_path()),
+		"source_scene": _curated_menu_instance.scene_file_path,
+		"count": _curated_menu_start_count,
+		"committed_frame": Engine.get_process_frames(),
+		"predecessor_state": app_state,
+	}
+	_open_loadout()
+	_last_curated_menu_lifecycle_receipt["result_state"] = app_state
 func _on_settings_focus_entered(control: Control) -> void:
 	if settings_scroll.is_ancestor_of(control):
-		settings_scroll.ensure_control_visible(control)
+		_reveal_settings_pair.call_deferred(control)
+	else:
+		_finalize_settings_focus_receipt.call_deferred(control)
+
+
+func _reveal_settings_pair(control: Control) -> void:
+	if app_state != STATE_SETTINGS or not is_instance_valid(control):
+		return
+	settings_scroll.ensure_control_visible(control)
+	var label := _setting_label_for(control)
+	var scroll_rect := settings_scroll.get_global_rect()
+	var pair_rect := label.get_global_rect().merge(control.get_global_rect())
+	if pair_rect.position.y < scroll_rect.position.y:
+		settings_scroll.scroll_vertical -= int(ceil(scroll_rect.position.y - pair_rect.position.y))
+	elif pair_rect.end.y > scroll_rect.end.y:
+		settings_scroll.scroll_vertical += int(ceil(pair_rect.end.y - scroll_rect.end.y))
 	_finalize_settings_focus_receipt.call_deferred(control)
 
 
@@ -262,6 +354,11 @@ func _finalize_settings_focus_receipt(control: Control) -> void:
 
 func _input(event: InputEvent) -> void:
 	_observe_input_family(event)
+	if app_state == STATE_BRIEFING and not _briefing_complete and event.is_action_pressed(&"skip_presentation"):
+		_complete_briefing(true)
+		_deploy()
+		get_viewport().set_input_as_handled()
+		return
 	if pages.visible and app_state != STATE_GAMEPLAY and event.is_action_pressed(&"menu_accept"):
 		if _activate_focused_control_once():
 			get_viewport().set_input_as_handled()
@@ -344,6 +441,13 @@ func _show_page(state: StringName, reason := &"page_change", authority := &"shel
 		focused_before.release_focus()
 	for child in pages.get_children():
 		(child as Control).visible = child.name == _page_name(state)
+	if is_instance_valid(_curated_menu_instance):
+		var curated_title_active := state == STATE_TITLE and pages.visible
+		_curated_menu_instance.visible = curated_title_active
+		_curated_menu_instance.set_process_input(false)
+		if curated_title_active:
+			_enable_curated_menu_input_if_title.call_deferred()
+		$Root/Pages/TitlePage.visible = false if curated_title_active else $Root/Pages/TitlePage.visible
 	if state == STATE_BRIEFING:
 		_start_briefing()
 	if state not in [STATE_GAMEPLAY, STATE_DEPLOYMENT, STATE_VICTORY, STATE_DETONATION]:
@@ -352,6 +456,15 @@ func _show_page(state: StringName, reason := &"page_change", authority := &"shel
 	_commit_transition(previous_state, state, reason)
 	_apply_responsive_layout.call_deferred()
 	return true
+
+
+func _enable_curated_menu_input_if_title() -> void:
+	if (
+		app_state == STATE_TITLE
+		and is_instance_valid(_curated_menu_instance)
+		and _curated_menu_instance.is_visible_in_tree()
+	):
+		_curated_menu_instance.set_process_input(true)
 
 
 func _page_name(state: StringName) -> String:
@@ -370,6 +483,14 @@ func _page_name(state: StringName) -> String:
 
 
 func _focus_first_button() -> void:
+	if app_state == STATE_TITLE and is_instance_valid(_curated_menu_instance) and _curated_menu_instance.is_visible_in_tree():
+		var curated_start := _curated_menu_instance.get_node_or_null(
+			^"MenuContainer/MenuButtonsMargin/MenuButtonsContainer/MenuButtonsBoxContainer/NewGameButton"
+		) as Button
+		if curated_start != null and not curated_start.disabled:
+			curated_start.grab_focus()
+			_finalize_transition_focus()
+			return
 	var page := pages.get_node_or_null(_page_name(app_state))
 	if page == null:
 		return
@@ -647,10 +768,13 @@ func _apply_responsive_layout() -> void:
 	settings_grid.columns = 1 if settings_single_column else 2
 	settings_grid.custom_minimum_size.x = 0.0
 	settings_grid.add_theme_constant_override("h_separation", 0 if settings_single_column else 36)
-	settings_grid.add_theme_constant_override("v_separation", 10 if settings_single_column else 18)
+	settings_grid.add_theme_constant_override("v_separation", 14 if settings_single_column else 18)
 	for control: Control in _settings_controls().slice(0, 7):
 		control.custom_minimum_size.x = 0.0 if settings_single_column else 280.0
 		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for label: Control in _settings_labels():
+		label.custom_minimum_size.x = 0.0
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_set_rect(^"Root/Pages/TitlePage/Accent", Rect2(safe.position, Vector2(4.0, safe.size.y - 28.0)))
 	_set_rect(^"Root/Pages/TitlePage/Brand", Rect2(safe.position + Vector2(28.0, 24.0), Vector2(560.0, 212.0)))
 	_set_rect(^"Root/Pages/TitlePage/Menu", Rect2(safe.position + Vector2(24.0, 292.0), Vector2(430.0, 238.0)))
@@ -863,6 +987,24 @@ func _layout_snapshot() -> Dictionary:
 		var focused_pair_revealed := focused_revealed and (focused_label == null or not focused_in_scroll or scroll_rect.encloses(focused_label.get_global_rect()))
 		var action_row := $Root/Pages/SettingsPage/SafeArea/Layout/Actions as Control
 		var action_path_visible := safe_rect.encloses(action_row.get_global_rect())
+		var pair_geometries: Array[Dictionary] = []
+		var setting_controls := _settings_controls()
+		var setting_labels := _settings_labels()
+		for index in 7:
+			var pair_label := setting_labels[index]
+			var pair_control := setting_controls[index]
+			var label_rect := pair_label.get_global_rect()
+			var control_rect := pair_control.get_global_rect()
+			pair_geometries.append({
+				"label": str(pair_label.get_path()),
+				"control": str(pair_control.get_path()),
+				"label_rect": label_rect,
+				"control_rect": control_rect,
+				"pair_rect": label_rect.merge(control_rect),
+				"focused": pair_control == focus_owner,
+				"fully_revealed": scroll_rect.encloses(label_rect) and scroll_rect.encloses(control_rect),
+				"focus_reachable": pair_control.focus_mode != Control.FOCUS_NONE,
+			})
 		settings_reflow = {
 			"mode": &"single_column" if settings_grid.columns == 1 else &"two_column",
 			"columns": settings_grid.columns,
@@ -883,6 +1025,9 @@ func _layout_snapshot() -> Dictionary:
 			"focused_label": str(focused_label.get_path()) if focused_label != null else "",
 			"label_control_pair_visible": focused_pair_revealed,
 			"persistent_action_path_visible": action_path_visible,
+			"title_rect": ($Root/Pages/SettingsPage/SafeArea/Layout/Title as Control).get_global_rect(),
+			"action_row_rect": action_row.get_global_rect(),
+			"pair_geometries": pair_geometries,
 			"predecessor": _return_from_settings,
 			"all_critical_reachable": inaccessible.is_empty(),
 		}
@@ -1027,6 +1172,27 @@ func _mcp_state() -> Dictionary:
 		"activation_serial": _activation_serial,
 		"last_activation_receipt": _last_activation_receipt,
 		"settings_focus_history": _settings_focus_history,
+		"settings_component_binding": {
+			"asset_id": SETTINGS_COMPONENT_ASSET_ID,
+			"receipt_path": SETTINGS_COMPONENT_RECEIPT,
+			"main_menu_source": SETTINGS_COMPONENT_MAIN_MENU,
+			"main_menu_script": SETTINGS_COMPONENT_MAIN_SCRIPT,
+			"inherited_base_scene": SETTINGS_COMPONENT_BASE_SCENE,
+			"architecture": &"maaack_main_menu_inherited_packed_scene",
+			"main_menu_bound": is_instance_valid(_curated_menu_instance),
+			"packed_scene_instantiated": is_instance_valid(_curated_menu_instance),
+			"runtime_path": str(_curated_menu_instance.get_path()) if is_instance_valid(_curated_menu_instance) else "",
+			"instance_scene_file_path": _curated_menu_instance.scene_file_path if is_instance_valid(_curated_menu_instance) else "",
+			"source_row_minimum_height": _settings_component_row_height,
+			"adapted_surface": &"product_shell_main_settings",
+			"lifecycle_active": is_instance_valid(_curated_menu_instance) and _curated_menu_instance.process_mode != Node.PROCESS_MODE_DISABLED,
+			"visible_surface_active": is_instance_valid(_curated_menu_instance) and _curated_menu_instance.is_visible_in_tree(),
+			"visible_start_control": "Root/MaaacksMainMenuRuntime/MenuContainer/MenuButtonsMargin/MenuButtonsContainer/MenuButtonsBoxContainer/NewGameButton",
+			"visible_settings_control": "Root/MaaacksMainMenuRuntime/MenuContainer/MenuButtonsMargin/MenuButtonsContainer/MenuButtonsBoxContainer/OptionsButton",
+			"visible_exit_control": "Root/MaaacksMainMenuRuntime/MenuContainer/MenuButtonsMargin/MenuButtonsContainer/MenuButtonsBoxContainer/ExitButton",
+			"game_started_count": _curated_menu_start_count,
+			"last_lifecycle_receipt": _last_curated_menu_lifecycle_receipt,
+		},
 		"briefing_elapsed": _briefing_elapsed,
 		"briefing_caption_index": _briefing_caption_index,
 		"briefing_caption_line_count": ($Root/Pages/BriefingPage/Copy as Label).text.count("\n") + 1,

@@ -1,4 +1,4 @@
-class_name UISoundController
+class_name FusepointUISoundController
 extends Node
 ## Controller for managing all UI sounds in a scene from one place.
 ##
