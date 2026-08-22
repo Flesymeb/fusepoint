@@ -12,8 +12,18 @@ const ROUTE_TARGET_EFFECTIVE_SECONDS := 37.5
 # Loop-18 ordinary input covered the 24 m route in about 9.1 s. This observed
 # effective pace selects spatial separation only; it never changes player speed.
 const CALIBRATED_EFFECTIVE_ROUTE_SPEED := 2.6
+const DEPLOYMENT_CANDIDATE_OFFSETS: Array[Vector3] = [
+	Vector3.ZERO,
+	Vector3(5.8, 0.0, -1.7),
+	Vector3(-9.2, 0.0, 2.3),
+]
+const ALPHA_CANDIDATE_OFFSETS: Array[Vector3] = [
+	Vector3.ZERO,
+	Vector3(-0.6, 0.0, -3.2),
+]
 const SOURCE_CLOUD_SHADER := "res://shaders/clouds.gdshader"
 const SOURCE_SUN_FLARE_SCRIPT := "res://scripts/source_sun_flare.gd"
+const MIGRATION_MANIFEST_PATH := "res://scenes/arena_foundation_migration_manifest.json"
 
 @onready var map_wrapper: Node3D = $NavigationRegion3D/AuthoredEnvironmentWrapper
 @onready var map_instance: Node3D = $NavigationRegion3D/AuthoredEnvironmentWrapper/StandoffArena
@@ -34,6 +44,8 @@ const SOURCE_SUN_FLARE_SCRIPT := "res://scripts/source_sun_flare.gd"
 var map_bounds := AABB()
 var visible_mesh_count := 0
 var material_slot_count := 0
+var native_material_binding_count := 0
+var surface_override_count := 0
 var collision_triangle_count := 0
 var collision_ready := false
 var navigation_bake_started := false
@@ -51,6 +63,8 @@ var excluded_collision_sources: Array[String] = []
 var deployment_anchor_selection: Dictionary = {}
 var last_industrial_cue_receipt: Dictionary = {}
 var industrial_cue_response_count := 0
+var migration_manifest: Dictionary = {}
+var migration_manifest_report: Dictionary = {}
 
 
 func _ready() -> void:
@@ -62,7 +76,79 @@ func _ready() -> void:
 	_configure_map_materials()
 	_measure_map()
 	_build_map_collision()
+	_load_and_validate_migration_manifest()
 	_start_navigation_bake()
+
+
+func _load_and_validate_migration_manifest() -> void:
+	if not FileAccess.file_exists(MIGRATION_MANIFEST_PATH):
+		push_error("Arena migration manifest is missing: %s" % MIGRATION_MANIFEST_PATH)
+		return
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(MIGRATION_MANIFEST_PATH))
+	if parsed is not Dictionary:
+		push_error("Arena migration manifest is not a valid JSON object.")
+		return
+	migration_manifest = parsed as Dictionary
+	var authority := migration_manifest.get("authoritative_visual_map", {}) as Dictionary
+	var child_policy := migration_manifest.get("authored_child_transforms", {}) as Dictionary
+	var prohibited := migration_manifest.get("prohibited_migration_actions", {}) as Dictionary
+	var declared_paths: Dictionary = {}
+	var missing_paths: Array[String] = []
+	for item: Variant in migration_manifest.get("retained_additive_placements", []):
+		if item is not Dictionary:
+			continue
+		var placement := item as Dictionary
+		var node_path := String(placement.get("node_path", ""))
+		if node_path.is_empty():
+			continue
+		declared_paths[node_path] = String(placement.get("gameplay_purpose", ""))
+		if get_node_or_null(NodePath(node_path)) == null:
+			missing_paths.append(node_path)
+	var undeclared_paths: Array[String] = []
+	for node: Node in find_children("*", "Node", true, false):
+		if node == map_instance or map_instance.is_ancestor_of(node):
+			continue
+		var relative_path := String(get_path_to(node))
+		if not declared_paths.has(relative_path):
+			undeclared_paths.append(relative_path)
+	var prohibited_clear := true
+	for value: Variant in prohibited.values():
+		prohibited_clear = prohibited_clear and value == false
+	var child_transforms_unchanged := (
+		String(child_policy.get("status", "")) == "unchanged_from_imported_source"
+		and int(child_policy.get("edited_child_count", -1)) == 0
+		and int(child_policy.get("repositioned_child_count", -1)) == 0
+		and int(child_policy.get("hidden_child_count", -1)) == 0
+		and int(child_policy.get("extracted_child_count", -1)) == 0
+		and int(child_policy.get("duplicated_child_count", -1)) == 0
+	)
+	var authoritative_instance_accepted := (
+		int(authority.get("instance_count", 0)) == 1
+		and String(authority.get("node_path", "")) == String(get_path_to(map_instance))
+		and String(authority.get("wrapper_path", "")) == String(get_path_to(map_wrapper))
+		and String(authority.get("source_sha256", "")) == EXPECTED_SOURCE_SHA256
+	)
+	migration_manifest_report = {
+		"path": MIGRATION_MANIFEST_PATH,
+		"manifest_id": migration_manifest.get("manifest_id", ""),
+		"authoritative_instance_accepted": authoritative_instance_accepted,
+		"authoritative_instance_count": authority.get("instance_count", 0),
+		"authored_child_transforms_unchanged": child_transforms_unchanged,
+		"declared_additive_placement_count": declared_paths.size(),
+		"missing_declared_paths": missing_paths,
+		"undeclared_retained_paths": undeclared_paths,
+		"all_retained_additive_placements_declared": missing_paths.is_empty() and undeclared_paths.is_empty(),
+		"prohibited_actions_clear": prohibited_clear,
+	}
+	migration_manifest_report["accepted"] = (
+		authoritative_instance_accepted
+		and child_transforms_unchanged
+		and missing_paths.is_empty()
+		and undeclared_paths.is_empty()
+		and prohibited_clear
+	)
+	if migration_manifest_report.get("accepted", false) != true:
+		push_error("Arena migration manifest does not match the retained runtime placement: %s" % migration_manifest_report)
 
 
 func _process(_delta: float) -> void:
@@ -108,6 +194,9 @@ func _sync_industrial_route_lights() -> void:
 
 
 func _configure_map_materials() -> void:
+	# Keep the complete authored environment on its imported material resources.
+	# Previous product-side duplication severed that direct binding and made the
+	# daylight defect impossible to isolate from a material override defect.
 	for node in map_instance.find_children("*", "MeshInstance3D", true, false):
 		var mesh_instance := node as MeshInstance3D
 		if mesh_instance.mesh == null:
@@ -115,11 +204,10 @@ func _configure_map_materials() -> void:
 		for surface_index in mesh_instance.mesh.get_surface_count():
 			material_slot_count += 1
 			var source_material := mesh_instance.get_active_material(surface_index) as BaseMaterial3D
-			if source_material == null:
-				continue
-			var material := source_material.duplicate() as BaseMaterial3D
-			material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
-			mesh_instance.set_surface_override_material(surface_index, material)
+			if source_material != null:
+				native_material_binding_count += 1
+			if mesh_instance.get_surface_override_material(surface_index) != null:
+				surface_override_count += 1
 
 
 func _measure_map() -> void:
@@ -312,7 +400,7 @@ func _bind_product_anchors() -> bool:
 			player.call(&"bind_deployment_to_walkable", projected["spawn"] + Vector3.UP * 0.9, first_corner + Vector3.UP * 0.9)
 	var failure_reason := &""
 	if not route_pair_provisional_accepted:
-		failure_reason = &"spawn_alpha_route_budget_unavailable"
+		failure_reason = StringName(deployment_anchor_selection.get("failure_reason", &"spawn_alpha_route_budget_unavailable"))
 	elif not connected:
 		failure_reason = &"route_disconnected"
 	elif not all_anchors_valid:
@@ -325,7 +413,7 @@ func _bind_product_anchors() -> bool:
 		failure_reason = &"spawn_alpha_route_budget_pending_observed_input"
 	topology_binding_report = {
 		"datum": "authored_standoff_navigation_map",
-		"anchor_binding_mode": &"deterministic_product_markers",
+		"anchor_binding_mode": &"deterministic_candidate_transaction",
 		"hints": hints,
 		"projected": projected,
 		"projection_distance": {
@@ -369,14 +457,84 @@ func _validate_product_anchor_pair(
 ) -> Dictionary:
 	if player == null:
 		return {"accepted": false, "failure_reason": &"player_missing"}
-	for id in ["spawn", "alpha", "bravo", "charlie"]:
-		if not projected.has(id) or hints[id].distance_to(projected[id]) > 0.75:
-			return {
-				"accepted": false,
-				"failure_reason": &"product_anchor_projection_rejected",
-				"failed_anchor": id,
-				"projection_distance": hints[id].distance_to(projected.get(id, Vector3.ZERO)),
-			}
+	var candidate_reports: Array[Dictionary] = []
+	var best_report: Dictionary = {}
+	var best_score := INF
+	var candidate_index := 0
+	var projected_candidate_count := 0
+	for spawn_offset in DEPLOYMENT_CANDIDATE_OFFSETS:
+		for alpha_offset in ALPHA_CANDIDATE_OFFSETS:
+			var spawn_hint: Vector3 = hints["spawn"] + spawn_offset
+			var alpha_hint: Vector3 = hints["alpha"] + alpha_offset
+			var spawn_position := NavigationServer3D.map_get_closest_point(nav_map, spawn_hint)
+			var alpha_position := NavigationServer3D.map_get_closest_point(nav_map, alpha_hint)
+			var spawn_projection_distance := spawn_hint.distance_to(spawn_position)
+			var alpha_projection_distance := alpha_hint.distance_to(alpha_position)
+			var candidate_id := "route_pair_%02d" % candidate_index
+			candidate_index += 1
+			if spawn_projection_distance > 0.75 or alpha_projection_distance > 0.75:
+				candidate_reports.append({
+					"candidate_id": candidate_id,
+					"accepted": false,
+					"failure_reason": &"candidate_projection_rejected",
+					"spawn_projection_distance": snappedf(spawn_projection_distance, 0.001),
+					"alpha_projection_distance": snappedf(alpha_projection_distance, 0.001),
+				})
+				continue
+			projected_candidate_count += 1
+			var candidate_projected := projected.duplicate()
+			candidate_projected["spawn"] = spawn_position
+			candidate_projected["alpha"] = alpha_position
+			var report := _evaluate_product_anchor_pair(nav_map, candidate_projected, player)
+			var predicted_seconds := float(report.get("predicted_effective_seconds", 0.0))
+			var within_budget := predicted_seconds >= ROUTE_MIN_EFFECTIVE_SECONDS and predicted_seconds <= ROUTE_MAX_EFFECTIVE_SECONDS
+			report["candidate_id"] = candidate_id
+			report["spawn_hint"] = spawn_hint
+			report["alpha_hint"] = alpha_hint
+			report["spawn_projection_distance"] = snappedf(spawn_projection_distance, 0.001)
+			report["alpha_projection_distance"] = snappedf(alpha_projection_distance, 0.001)
+			report["predicted_within_budget"] = within_budget
+			candidate_reports.append({
+				"candidate_id": candidate_id,
+				"accepted": report.get("accepted", false),
+				"failure_reason": report.get("failure_reason", &""),
+				"repaired_path_length": snappedf(float(report.get("repaired_path_length", 0.0)), 0.01),
+				"predicted_effective_seconds": snappedf(predicted_seconds, 0.01),
+				"predicted_within_budget": within_budget,
+				"spawn_projection_distance": snappedf(spawn_projection_distance, 0.001),
+				"alpha_projection_distance": snappedf(alpha_projection_distance, 0.001),
+			})
+			var score := absf(predicted_seconds - ROUTE_TARGET_EFFECTIVE_SECONDS)
+			if not within_budget:
+				score += 1000.0
+			if report.get("accepted", false) == true and score < best_score:
+				best_score = score
+				best_report = report
+	if best_report.is_empty():
+		return {
+			"accepted": false,
+			"failure_reason": &"navigation_map_not_ready" if projected_candidate_count == 0 else &"spawn_alpha_route_budget_unavailable",
+			"binding_mode": &"deterministic_candidate_transaction",
+			"candidate_count": candidate_index,
+			"pair_candidate_count": candidate_index,
+			"evaluated_pair_count": projected_candidate_count,
+			"inspected_count": candidate_reports.size(),
+			"candidate_reports": candidate_reports,
+		}
+	best_report["binding_mode"] = &"deterministic_candidate_transaction"
+	best_report["candidate_count"] = candidate_index
+	best_report["pair_candidate_count"] = candidate_index
+	best_report["evaluated_pair_count"] = candidate_reports.size()
+	best_report["inspected_count"] = candidate_reports.size()
+	best_report["candidate_reports"] = candidate_reports
+	return best_report
+
+
+func _evaluate_product_anchor_pair(
+	nav_map: RID,
+	projected: Dictionary,
+	player: CharacterBody3D,
+) -> Dictionary:
 	var spawn_position: Vector3 = projected["spawn"]
 	var alpha_position: Vector3 = projected["alpha"]
 	var raw_path := NavigationServer3D.map_get_path(nav_map, spawn_position, alpha_position, true)
@@ -406,7 +564,6 @@ func _validate_product_anchor_pair(
 	return {
 		"accepted": accepted,
 		"failure_reason": &"" if accepted else &"deterministic_anchor_clearance_rejected",
-		"binding_mode": &"deterministic_product_markers",
 		"anchor_ids": [&"deployment", &"alpha"],
 		"position": spawn_position,
 		"alpha_position": alpha_position,
@@ -420,10 +577,6 @@ func _validate_product_anchor_pair(
 		"first_escape": first_escape,
 		"occupancy": spawn_occupancy,
 		"alpha_occupancy": alpha_occupancy,
-		"candidate_count": 1,
-		"pair_candidate_count": 1,
-		"evaluated_pair_count": 1,
-		"inspected_count": 1,
 	}
 
 
@@ -628,6 +781,7 @@ func _mcp_state() -> Dictionary:
 		"source_sha256": EXPECTED_SOURCE_SHA256,
 		"environment_instance_count": 1,
 		"environment_instance_path": map_instance.get_path(),
+		"migration_manifest": migration_manifest_report.duplicate(true),
 		"wrapper_scale": map_wrapper.scale,
 		"wrapper_position": map_wrapper.position,
 		"measured_bounds_position": map_bounds.position,
@@ -635,6 +789,9 @@ func _mcp_state() -> Dictionary:
 		"expected_world_extents": EXPECTED_WORLD_EXTENTS,
 		"visible_mesh_count": visible_mesh_count,
 		"material_slot_count": material_slot_count,
+		"native_material_binding_count": native_material_binding_count,
+		"surface_override_count": surface_override_count,
+		"native_materials_preserved": native_material_binding_count > 0 and surface_override_count == 0,
 		"collision_ready": collision_ready,
 		"collision_triangle_count": collision_triangle_count,
 		"collision_source_counts": collision_source_counts,
@@ -692,7 +849,7 @@ func _atmosphere_snapshot() -> Dictionary:
 			"tonemap_mode": environment.tonemap_mode,
 			"direct_sun_energy": sun.light_energy,
 			"profile_id": &"loop11_coherent_daylight",
-			"accepted_values_unchanged": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.ambient_light_energy, 0.75) and is_equal_approx(environment.ambient_light_sky_contribution, 0.7) and environment.tonemap_mode == Environment.TONE_MAPPER_FILMIC and is_equal_approx(sun.light_energy, 1.35),
+			"accepted_values_unchanged": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.ambient_light_energy, 0.75) and is_equal_approx(environment.ambient_light_sky_contribution, 0.7) and is_equal_approx(environment.tonemap_exposure, 1.0) and environment.tonemap_mode == Environment.TONE_MAPPER_FILMIC and is_equal_approx(sun.light_energy, 1.35),
 		},
 		"source_sky": {"enabled": environment.sky != null, "background_mode": environment.background_mode, "profile": &"3d_fps_map_source"},
 		"source_shadows": {"enabled": sun.shadow_enabled, "max_distance": sun.directional_shadow_max_distance, "energy": sun.light_energy, "profile": &"3d_fps_map_source"},

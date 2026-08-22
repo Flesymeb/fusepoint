@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "manifest_id": "fusepoint_standoff_2_intact_migration_v1",
+  "family_id": "fusepoint_authored_environment",
+  "authoritative_visual_map": {
+    "instance_count": 1,
+    "node_path": "NavigationRegion3D/AuthoredEnvironmentWrapper/StandoffArena",
+    "wrapper_path": "NavigationRegion3D/AuthoredEnvironmentWrapper",
+    "source_scene": "res://systems/world/3d_fps_map/standoff_2/chicken_gun_standoff_2_arena.glb",
+    "source_sha256": "6298ee68eb4df52d4fe8bdd332a1813492de600f595c214ef934f35fd3ee3e1a",
+    "wrapper_transform": {
+      "position": [0.0, 0.0, 0.0],
+      "rotation_degrees": [0.0, 0.0, 0.0],
+      "scale": [100.0, 100.0, 100.0]
+    }
+  },
+  "authored_child_transforms": {
+    "status": "unchanged_from_imported_source",
+    "edited_child_count": 0,
+    "repositioned_child_count": 0,
+    "hidden_child_count": 0,
+    "extracted_child_count": 0,
+    "duplicated_child_count": 0,
+    "proof": "The immutable source-scene hash and the single outer wrapper are the complete transform boundary."
+  },
+  "retained_additive_placements": [
+    {"node_path": "WorldEnvironment", "creation": "scene", "gameplay_purpose": "Bind the accepted daylight sky, filmic tonemapping, ambient response and SSAO."},
+    {"node_path": "Sun", "creation": "scene", "gameplay_purpose": "Provide the coherent Loop 11 directional daylight and authored-world shadows."},
+    {"node_path": "AtmospherePresentation", "creation": "scene", "gameplay_purpose": "Own product bindings for the retained source atmosphere layers."},
+    {"node_path": "AtmospherePresentation/DayCloudLayer", "creation": "scene", "gameplay_purpose": "Place the two source cloud variants above the complete map."},
+    {"node_path": "AtmospherePresentation/DayCloudLayer/CloudSheet1", "creation": "scene", "gameplay_purpose": "Render the first retained source cloud variant for daylight depth."},
+    {"node_path": "AtmospherePresentation/DayCloudLayer/CloudSheet2", "creation": "scene", "gameplay_purpose": "Render the second retained source cloud variant for daylight depth."},
+    {"node_path": "AtmospherePresentation/SunFlareCanvas", "creation": "scene", "gameplay_purpose": "Keep the source directional flare in the player presentation layer."},
+    {"node_path": "AtmospherePresentation/SunFlareCanvas/DirectionalSunFlare", "creation": "scene", "gameplay_purpose": "Bind the source flare to the active gameplay or result camera."},
+    {"node_path": "AtmospherePresentation/AlphaRouteLight", "creation": "scene", "gameplay_purpose": "Present Alpha route legality and capture response without altering map geometry."},
+    {"node_path": "AtmospherePresentation/BravoRouteLight", "creation": "scene", "gameplay_purpose": "Present Bravo route legality and capture response without altering map geometry."},
+    {"node_path": "NavigationRegion3D", "creation": "scene", "gameplay_purpose": "Own navigation baked from the intact map's product collision layer."},
+    {"node_path": "NavigationRegion3D/AuthoredEnvironmentWrapper", "creation": "scene", "gameplay_purpose": "Provide the sole outer datum and scale boundary for the authoritative map instance."},
+    {"node_path": "MapCollision", "creation": "scene", "gameplay_purpose": "Own additive static collision generated from intact structural source meshes."},
+    {"node_path": "MapCollision/AuthoredMapConcaveCollision", "creation": "runtime", "gameplay_purpose": "Provide player, enemy and ballistic collision without editing imported children."},
+    {"node_path": "ProductAnchors", "creation": "scene", "gameplay_purpose": "Own all product deployment and objective hints outside the authored source subtree."},
+    {"node_path": "ProductAnchors/Deployment", "creation": "scene", "gameplay_purpose": "Seed deterministic selection of a capsule-clear native deployment street."},
+    {"node_path": "ProductAnchors/Alpha", "creation": "scene", "gameplay_purpose": "Seed deterministic selection of a legal Alpha objective surface."},
+    {"node_path": "ProductAnchors/Bravo", "creation": "scene", "gameplay_purpose": "Bind Bravo to a separate native walkable surface."},
+    {"node_path": "ProductAnchors/Charlie", "creation": "scene", "gameplay_purpose": "Bind the bomb interaction to Point C's native walkable surface."},
+    {"node_path": "Alpha", "creation": "scene", "gameplay_purpose": "Provide authoritative Alpha overlap and capture state."},
+    {"node_path": "Alpha/CollisionShape3D", "creation": "scene", "gameplay_purpose": "Detect legal player overlap at Alpha."},
+    {"node_path": "Alpha/SurfaceMarker", "creation": "scene", "gameplay_purpose": "Show Alpha's bounded capture surface."},
+    {"node_path": "Alpha/ObjectiveLabel", "creation": "scene", "gameplay_purpose": "Communicate Alpha identity and state in world space."},
+    {"node_path": "Bravo", "creation": "scene", "gameplay_purpose": "Provide authoritative Bravo overlap and capture state."},
+    {"node_path": "Bravo/CollisionShape3D", "creation": "scene", "gameplay_purpose": "Detect legal player overlap at Bravo."},
+    {"node_path": "Bravo/SurfaceMarker", "creation": "scene", "gameplay_purpose": "Show Bravo's bounded capture surface."},
+    {"node_path": "Bravo/ObjectiveLabel", "creation": "scene", "gameplay_purpose": "Communicate Bravo identity and lock state in world space."},
+    {"node_path": "Charlie", "creation": "scene", "gameplay_purpose": "Provide authoritative Point C bomb interaction state."},
+    {"node_path": "Charlie/CollisionShape3D", "creation": "scene", "gameplay_purpose": "Detect legal player overlap at Point C."},
+    {"node_path": "Charlie/InteractionRing", "creation": "scene", "gameplay_purpose": "Show the bounded bomb interaction surface."},
+    {"node_path": "Charlie/BombCore", "creation": "scene", "gameplay_purpose": "Present the interactive bomb objective at Point C."},
+    {"node_path": "Charlie/ObjectiveLabel", "creation": "scene", "gameplay_purpose": "Communicate Point C identity and lock state in world space."},
+    {"node_path": "RouteProbe", "creation": "scene", "gameplay_purpose": "Measure ordinary-input route progress, collision and legal objective overlap."}
+  ],
+  "prohibited_migration_actions": {
+    "authored_children_moved": false,
+    "authored_children_hidden": false,
+    "authored_children_extracted": false,
+    "authored_map_duplicated": false,
+    "proxy_world_geometry_added": false
+  }
+}

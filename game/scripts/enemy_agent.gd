@@ -261,6 +261,12 @@ func authoritative_snapshot() -> Dictionary:
 		"root_yaw_degrees": rad_to_deg(rotation.y),
 		"root_roll_degrees": rad_to_deg(rotation.z),
 		"root_upright": absf(rotation.x) <= 0.001 and absf(rotation.z) <= 0.001,
+		"transform_authority": {
+			"actor_root_dynamic_axes": ["yaw"],
+			"actor_root_pitch_roll_locked": true,
+			"presentation_axis_correction": presentation_state.get("presentation_adapter_rotation_degrees", Vector3.ZERO),
+			"vertical_aim_layer": &"presentation_upper_body",
+		},
 		"upright_correction_count": _upright_correction_count,
 		"aim_pitch_degrees": _aim_pitch_degrees,
 		"binding_accepted": _presentation_actor.binding_report.get("accepted", false) == true if _presentation_actor != null else false,

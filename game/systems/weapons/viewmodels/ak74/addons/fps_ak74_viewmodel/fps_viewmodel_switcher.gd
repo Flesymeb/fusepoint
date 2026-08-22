@@ -256,6 +256,28 @@ func _first_skeleton(root: Node) -> Skeleton3D:
 	return null
 
 
+func _find_bone_index(skeleton: Skeleton3D, tokens: Array[String]) -> int:
+	if skeleton == null:
+		return -1
+	for bone_index in skeleton.get_bone_count():
+		var bone_name := String(skeleton.get_bone_name(bone_index)).to_lower()
+		for token in tokens:
+			if token in bone_name:
+				return bone_index
+	return -1
+
+
+func _bone_receipt(skeleton: Skeleton3D, bone_index: int) -> Dictionary:
+	if skeleton == null or bone_index < 0:
+		return {"bound": false, "name": "", "index": -1, "skeleton_local_position": Vector3.ZERO}
+	return {
+		"bound": true,
+		"name": String(skeleton.get_bone_name(bone_index)),
+		"index": bone_index,
+		"skeleton_local_position": skeleton.get_bone_global_pose(bone_index).origin,
+	}
+
+
 func _runtime_rig_audit() -> Dictionary:
 	var meshes: Array[Dictionary] = []
 	if model_root != null:
@@ -278,6 +300,28 @@ func _runtime_rig_audit() -> Dictionary:
 	var right_hand_bound := bone_names.any(func(name: String) -> bool:
 		return "hand_r" in name or "right_hand" in name
 	)
+	var left_hand_index := _find_bone_index(skeleton, ["hand_l", "left_hand"])
+	var right_hand_index := _find_bone_index(skeleton, ["hand_r", "right_hand"])
+	var rifle_index := _find_bone_index(skeleton, ["rif_"])
+	var trigger_index := _find_bone_index(skeleton, ["trigger"])
+	var left_hand := _bone_receipt(skeleton, left_hand_index)
+	var right_hand := _bone_receipt(skeleton, right_hand_index)
+	var rifle_socket := _bone_receipt(skeleton, rifle_index)
+	var trigger_socket := _bone_receipt(skeleton, trigger_index)
+	var alias_bindings: Dictionary = {}
+	var profile := current_profile()
+	for alias: StringName in [&"idle", &"draw", &"walk", &"run", &"fire", &"reload", &"reload_variant", &"empty_reload", &"inspect"]:
+		var resolved := profile.animation_for(alias) if profile != null else &""
+		var exists := animation_player != null and not resolved.is_empty() and animation_player.has_animation(resolved)
+		alias_bindings[alias] = {
+			"resolved_clip": resolved,
+			"exists": exists,
+			"length_seconds": animation_player.get_animation(resolved).length if exists else 0.0,
+		}
+	var left_position: Vector3 = left_hand.get("skeleton_local_position", Vector3.ZERO)
+	var right_position: Vector3 = right_hand.get("skeleton_local_position", Vector3.ZERO)
+	var rifle_position: Vector3 = rifle_socket.get("skeleton_local_position", Vector3.ZERO)
+	var trigger_position: Vector3 = trigger_socket.get("skeleton_local_position", Vector3.ZERO)
 	return {
 		"intact_root": model_root != null and model_root.is_inside_tree(),
 		"root_visible": model_root != null and model_root.is_visible_in_tree(),
@@ -290,8 +334,22 @@ func _runtime_rig_audit() -> Dictionary:
 		"left_hand_bound": left_hand_bound,
 		"right_hand_bound": right_hand_bound,
 		"both_hands_bound": left_hand_bound and right_hand_bound,
+		"bone_bindings": {
+			"left_hand": left_hand,
+			"right_hand": right_hand,
+			"rifle_socket": rifle_socket,
+			"trigger_socket": trigger_socket,
+		},
+		"contact_measurements": {
+			"left_hand_to_rifle_socket_m": left_position.distance_to(rifle_position) if left_hand_index >= 0 and rifle_index >= 0 else -1.0,
+			"right_hand_to_trigger_socket_m": right_position.distance_to(trigger_position) if right_hand_index >= 0 and trigger_index >= 0 else -1.0,
+			"measurement_space": &"source_skeleton_local",
+			"visual_acceptance_required": true,
+		},
 		"animation_player_path": String(animation_player.get_path()) if animation_player != null else "",
 		"animation_count": animation_player.get_animation_list().size() if animation_player != null else 0,
+		"semantic_aliases": alias_bindings,
+		"required_aliases_available": profile != null and profile.required_animations_available(animation_player),
 	}
 
 
@@ -301,10 +359,15 @@ func _mcp_state() -> Dictionary:
 		"weapon_id": current_weapon_id(),
 		"current_clip": current_clip,
 		"animation_name": animation_player.current_animation if animation_player != null else &"",
+		"resolved_current_clip": animation_for(current_clip),
 		"animation_position_seconds": animation_player.current_animation_position if animation_player != null else 0.0,
 		"aiming": aiming,
 		"switching": switching,
 		"hip_position": profile.hip_position if profile != null else Vector3.ZERO,
 		"aim_position": profile.aim_position if profile != null else Vector3.ZERO,
+		"wrapper_transform": transform,
+		"source_axis_adapter_transform": source_axis_adapter.transform,
+		"model_mount_transform": model_mount.transform,
+		"camera_near": camera.near if camera != null else 0.0,
 		"runtime_rig": _runtime_rig_audit(),
 	}

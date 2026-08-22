@@ -579,6 +579,13 @@ func get_component_state() -> Dictionary:
 		"weapon_family_compatible": "pistol" not in String(STATE_CLIPS[current_state]["clip"]).to_lower(),
 		"aim_pitch_degrees": _aim_pitch_degrees,
 		"aim_pitch_serial": _aim_pitch_serial,
+		"presentation_adapter_rotation_degrees": rotation_degrees,
+		"presentation_adapter_upright": absf(rotation.x) <= 0.001 and absf(rotation.z) <= 0.001,
+		"transform_authority": {
+			"navigation_root_dynamic_axes": ["yaw"],
+			"source_axis_adapter_fixed": true,
+			"vertical_aim_layer": &"presentation_upper_body",
+		},
 		"socket_bound": _weapon_attachment != null,
 		"socket_bone": String(_weapon_attachment.bone_name) if _weapon_attachment != null else "",
 		"weapon_attached": _weapon_attachment != null and _weapon_attachment.get_node_or_null("PrimaryRifle") != null,
