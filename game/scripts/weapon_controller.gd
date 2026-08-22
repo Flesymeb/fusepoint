@@ -215,6 +215,7 @@ func _process(_delta: float) -> void:
 		_next_shot_time += _fire_interval()
 		scheduled_shots += 1
 	_sync_movement_feedback()
+	_enforce_product_recoil_baseline_if_settled()
 	_sync_hud()
 
 
@@ -389,14 +390,36 @@ func _resolve_ballistics(shot_id: String, weapon: Dictionary) -> Dictionary:
 			) == true
 		else:
 			result = &"blocked"
+	var viewport_rect := camera.get_viewport().get_visible_rect()
+	var reticle_center := viewport_rect.position + viewport_rect.size * 0.5
+	var aim_projection := Vector2(-1.0, -1.0) if camera.is_position_behind(aim_point) else camera.unproject_position(aim_point)
+	var hit_projection := Vector2(-1.0, -1.0) if camera.is_position_behind(hit_position) else camera.unproject_position(hit_position)
+	var committed_at_usec := Time.get_ticks_usec()
+	var committed_frame := Engine.get_process_frames()
 	return {
 		"shot_id": shot_id,
 		"run_epoch": _run_epoch,
 		"weapon_id": _equipped_id,
 		"timestamp_seconds": _now(),
+		"committed_at_usec": committed_at_usec,
+		"committed_frame": committed_frame,
+		"aim_origin": camera_origin,
+		"aim_direction": camera_direction,
 		"camera_origin": camera_origin,
 		"muzzle_origin": muzzle_origin,
 		"direction": muzzle_direction,
+		"authoritative_aim_endpoint": aim_point,
+		"authoritative_hit_endpoint": hit_position,
+		"screen_projection": {
+			"viewport_rect": viewport_rect,
+			"reticle_center": reticle_center,
+			"aim_endpoint": aim_projection,
+			"hit_endpoint": hit_projection,
+			"aim_pixel_delta": aim_projection.distance_to(reticle_center) if aim_projection.x >= 0.0 else -1.0,
+			"hit_pixel_delta": hit_projection.distance_to(reticle_center) if hit_projection.x >= 0.0 else -1.0,
+			"aim_visible": aim_projection.x >= 0.0,
+			"hit_visible": hit_projection.x >= 0.0,
+		},
 		"result": result,
 		"collider_path": collider_path,
 		"hit_position": hit_position,
@@ -732,6 +755,14 @@ func _finish_product_recoil(mount: Node3D) -> void:
 		mount.rotation_degrees = _product_recoil_baseline_rotation_degrees
 	_product_recoil_phase = &"settled"
 	_product_recoil_recovery_complete = true
+
+
+func _enforce_product_recoil_baseline_if_settled() -> void:
+	if not _product_recoil_recovery_complete or _action_state not in [&"idle", &"hip", &"ads"]:
+		return
+	if is_instance_valid(_product_recoil_mount):
+		_product_recoil_mount.position = _product_recoil_baseline_position
+		_product_recoil_mount.rotation_degrees = _product_recoil_baseline_rotation_degrees
 
 
 func _cancel_product_recoil() -> void:
@@ -1163,6 +1194,17 @@ func _mcp_state() -> Dictionary:
 		"ads_rearm_required": _ads_rearm_required,
 		"ads_edge_count": _ads_edge_serial,
 		"last_ads_receipt": _last_ads_receipt,
+		"last_shot_spatial": {
+			"shot_id": _last_shot.get("shot_id", ""),
+			"result": _last_shot.get("result", &"none"),
+			"aim_origin": _last_shot.get("aim_origin", Vector3.ZERO),
+			"aim_direction": _last_shot.get("aim_direction", Vector3.ZERO),
+			"authoritative_aim_endpoint": _last_shot.get("authoritative_aim_endpoint", Vector3.ZERO),
+			"authoritative_hit_endpoint": _last_shot.get("authoritative_hit_endpoint", Vector3.ZERO),
+			"screen_projection": _last_shot.get("screen_projection", {}),
+			"committed_frame": _last_shot.get("committed_frame", -1),
+			"committed_at_usec": _last_shot.get("committed_at_usec", -1),
+		},
 		"viewmodel_requested_aim": _ads_held,
 		"viewmodel_aim_flag": viewmodel.get("aiming") == true,
 		"viewmodel_settled_aim": _viewmodel_ads_settled,

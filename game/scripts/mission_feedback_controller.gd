@@ -9,12 +9,22 @@ signal mission_cue_presented(receipt: Dictionary)
 const CACHE_LIMIT := 128
 const WARNING_THRESHOLDS: Array[int] = [30, 15, 10, 5]
 const VOICE_RECEIPT_LIMIT := 64
+const FOOTSTEP_ROLES: Array[StringName] = [&"player_walk", &"player_sprint", &"player_crouch", &"player_land", &"enemy_step"]
+const FOOTSTEP_WALK_STREAM: AudioStream = preload("res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_walk.mp3")
+const FOOTSTEP_RUN_STREAM: AudioStream = preload("res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_run.wav")
+const FOOTSTEP_STREAM_PATHS := {
+	&"player_walk": "res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_walk.mp3",
+	&"player_sprint": "res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_run.wav",
+	&"player_crouch": "res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_walk.mp3",
+	&"player_land": "res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_run.wav",
+	&"enemy_step": "res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_walk.mp3",
+}
 
 @export var mission_path: NodePath
 @export_range(0.2, 4.0, 0.1) var default_cue_seconds := 1.8
 
 @onready var cue_root: Control = %CueRoot
-@onready var cue_panel: PanelContainer = %CuePanel
+@onready var cue_panel: MarginContainer = %CuePanel
 @onready var accent: ColorRect = %Accent
 @onready var badge: Label = %Badge
 @onready var title: Label = %Title
@@ -44,6 +54,7 @@ var _active_voice_lifetimes: Dictionary = {}
 var _voice_receipts: Array[Dictionary] = []
 var _retained_voice_receipts: Array[Dictionary] = []
 var _footstep_emitters: Dictionary = {}
+var _latest_footstep_by_actor_role: Dictionary = {}
 var _enemy_step_elapsed: Dictionary = {}
 var _player_step_elapsed := 0.0
 var _player_step_side := 0
@@ -199,6 +210,9 @@ func snapshot() -> Dictionary:
 		"voice_receipt_count": _voice_receipts.size(),
 		"retained_voice_receipts": _retained_voice_receipts,
 		"retained_voice_receipt_count": _retained_voice_receipts.size(),
+		"footstep_receipts": _footstep_receipts(),
+		"footstep_ownership": _footstep_ownership_snapshot(),
+		"latest_footstep_by_actor_role": _latest_footstep_by_actor_role.duplicate(true),
 		"audio_concurrency_limits": {"mission_family": 1, "footstep_emitters_per_actor": 1, "retained_receipts": VOICE_RECEIPT_LIMIT},
 		"semantic_role_contract": {
 			"objective": [&"capture", &"route"],
@@ -327,10 +341,16 @@ func _build_audio_mix() -> void:
 	for role: StringName in profiles:
 		var profile: Array = profiles[role]
 		var duration := float(profile[0])
-		var stream := _synth_cue(duration, float(profile[1]), float(profile[2]), float(profile[3]), profile[5] == true, role)
+		var stream: AudioStream
+		if role in FOOTSTEP_ROLES:
+			stream = FOOTSTEP_RUN_STREAM if role in [&"player_sprint", &"player_land"] else FOOTSTEP_WALK_STREAM
+			if stream.get_length() > 0.0:
+				duration = stream.get_length()
+		else:
+			stream = _synth_cue(duration, float(profile[1]), float(profile[2]), float(profile[3]), profile[5] == true, role)
 		_audio_streams[role] = stream
 		_audio_durations[role] = duration
-		if role not in [&"player_walk", &"player_sprint", &"player_crouch", &"player_land", &"enemy_step"]:
+		if role not in FOOTSTEP_ROLES:
 			var player := AudioStreamPlayer.new()
 			player.name = "%sVoice" % String(role).to_pascal_case()
 			player.stream = stream
@@ -356,7 +376,8 @@ func _play_role(role: StringName, priority: int, source_id: String) -> void:
 		"bus": player.bus,
 		"voice_path": String(player.get_path()),
 		"stream_bound": player.stream != null,
-		"decoded": player.stream is AudioStreamWAV and (player.stream as AudioStreamWAV).data.size() > 0,
+		"decoded": _stream_is_decoded(player.stream),
+		"stream_path": _stream_path_for_role(role),
 		"playing": player.playing,
 		"onset_usec": Time.get_ticks_usec(),
 		"onset_frame": Engine.get_process_frames(),
@@ -434,15 +455,16 @@ func _emit_footstep(actor: CharacterBody3D, role: StringName, cadence: float, si
 	emitter.volume_db = -9.0 if role == &"enemy_step" else -7.0
 	emitter.pitch_scale = (1.08 if surface == &"metal" else 0.94) * (1.025 if side == &"right" else 0.985)
 	emitter.play()
-	_append_voice_receipt({
+	var footstep_receipt := {
 		"event_id": "step-%d" % Time.get_ticks_usec(),
 		"run_epoch": int(_mission.get("run_epoch")) if _mission != null else 0,
 		"role": role,
 		"bus": emitter.bus,
 		"voice_path": String(emitter.get_path()),
+		"stream_path": _stream_path_for_role(role),
 		"stream_bound": emitter.stream != null,
 		"playing": emitter.playing,
-		"decoded": emitter.stream is AudioStreamWAV and (emitter.stream as AudioStreamWAV).data.size() > 0,
+		"decoded": _stream_is_decoded(emitter.stream),
 		"onset_usec": Time.get_ticks_usec(),
 		"onset_frame": Engine.get_process_frames(),
 		"actor_id": String(actor.get("stable_id")) if actor.is_in_group(&"fps_enemy") else "player",
@@ -451,13 +473,17 @@ func _emit_footstep(actor: CharacterBody3D, role: StringName, cadence: float, si
 		"side": side,
 		"cadence_seconds": cadence,
 		"grounded": actor.is_on_floor(),
+		"contact_state": &"landing" if role == &"player_land" else &"grounded_contact",
 		"attenuation": {"unit_size": emitter.unit_size, "max_distance": emitter.max_distance},
-		"emitter_context": {"spatial": true, "owner": actor.get_path()},
+		"emitter_context": {"spatial": true, "owner": actor.get_path(), "owner_count": 1},
 		"concurrency": {"active": 1 if emitter.playing else 0, "limit": 1, "family": actor_key},
 		"cleanup_observed": false,
 		"cleanup_usec": 0,
 		"lifetime_seconds": float(_audio_durations.get(role, 0.0)),
-	})
+	}
+	_append_voice_receipt(footstep_receipt)
+	var receipt_key := "%s:%s" % [String(footstep_receipt["actor_id"]), String(role)]
+	_latest_footstep_by_actor_role[receipt_key] = footstep_receipt.duplicate(true)
 
 
 func _surface_at(actor: CharacterBody3D) -> StringName:
@@ -493,7 +519,8 @@ func _audio_role_snapshot() -> Dictionary:
 		var player := _audio_players.get(role) as AudioStreamPlayer
 		roles[role] = {
 			"stream_bound": _audio_streams[role] != null,
-			"decoded": _audio_streams[role] is AudioStreamWAV and (_audio_streams[role] as AudioStreamWAV).data.size() > 0,
+			"decoded": _stream_is_decoded(_audio_streams[role]),
+			"stream_path": _stream_path_for_role(role),
 			"non_silent": float(_audio_durations.get(role, 0.0)) > 0.0,
 			"bus": player.bus if player != null else &"Foley",
 			"playing": player.playing if player != null else _recent_role_playing(role),
@@ -501,6 +528,38 @@ func _audio_role_snapshot() -> Dictionary:
 			"fallback_behavior": &"candidate_owned_pcm",
 		}
 	return roles
+
+
+func _stream_is_decoded(stream: AudioStream) -> bool:
+	if stream is AudioStreamWAV:
+		return (stream as AudioStreamWAV).data.size() > 0
+	if stream is AudioStreamMP3:
+		return (stream as AudioStreamMP3).data.size() > 0
+	return stream != null
+
+
+func _stream_path_for_role(role: StringName) -> String:
+	return String(FOOTSTEP_STREAM_PATHS.get(role, "runtime-generated://%s" % String(role)))
+
+
+func _footstep_receipts() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for receipt: Dictionary in _retained_voice_receipts + _voice_receipts:
+		if StringName(receipt.get("role", &"")) in FOOTSTEP_ROLES:
+			result.append(receipt.duplicate(true))
+	return result
+
+
+func _footstep_ownership_snapshot() -> Dictionary:
+	var owners := {}
+	for actor_key: String in _footstep_emitters:
+		var emitter := _footstep_emitters.get(actor_key) as AudioStreamPlayer3D
+		owners[actor_key] = {
+			"emitter_path": String(emitter.get_path()) if is_instance_valid(emitter) else "",
+			"emitter_count": 1 if is_instance_valid(emitter) else 0,
+			"bus": emitter.bus if is_instance_valid(emitter) else &"Foley",
+		}
+	return owners
 
 
 func _recent_role_playing(role: StringName) -> bool:
@@ -555,4 +614,22 @@ func _max_variant_share() -> float:
 
 
 func _mcp_state() -> Dictionary:
-	return snapshot()
+	var full := snapshot()
+	var footsteps: Array = full.get("footstep_receipts", [])
+	return {
+		"family_id": &"mission_state_feedback",
+		"presented_event_count": presented_event_count,
+		"duplicate_event_count": duplicate_event_count,
+		"active_cue_count": active_cue_count,
+		"footstep_receipt_count": footsteps.size(),
+		"latest_footstep_receipt": footsteps.back() if not footsteps.is_empty() else {},
+		"footstep_ownership": full.get("footstep_ownership", {}),
+		"latest_footstep_by_actor_role": full.get("latest_footstep_by_actor_role", {}),
+		"last_event": last_event,
+		"last_cue": last_cue,
+		"audio_roles": full.get("audio_roles", {}),
+		"audio_concurrency_limits": full.get("audio_concurrency_limits", {}),
+		"retained_voice_receipt_count": _retained_voice_receipts.size(),
+		"presentation_only": true,
+		"authoritative_calls": [],
+	}

@@ -26,7 +26,7 @@ const BRIEFING_BEAT_SECONDS := 2.5
 const TRANSITION_HISTORY_LIMIT := 32
 const TERMINAL_RESULT_RECEIPT_LIMIT := 4
 const SAFE_AREA_RATIO := 0.05
-const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v3_scroll_focus"
+const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v4_container_reflow"
 const NON_PAGE_STATES: Array[StringName] = [STATE_DEPLOYMENT, STATE_GAMEPLAY, STATE_VICTORY, STATE_DETONATION]
 const LIFECYCLE_TABLE := {
 	&"title": {"predecessors":[&"title",&"loadout",&"briefing",&"settings",&"pause",&"death_recovery",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/TitlePage/Menu/StartButton"},
@@ -36,7 +36,7 @@ const LIFECYCLE_TABLE := {
 	&"deployment": {"predecessors":[&"briefing"], "authority":&"mission", "blocking":true, "focus":""},
 	&"gameplay": {"predecessors":[&"deployment",&"pause",&"recovery_transition"], "authority":&"mission", "blocking":false, "focus":""},
 	&"pause": {"predecessors":[&"gameplay",&"settings"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/PausePage/Menu/ResumeButton"},
-	&"settings": {"predecessors":[&"title",&"pause"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/SettingsPage/Actions/ApplyButton"},
+	&"settings": {"predecessors":[&"title",&"pause"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume"},
 	&"death_recovery": {"predecessors":[&"gameplay"], "authority":&"player_death", "blocking":true, "focus":"Root/Pages/DeathPage/Menu/RestartButton"},
 	&"recovery_transition": {"predecessors":[&"death_recovery",&"pause",&"failure_result"], "authority":&"mission_recovery", "blocking":true, "focus":"Root/Pages/DeathPage/Menu/RestartButton"},
 	&"victory": {"predecessors":[&"gameplay"], "authority":&"terminal", "blocking":true, "focus":""},
@@ -61,8 +61,8 @@ const LIFECYCLE_ACTIONS := {
 @onready var terminal: Node = get_node("../TerminalPresentation")
 @onready var damage_feedback: Node = get_node("../PlayerDamageFeedback")
 @onready var briefing_video: VideoStreamPlayer = $Root/Pages/BriefingPage/OpeningVideo
-@onready var settings_scroll: ScrollContainer = $Root/Pages/SettingsPage/SettingsScroll
-@onready var settings_grid: GridContainer = $Root/Pages/SettingsPage/SettingsScroll/Settings
+@onready var settings_scroll: ScrollContainer = $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll
+@onready var settings_grid: GridContainer = $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings
 
 var app_state := STATE_TITLE
 var _return_from_settings := STATE_TITLE
@@ -136,8 +136,8 @@ func _connect_controls() -> void:
 	$Root/Pages/PausePage/Menu/SettingsButton.pressed.connect(_open_settings_from.bind(STATE_PAUSE))
 	$Root/Pages/PausePage/Menu/RestartButton.pressed.connect(_restart_checkpoint)
 	$Root/Pages/PausePage/Menu/HomeButton.pressed.connect(_return_home)
-	$Root/Pages/SettingsPage/Actions/ApplyButton.pressed.connect(_apply_settings)
-	$Root/Pages/SettingsPage/Actions/CancelButton.pressed.connect(_cancel_settings)
+	$Root/Pages/SettingsPage/SafeArea/Layout/Actions/ApplyButton.pressed.connect(_apply_settings)
+	$Root/Pages/SettingsPage/SafeArea/Layout/Actions/CancelButton.pressed.connect(_cancel_settings)
 	$Root/Pages/DeathPage/Menu/RestartButton.pressed.connect(_restart_checkpoint)
 	$Root/Pages/DeathPage/Menu/HomeButton.pressed.connect(_return_home)
 	$Root/Pages/ResultPage/Menu/ReplayButton.pressed.connect(_replay)
@@ -148,15 +148,15 @@ func _connect_controls() -> void:
 
 func _settings_controls() -> Array[Control]:
 	return [
-		$Root/Pages/SettingsPage/SettingsScroll/Settings/MasterVolume,
-		$Root/Pages/SettingsPage/SettingsScroll/Settings/UIScale,
-		$Root/Pages/SettingsPage/SettingsScroll/Settings/FOV,
-		$Root/Pages/SettingsPage/SettingsScroll/Settings/SubtitleSize,
-		$Root/Pages/SettingsPage/SettingsScroll/Settings/ReducedMotion,
-		$Root/Pages/SettingsPage/SettingsScroll/Settings/ScreenShake,
-		$Root/Pages/SettingsPage/SettingsScroll/Settings/HoldADS,
-		$Root/Pages/SettingsPage/Actions/ApplyButton,
-		$Root/Pages/SettingsPage/Actions/CancelButton,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScale,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOV,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleSize,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ReducedMotion,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ScreenShake,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/HoldADS,
+		$Root/Pages/SettingsPage/SafeArea/Layout/Actions/ApplyButton,
+		$Root/Pages/SettingsPage/SafeArea/Layout/Actions/CancelButton,
 	]
 
 
@@ -327,22 +327,25 @@ func _focus_first_button() -> void:
 		return
 	var focus_path := String((LIFECYCLE_TABLE.get(app_state, {}) as Dictionary).get("focus", ""))
 	if not focus_path.is_empty():
-		var prescribed := get_node_or_null(focus_path) as BaseButton
-		if prescribed != null and prescribed.visible and not prescribed.disabled:
+		var prescribed := get_node_or_null(focus_path) as Control
+		var prescribed_enabled := not (prescribed is BaseButton) or not (prescribed as BaseButton).disabled
+		if prescribed != null and prescribed.visible and prescribed.focus_mode != Control.FOCUS_NONE and prescribed_enabled:
 			prescribed.grab_focus()
 			_finalize_transition_focus()
 			return
 	var remembered_path: NodePath = _focus_by_state.get(app_state, NodePath())
 	if not remembered_path.is_empty():
-		var remembered := get_node_or_null(remembered_path) as BaseButton
-		if remembered != null and remembered.visible and not remembered.disabled:
+		var remembered := get_node_or_null(remembered_path) as Control
+		var remembered_enabled := not (remembered is BaseButton) or not (remembered as BaseButton).disabled
+		if remembered != null and remembered.visible and remembered.focus_mode != Control.FOCUS_NONE and remembered_enabled:
 			remembered.grab_focus()
 			_finalize_transition_focus()
 			return
-	for control in page.find_children("*", "Button", true, false):
-		var button := control as Button
-		if button.visible and not button.disabled:
-			button.grab_focus()
+	for node: Node in page.find_children("*", "Control", true, false):
+		var control := node as Control
+		var enabled := not (control is BaseButton) or not (control as BaseButton).disabled
+		if control.visible and control.focus_mode != Control.FOCUS_NONE and enabled:
+			control.grab_focus()
 			_finalize_transition_focus()
 			return
 
@@ -503,24 +506,24 @@ func _open_settings_from(return_state: StringName) -> void:
 
 func _load_settings_controls() -> void:
 	var values := settings_store.snapshot()
-	$Root/Pages/SettingsPage/SettingsScroll/Settings/MasterVolume.value = float(values["master_volume"]) * 100.0
-	$Root/Pages/SettingsPage/SettingsScroll/Settings/UIScale.value = float(values["ui_scale"]) * 100.0
-	$Root/Pages/SettingsPage/SettingsScroll/Settings/FOV.value = float(values["fov"])
-	$Root/Pages/SettingsPage/SettingsScroll/Settings/SubtitleSize.value = float(values["subtitle_size"])
-	$Root/Pages/SettingsPage/SettingsScroll/Settings/ReducedMotion.button_pressed = bool(values["reduced_camera_motion"])
-	$Root/Pages/SettingsPage/SettingsScroll/Settings/ScreenShake.button_pressed = bool(values["screen_shake"])
-	$Root/Pages/SettingsPage/SettingsScroll/Settings/HoldADS.button_pressed = bool(values["hold_ads"])
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume.value = float(values["master_volume"]) * 100.0
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScale.value = float(values["ui_scale"]) * 100.0
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOV.value = float(values["fov"])
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleSize.value = float(values["subtitle_size"])
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ReducedMotion.button_pressed = bool(values["reduced_camera_motion"])
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ScreenShake.button_pressed = bool(values["screen_shake"])
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/HoldADS.button_pressed = bool(values["hold_ads"])
 
 
 func _apply_settings() -> void:
 	settings_store.save_settings({
-		"master_volume": $Root/Pages/SettingsPage/SettingsScroll/Settings/MasterVolume.value / 100.0,
-		"ui_scale": $Root/Pages/SettingsPage/SettingsScroll/Settings/UIScale.value / 100.0,
-		"fov": $Root/Pages/SettingsPage/SettingsScroll/Settings/FOV.value,
-		"subtitle_size": $Root/Pages/SettingsPage/SettingsScroll/Settings/SubtitleSize.value,
-		"reduced_camera_motion": $Root/Pages/SettingsPage/SettingsScroll/Settings/ReducedMotion.button_pressed,
-		"screen_shake": $Root/Pages/SettingsPage/SettingsScroll/Settings/ScreenShake.button_pressed,
-		"hold_ads": $Root/Pages/SettingsPage/SettingsScroll/Settings/HoldADS.button_pressed,
+		"master_volume": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume.value / 100.0,
+		"ui_scale": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScale.value / 100.0,
+		"fov": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOV.value,
+		"subtitle_size": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleSize.value,
+		"reduced_camera_motion": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ReducedMotion.button_pressed,
+		"screen_shake": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ScreenShake.button_pressed,
+		"hold_ads": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/HoldADS.button_pressed,
 	})
 	_cancel_settings()
 
@@ -587,10 +590,6 @@ func _apply_responsive_layout() -> void:
 	_set_rect(^"Root/Pages/BriefingPage/Error", Rect2(Vector2(safe.position.x + 684.0, safe.end.y - 82.0), Vector2(safe.size.x - 684.0, 44.0)))
 	_set_rect(^"Root/Pages/PausePage/Title", Rect2(safe.position + Vector2(16.0, 54.0), Vector2(560.0, 72.0)))
 	_set_rect(^"Root/Pages/PausePage/Menu", Rect2(safe.position + Vector2(16.0, 164.0), Vector2(420.0, 330.0)))
-	_set_rect(^"Root/Pages/SettingsPage/Title", Rect2(safe.position, Vector2(safe.size.x, 62.0)))
-	_set_rect(^"Root/Pages/SettingsPage/ScrollHint", Rect2(Vector2(safe.end.x - 500.0, safe.position.y + 18.0), Vector2(500.0, 34.0)))
-	_set_rect(^"Root/Pages/SettingsPage/SettingsScroll", Rect2(safe.position + Vector2(24.0, 94.0), Vector2(minf(900.0, safe.size.x - 48.0), safe.size.y - 190.0)))
-	_set_rect(^"Root/Pages/SettingsPage/Actions", Rect2(Vector2(safe.position.x + 24.0, safe.end.y - 72.0), Vector2(520.0, 60.0)))
 	_set_rect(^"Root/Pages/DeathPage/Title", Rect2(safe.position + Vector2(16.0, 108.0), Vector2(safe.size.x - 32.0, 86.0)))
 	_set_rect(^"Root/Pages/DeathPage/Copy", Rect2(safe.position + Vector2(16.0, 222.0), Vector2(safe.size.x - 32.0, 100.0)))
 	_set_rect(^"Root/Pages/DeathPage/Menu", Rect2(Vector2(safe.position.x + 16.0, safe.end.y - 120.0), Vector2(720.0, 72.0)))

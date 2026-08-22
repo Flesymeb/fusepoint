@@ -102,11 +102,37 @@ func _on_player_shot(event: Dictionary) -> void:
 	row["ballistic_result"] = StringName(event.get("result", &"unknown"))
 	row["surface"] = StringName(event.get("surface_kind", &"unknown"))
 	row["damage_result"] = {"committed": event.get("damage_commit", false), "amount": event.get("damage", 0.0)}
+	row["spatial_receipt"] = {
+		"origin": event.get("aim_origin", event.get("camera_origin", Vector3.ZERO)),
+		"muzzle_origin": event.get("muzzle_origin", Vector3.ZERO),
+		"aim_direction": event.get("aim_direction", Vector3.ZERO),
+		"muzzle_direction": event.get("direction", Vector3.ZERO),
+		"authoritative_aim_endpoint": event.get("authoritative_aim_endpoint", Vector3.ZERO),
+		"authoritative_hit_endpoint": event.get("authoritative_hit_endpoint", event.get("hit_position", Vector3.ZERO)),
+		"screen_projection": event.get("screen_projection", {}),
+	}
 	_set_channel(row, &"authority", event)
+	if StringName(event.get("result", &"miss")) != &"miss":
+		_set_channel(row, &"impact", {
+			"shot_id": event_id,
+			"position": event.get("hit_position", Vector3.ZERO),
+			"normal": event.get("hit_normal", Vector3.UP),
+			"surface": event.get("surface_kind", &"unknown"),
+			"result": event.get("result", &"unknown"),
+			"committed_frame": event.get("committed_frame", Engine.get_process_frames()),
+			"committed_at_usec": event.get("committed_at_usec", Time.get_ticks_usec()),
+		})
 	if _shot_feedback != null and _shot_feedback.has_method(&"snapshot"):
 		var feedback: Dictionary = _shot_feedback.call(&"snapshot")
 		_set_channel(row, &"vfx", feedback.get("last_presentation", {}))
 		_set_channel(row, &"audio", _audio_from_shot_snapshot(feedback))
+		_set_channel(row, &"cleanup", {
+			"shot_id": event_id,
+			"bounded_lifetime": true,
+			"active_effect_count": feedback.get("active_effect_count", 0),
+			"audio_cleanup_count": feedback.get("audio_cleanup_count", 0),
+			"presentation": feedback.get("last_presentation", {}),
+		})
 	_publish(row)
 
 
@@ -237,6 +263,13 @@ func _on_hud_row(receipt: Dictionary) -> void:
 		return
 	var row := _ensure_row(event_id, &"enemy_death" if StringName(receipt.get("kind", &"")) == &"enemy_died" else &"hud")
 	_set_channel(row, &"hud", receipt)
+	_set_channel(row, &"cleanup", {
+		"shot_id": event_id,
+		"bounded_lifetime": receipt.get("bounded_lifetime", true),
+		"lifetime_seconds": receipt.get("lifetime_seconds", 0.0),
+		"expires_at_seconds": receipt.get("expires_at_seconds", 0.0),
+		"cleanup_observed": receipt.get("cleanup_observed", false),
+	})
 	_publish(row)
 
 
@@ -275,6 +308,7 @@ func _ensure_row(event_id: String, event_family: StringName) -> Dictionary:
 			"presentation_only": true,
 			"authoritative_calls": [],
 			"restore_epoch": _restore_epoch,
+			"observed_kinds": [],
 		}
 		_event_order.append(identity)
 		while _event_order.size() > CACHE_LIMIT:
@@ -282,6 +316,10 @@ func _ensure_row(event_id: String, event_family: StringName) -> Dictionary:
 			_retain_row((_events[evicted_identity] as Dictionary), &"active_cache_eviction")
 			_events.erase(evicted_identity)
 	var row: Dictionary = _events[identity]
+	var observed_kinds: Array = row.get("observed_kinds", [])
+	if event_family not in observed_kinds:
+		observed_kinds.append(event_family)
+	row["observed_kinds"] = observed_kinds
 	if StringName(row.get("event_family", &"")) in [&"shot_presentation", &"hud"]:
 		row["event_family"] = event_family
 	return row
@@ -325,15 +363,21 @@ func _publish(row: Dictionary) -> void:
 
 
 func _missing_channels(row: Dictionary) -> Array[StringName]:
-	var family := StringName(row.get("event_family", &""))
 	var expected: Array[StringName] = []
-	if family == &"player_shot":
-		expected.assign([&"authority", &"vfx", &"audio", &"animation", &"hud", &"health_score"])
-	elif family == &"player_damage":
-		expected.assign([&"damage", &"camera_damage_mask", &"hud", &"health_score"])
-	elif family == &"enemy_death":
-		expected.assign([&"enemy_authority", &"enemy_death", &"mission", &"hud", &"animation", &"cleanup"])
-	elif family == &"mission":
+	var observed_kinds: Array = row.get("observed_kinds", [])
+	if &"player_shot" in observed_kinds:
+		expected.assign([&"authority", &"vfx", &"audio", &"animation", &"hud", &"health_score", &"cleanup"])
+		if StringName(row.get("ballistic_result", &"miss")) != &"miss":
+			expected.append(&"impact")
+	if &"player_damage" in observed_kinds or &"player_death" in observed_kinds:
+		for channel in [&"damage", &"camera_damage_mask", &"hud", &"health_score"]:
+			if channel not in expected:
+				expected.append(channel)
+	if &"enemy_death" in observed_kinds:
+		for channel in [&"enemy_authority", &"enemy_death", &"mission", &"hud", &"animation", &"cleanup"]:
+			if channel not in expected:
+				expected.append(channel)
+	if &"mission" in observed_kinds and &"enemy_death" not in observed_kinds:
 		expected.assign([&"mission", &"mission_presentation", &"audio"])
 	var channels: Dictionary = row.get("channels", {})
 	var missing: Array[StringName] = []
@@ -540,6 +584,7 @@ func snapshot() -> Dictionary:
 					"avoidance_enabled": actor.get("avoidance_enabled", true),
 				}
 		rows.append(row)
+	var mission_feedback_snapshot: Dictionary = _mission_feedback.call(&"snapshot") if _mission_feedback != null and _mission_feedback.has_method(&"snapshot") else {}
 	return {
 		"family_id": &"joined_combat_feedback_matrix",
 		"presentation_only": true,
@@ -559,6 +604,8 @@ func snapshot() -> Dictionary:
 		"retained_run_order": _retained_run_order.duplicate(),
 		"retained_by_run": _retained_by_run.duplicate(true),
 		"clear_history": _clear_history.duplicate(true),
+		"footstep_receipts": mission_feedback_snapshot.get("footstep_receipts", []),
+		"footstep_ownership": mission_feedback_snapshot.get("footstep_ownership", {}),
 	}
 
 
@@ -610,7 +657,10 @@ func _mcp_state() -> Dictionary:
 			"late_channels": active.get("late_channels", []),
 			"ballistic_result": active.get("ballistic_result", &"unknown"),
 			"ammo_commit": active.get("ammo_commit", -1),
+			"spatial_receipt": active.get("spatial_receipt", {}),
 		},
+		"footstep_receipts": full.get("footstep_receipts", []),
+		"footstep_ownership": full.get("footstep_ownership", {}),
 		"archived_latest": archived_latest,
 		"run_epoch": _current_run_epoch(),
 		"cached_event_count": _events.size(),
@@ -653,6 +703,7 @@ func _receipt_summary(row: Dictionary) -> Dictionary:
 		"immutable_identity": row.get("immutable_identity", ""),
 		"run_epoch": row.get("run_epoch", 0),
 		"event_family": row.get("event_family", &"unknown"),
+		"observed_kinds": row.get("observed_kinds", []),
 		"channel_names": channels.keys(),
 		"channel_receipts": row.get("channel_receipts", {}),
 		"missing_channels": row.get("missing_channels", []),
@@ -661,6 +712,7 @@ func _receipt_summary(row: Dictionary) -> Dictionary:
 		"surface": row.get("surface", &"unknown"),
 		"ammo_commit": row.get("ammo_commit", -1),
 		"damage_result": row.get("damage_result", {}),
+		"spatial_receipt": row.get("spatial_receipt", {}),
 		"health_score": channels.get(&"health_score", {}),
 		"animation": channels.get(&"animation", {}),
 		"audio": channels.get(&"audio", {}),

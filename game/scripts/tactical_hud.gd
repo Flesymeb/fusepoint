@@ -6,6 +6,8 @@ signal combat_row_presented(receipt: Dictionary)
 const STORY_COPY := "11:40 — KESTREL RIDGE MILITARY BASE\nThe Rift Front planted a timed bomb in the Sector C rocket maintenance bay.\nCommunications are down. Support is not coming. You are the only operator who can enter.\nRetake Alpha, secure Bravo, then recover both defusal keys.\nIn five minutes, the base disappears with the bomb."
 const SAFE_AREA_RATIO := 0.05
 const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v2"
+const COMBAT_ROW_LIFETIME_SECONDS := 6.0
+const COMBAT_ROW_LIMIT := 5
 
 @onready var root: Control = $Root
 @onready var minimap: Control = $Root/Minimap
@@ -35,6 +37,8 @@ var _story_elapsed := 99.0
 var _story_active := false
 var _event_rows: Array[String] = []
 var _event_row_receipts: Array[Dictionary] = []
+var _event_row_expiries: Array[float] = []
+var _event_cleanup_receipts: Array[Dictionary] = []
 var _minimap_bound := false
 var _hud_enabled := false
 var _applied_ui_scale := 1.0
@@ -59,6 +63,12 @@ func _bind_runtime() -> void:
 		route_probe = arena.get_node_or_null("RouteProbe")
 	if mission != null and not mission.mission_event_committed.is_connected(_on_mission_event):
 		mission.mission_event_committed.connect(_on_mission_event)
+	if weapon != null and weapon.has_signal(&"shot_resolved") and not weapon.is_connected(&"shot_resolved", _on_weapon_shot):
+		weapon.connect(&"shot_resolved", _on_weapon_shot)
+	if player != null and player.has_signal(&"authoritative_damage_received") and not player.is_connected(&"authoritative_damage_received", _on_player_damage):
+		player.connect(&"authoritative_damage_received", _on_player_damage)
+	if player != null and player.has_signal(&"player_died") and not player.is_connected(&"player_died", _on_player_death):
+		player.connect(&"player_died", _on_player_death)
 	_bind_minimap()
 
 
@@ -218,6 +228,8 @@ func reset_transient_feedback_for_restore(epoch: int) -> void:
 	narrative.text = ""
 	_event_rows.clear()
 	_event_row_receipts.clear()
+	_event_row_expiries.clear()
+	_event_cleanup_receipts.clear()
 	for child: Node in feed.get_children():
 		if child is Label:
 			(child as Label).text = ""
@@ -231,6 +243,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
+	_expire_combat_rows()
 	if not _hud_enabled:
 		return
 	if player == null or weapon == null or mission == null:
@@ -307,15 +320,15 @@ func _update_navigation_state() -> void:
 	var bravo_handoff := _bravo_locked_handoff_active()
 	var route_copy := "NEXT ROUTE  %03d°  •  %dm%s" % [int(bearing), int(delta.length()), "  OFF ROUTE" if cross_track > 3.5 else ""]
 	if bravo_handoff:
-		route_copy += "  •  B LOCKED: SECURE A"
+		route_copy += "  •  SECURE A BEFORE B"
 	route_label.text = route_copy
 	var bravo := arena.get_node_or_null("Bravo") if arena != null else null
 	if bravo != null and bravo.has_method(&"set_hud_handoff_visible"):
-		bravo.call(&"set_hud_handoff_visible", bravo_handoff)
+		bravo.call(&"set_hud_handoff_visible", false)
 
 
 func _bravo_locked_handoff_active() -> bool:
-	if _applied_ui_scale <= 1.5 or mission == null or player == null or player.get("gameplay_input_enabled") != true:
+	if mission == null or player == null or player.get("gameplay_input_enabled") != true:
 		return false
 	var points: Dictionary = mission.get("capture_points")
 	return StringName(points[&"alpha"]["state"]) != &"secured_aegis" and StringName(points[&"bravo"]["state"]) != &"secured_aegis"
@@ -346,19 +359,131 @@ func _on_mission_event(event: Dictionary) -> void:
 		narrative.visible = true
 	var important := kind in [&"capture_started", &"capture_contested", &"capture_completed", &"key_committed", &"route_unlocked", &"checkpoint_committed", &"enemy_died", &"terminal_submitted"]
 	if important:
-		var receipt := _row_receipt(event)
-		_event_rows.push_front(String(receipt.get("text", "")))
-		_event_row_receipts.push_front(receipt)
-		while _event_rows.size() > 5:
-			_event_rows.pop_back()
-		while _event_row_receipts.size() > 5:
-			_event_row_receipts.pop_back()
-		for index in feed.get_child_count():
-			var row := feed.get_child(index) as Label
-			row.text = _event_rows[index] if index < _event_rows.size() else ""
-			var row_kind := StringName((_event_row_receipts[index] as Dictionary).get("kind", &"")) if index < _event_row_receipts.size() else &""
-			row.add_theme_color_override("font_color", Color(1.0, 0.76, 0.25, 0.96) if row_kind == &"enemy_died" else Color(0.92, 0.93, 0.9, maxf(0.64, 0.9 - float(index) * 0.07)))
-		combat_row_presented.emit(receipt.duplicate(true))
+		_push_combat_row(_row_receipt(event))
+
+
+func _on_weapon_shot(event: Dictionary) -> void:
+	var event_id := String(event.get("shot_id", ""))
+	if event_id.is_empty():
+		return
+	var result := StringName(event.get("result", &"miss"))
+	var target := String(event.get("collider_path", "")).get_file().replace("_", " ").replace("-", " ").to_upper()
+	var text := "ROUND CLEAR"
+	var kind := &"player_miss"
+	var style := &"compact_feed"
+	if result == &"hit":
+		text = "HIT  %s" % (target if not target.is_empty() else "RIFT HOSTILE")
+		kind = &"enemy_hit"
+		style = &"confirmed_hit"
+	elif result == &"blocked":
+		text = "IMPACT  %s" % String(event.get("surface_kind", &"surface")).to_upper()
+		kind = &"material_impact"
+	_push_combat_row({
+		"event_id": event_id,
+		"kind": kind,
+		"text": text,
+		"style": style,
+		"result": result,
+		"screen_projection": event.get("screen_projection", {}),
+		"presentation_only": true,
+	})
+
+
+func _on_player_damage(event: Dictionary) -> void:
+	var event_id := String(event.get("shot_id", event.get("event_id", "")))
+	if event_id.is_empty():
+		return
+	_push_combat_row({
+		"event_id": event_id,
+		"kind": &"player_damage",
+		"text": "DAMAGE  -%d  •  %d HP" % [int(round(float(event.get("amount", 0.0)))), int(round(float(event.get("health_after", 0.0))))],
+		"style": &"red_threat",
+		"source_path": String(event.get("source_path", "")),
+		"presentation_only": true,
+	})
+
+
+func _on_player_death(event: Dictionary) -> void:
+	var event_id := String(event.get("shot_id", event.get("event_id", "")))
+	if event_id.is_empty():
+		return
+	var threat := String(event.get("source_path", "RIFT FRONT")).get_file().replace("_", " ").replace("-", " ").to_upper()
+	_push_combat_row({
+		"event_id": event_id,
+		"kind": &"player_death",
+		"text": "YOU WERE KILLED  by %s" % (threat if not threat.is_empty() else "RIFT FRONT"),
+		"style": &"red_threat",
+		"presentation_only": true,
+	})
+
+
+func _push_combat_row(receipt: Dictionary) -> void:
+	var event_id := String(receipt.get("event_id", ""))
+	if event_id.is_empty():
+		return
+	var existing := -1
+	for index in _event_row_receipts.size():
+		if String(_event_row_receipts[index].get("event_id", "")) == event_id:
+			existing = index
+			break
+	if existing >= 0:
+		_event_rows.remove_at(existing)
+		_event_row_receipts.remove_at(existing)
+		_event_row_expiries.remove_at(existing)
+	var presented_at := Time.get_ticks_msec() / 1000.0
+	receipt["presented_at_seconds"] = presented_at
+	receipt["presented_at_usec"] = Time.get_ticks_usec()
+	receipt["presented_frame"] = Engine.get_process_frames()
+	receipt["lifetime_seconds"] = COMBAT_ROW_LIFETIME_SECONDS
+	receipt["expires_at_seconds"] = presented_at + COMBAT_ROW_LIFETIME_SECONDS
+	receipt["bounded_lifetime"] = true
+	receipt["cleanup_observed"] = false
+	_event_rows.push_front(String(receipt.get("text", "")))
+	_event_row_receipts.push_front(receipt.duplicate(true))
+	_event_row_expiries.push_front(float(receipt["expires_at_seconds"]))
+	while _event_rows.size() > COMBAT_ROW_LIMIT:
+		_archive_row_cleanup(_event_row_receipts.back(), &"row_limit")
+		_event_rows.pop_back()
+		_event_row_receipts.pop_back()
+		_event_row_expiries.pop_back()
+	_render_combat_rows()
+	combat_row_presented.emit(receipt.duplicate(true))
+
+
+func _expire_combat_rows() -> void:
+	var now := Time.get_ticks_msec() / 1000.0
+	var changed := false
+	for index in range(_event_row_expiries.size() - 1, -1, -1):
+		if now < _event_row_expiries[index]:
+			continue
+		_archive_row_cleanup(_event_row_receipts[index], &"lifetime_elapsed")
+		_event_rows.remove_at(index)
+		_event_row_receipts.remove_at(index)
+		_event_row_expiries.remove_at(index)
+		changed = true
+	if changed:
+		_render_combat_rows()
+
+
+func _archive_row_cleanup(receipt: Dictionary, reason: StringName) -> void:
+	var cleaned := receipt.duplicate(true)
+	cleaned["cleanup_observed"] = true
+	cleaned["cleanup_reason"] = reason
+	cleaned["cleanup_usec"] = Time.get_ticks_usec()
+	cleaned["cleanup_frame"] = Engine.get_process_frames()
+	_event_cleanup_receipts.append(cleaned)
+	while _event_cleanup_receipts.size() > 24:
+		_event_cleanup_receipts.pop_front()
+
+
+func _render_combat_rows() -> void:
+	for index in feed.get_child_count():
+		var row := feed.get_child(index) as Label
+		row.text = _event_rows[index] if index < _event_rows.size() else ""
+		var row_receipt: Dictionary = _event_row_receipts[index] if index < _event_row_receipts.size() else {}
+		var style := StringName(row_receipt.get("style", &"compact_feed"))
+		var color := Color(1.0, 0.76, 0.25, 0.96) if style == &"restrained_yellow_kill" else Color(1.0, 0.34, 0.28, 0.96) if style == &"red_threat" else Color(0.32, 0.92, 1.0, 0.94) if style == &"confirmed_hit" else Color(0.92, 0.93, 0.9, maxf(0.64, 0.9 - float(index) * 0.07))
+		row.add_theme_color_override("font_color", color)
 
 
 func _format_event(event: Dictionary) -> String:
@@ -385,6 +510,7 @@ func _row_receipt(event: Dictionary) -> Dictionary:
 		"actor_id": String(source.get("actor_id", source_payload.get("actor_id", ""))),
 		"text": _format_event(event),
 		"style": &"restrained_yellow_kill" if kind == &"enemy_died" else &"compact_feed",
+		"authority_frame": int(event.get("committed_frame", Engine.get_process_frames())),
 		"presentation_only": true,
 	}
 
@@ -438,6 +564,9 @@ func _mcp_state() -> Dictionary:
 		"story_elapsed": _story_elapsed,
 		"event_rows": _event_rows,
 		"combat_row_receipts": _event_row_receipts,
+		"combat_row_cleanup_receipts": _event_cleanup_receipts,
+		"combat_row_limit": COMBAT_ROW_LIMIT,
+		"combat_row_lifetime_seconds": COMBAT_ROW_LIFETIME_SECONDS,
 		"applied_subtitle_size": _applied_subtitle_size,
 		"restore_epoch": _restore_epoch,
 		"narrative_visible_line_count": narrative.text.count("\n") + 1 if narrative.visible else 0,
