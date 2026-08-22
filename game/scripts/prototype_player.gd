@@ -5,6 +5,21 @@ signal authoritative_damage_received(event: Dictionary)
 signal checkpoint_restored(event: Dictionary)
 signal player_died(event: Dictionary)
 
+const CONCRETE_FOOTSTEPS: Array[AudioStream] = [
+	preload("res://assets/audio/foley/cogito_stone/footstep_stone-01.ogg"),
+	preload("res://assets/audio/foley/cogito_stone/footstep_stone-02.ogg"),
+	preload("res://assets/audio/foley/cogito_stone/footstep_stone-03.ogg"),
+	preload("res://assets/audio/foley/cogito_stone/footstep_stone-04.ogg"),
+]
+const METAL_FOOTSTEPS: Array[AudioStream] = [
+	preload("res://assets/audio/foley/kenney_hard/footstep00.ogg"),
+	preload("res://assets/audio/foley/kenney_hard/footstep01.ogg"),
+	preload("res://assets/audio/foley/kenney_hard/footstep02.ogg"),
+	preload("res://assets/audio/foley/kenney_hard/footstep03.ogg"),
+	preload("res://assets/audio/foley/kenney_hard/footstep04.ogg"),
+]
+const FOLEY_INTERVALS := {&"crouch": 0.72, &"walk": 0.52, &"run": 0.34}
+
 @export_group("Ground locomotion")
 @export var walk_speed := 4.5
 @export var sprint_speed := 7.2
@@ -90,6 +105,9 @@ var _foley_state := &"idle"
 var _foley_locomotion := &"idle"
 var _foley_sync_serial := 0
 var _foley_last_receipt: Dictionary = {}
+var _foley_step_remaining := 0.0
+var _foley_variant_index := 0
+var _foley_landing_emitted := false
 
 
 func _ready() -> void:
@@ -462,24 +480,33 @@ func _sync_grounded_foley(source: StringName) -> void:
 	var playback_state := &"run" if requested == &"run" else &"walk" if requested in [&"walk", &"crouch"] else &"idle"
 	var walk := _foley_feedback.get_node_or_null("WalkAudio") as AudioStreamPlayer
 	var run := _foley_feedback.get_node_or_null("RunAudio") as AudioStreamPlayer
-	if walk != null:
-		walk.pitch_scale = 0.82 if requested == &"crouch" else 0.96
-	if run != null:
-		run.pitch_scale = 1.04
-	# Fail closed every airborne/idle physics frame. The retained component may
-	# resync its clip state during the same render interval; authoritative player
-	# contact still owns whether either retained playback node may remain active.
-	if playback_state == &"idle":
-		_foley_feedback.call(&"stop_movement")
+	var state_changed := requested != _foley_locomotion or playback_state != _foley_state
+	var contact_triggered := false
+	var landing_contact := grounded and _landing_time_left > 0.0 and not _foley_landing_emitted
+	if not grounded:
+		_foley_landing_emitted = false
+	if landing_contact:
+		contact_triggered = _play_contact_sample(run, walk, &"landing", _surface_below())
+		_foley_landing_emitted = true
+		_foley_step_remaining = 0.18
+	elif playback_state != &"idle":
+		_foley_step_remaining = maxf(0.0, _foley_step_remaining - get_physics_process_delta_time())
+		if state_changed or _foley_step_remaining <= 0.0:
+			var owner := run if playback_state == &"run" else walk
+			var alternate := walk if playback_state == &"run" else run
+			contact_triggered = _play_contact_sample(owner, alternate, requested, _surface_below())
+			_foley_step_remaining = float(FOLEY_INTERVALS.get(requested, 0.52))
+	else:
+		_foley_step_remaining = 0.0
+	# Airborne and stable-idle states fail closed. Product cadence scheduling
+	# drives the retained component players directly, so its long source clips
+	# are never entered or restarted at step cadence.
+	if playback_state == &"idle" and not (grounded and _landing_time_left > 0.0):
 		if walk != null and walk.playing:
 			walk.stop()
 		if run != null and run.playing:
 			run.stop()
-	elif playback_state == &"run":
-		_foley_feedback.call(&"start_run")
-	elif playback_state == &"walk":
-		_foley_feedback.call(&"start_walk")
-	if requested != _foley_locomotion or playback_state != _foley_state:
+	if state_changed or contact_triggered or landing_contact:
 		_foley_locomotion = requested
 		_foley_state = playback_state
 		_foley_sync_serial += 1
@@ -492,10 +519,71 @@ func _sync_grounded_foley(source: StringName) -> void:
 			"stance": _stance,
 			"horizontal_speed": horizontal_speed,
 			"jump_phase": _jump_phase,
+			"contact_triggered": contact_triggered,
+			"landing_contact": landing_contact,
+			"surface": _surface_below(),
+			"cadence_seconds": float(FOLEY_INTERVALS.get(requested, 0.0)),
 			"walk_playing": walk.playing if walk != null else false,
 			"run_playing": run.playing if run != null else false,
+			"walk_audio": _audio_owner_snapshot(walk),
+			"run_audio": _audio_owner_snapshot(run),
+			"owner_count": 1,
+			"runtime_generated_stream": false,
 			"frame": Engine.get_physics_frames(),
 		}
+
+
+func _play_contact_sample(primary: AudioStreamPlayer, alternate: AudioStreamPlayer, locomotion: StringName, surface: StringName) -> bool:
+	if primary == null:
+		return false
+	var family := METAL_FOOTSTEPS if surface == &"metal" else CONCRETE_FOOTSTEPS
+	if family.is_empty():
+		return false
+	if alternate != null and alternate.playing:
+		alternate.stop()
+	if primary.playing:
+		primary.stop()
+	primary.stream = family[_foley_variant_index % family.size()]
+	_foley_variant_index += 1
+	primary.bus = &"Foley"
+	primary.volume_db = -1.5 if locomotion in [&"run", &"landing"] else -3.0 if locomotion == &"walk" else -5.0
+	primary.pitch_scale = 0.86 if locomotion == &"crouch" else 1.02 if locomotion == &"run" else 0.96
+	primary.play()
+	return primary.playing
+
+
+func _surface_below() -> StringName:
+	var query := PhysicsRayQueryParameters3D.create(global_position + Vector3.UP * 0.25, global_position + Vector3.DOWN * 1.4)
+	query.collide_with_areas = false
+	query.exclude = [get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	var path := String((hit.get("collider") as Node).get_path()).to_lower() if hit.get("collider") is Node else ""
+	return &"metal" if "metal" in path or "container" in path or "catwalk" in path or "grate" in path or "rail" in path else &"concrete"
+
+
+func _audio_owner_snapshot(player: AudioStreamPlayer) -> Dictionary:
+	if player == null:
+		return {"bound": false}
+	var bus_index := AudioServer.get_bus_index(player.bus)
+	var bus_db := AudioServer.get_bus_volume_db(bus_index) if bus_index >= 0 else 0.0
+	var master_index := AudioServer.get_bus_index(&"Master")
+	var master_db := AudioServer.get_bus_volume_db(master_index) if master_index >= 0 else 0.0
+	return {
+		"bound": player.stream != null,
+		"path": String(player.get_path()),
+		"stream_path": player.stream.resource_path if player.stream != null else "",
+		"duration_seconds": player.stream.get_length() if player.stream != null else 0.0,
+		"playing": player.playing,
+		"volume_db": player.volume_db,
+		"pitch_scale": player.pitch_scale,
+		"bus": player.bus,
+		"bus_volume_db": bus_db,
+		"bus_muted": AudioServer.is_bus_mute(bus_index) if bus_index >= 0 else false,
+		"bus_solo": AudioServer.is_bus_solo(bus_index) if bus_index >= 0 else false,
+		"bus_effect_count": AudioServer.get_bus_effect_count(bus_index) if bus_index >= 0 else 0,
+		"master_volume_db": master_db,
+		"effective_gain_db": player.volume_db + bus_db + master_db,
+	}
 
 
 func _configure_authoritative_foley_owner() -> void:
@@ -508,7 +596,11 @@ func _configure_authoritative_foley_owner() -> void:
 		var player := _foley_feedback.get_node_or_null(NodePath(player_name)) as AudioStreamPlayer
 		if player != null:
 			player.bus = &"Foley"
+			player.volume_db = -3.0
 			player.stop()
+			# Atomically replace the unsuitable retained long recording before the
+			# first idle audit; the same retained playback nodes remain the owners.
+			player.stream = CONCRETE_FOOTSTEPS[0]
 
 
 func _capture_mouse() -> void:

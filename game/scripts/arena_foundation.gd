@@ -9,9 +9,15 @@ const DECORATIVE_COLLISION_TOKENS: Array[String] = ["decal", "2year"]
 const ROUTE_MIN_EFFECTIVE_SECONDS := 30.0
 const ROUTE_MAX_EFFECTIVE_SECONDS := 45.0
 const ROUTE_TARGET_EFFECTIVE_SECONDS := 37.5
-# Loop-18 ordinary input covered the 24 m route in about 9.1 s. This observed
-# effective pace selects spatial separation only; it never changes player speed.
-const CALIBRATED_EFFECTIVE_ROUTE_SPEED := 2.6
+# Effective route pace includes normal cover checks and the preserved 0.45 m
+# step traversal; it selects product anchors only and never changes player speed.
+const CALIBRATED_EFFECTIVE_ROUTE_SPEED := 2.3
+const ROUTE_LEG_BUDGETS := {
+	&"spawn_to_a": Vector2(30.0, 45.0),
+	&"a_to_b": Vector2(35.0, 55.0),
+	&"b_to_c": Vector2(40.0, 60.0),
+}
+const ROUTE_ENGAGEMENT_DWELL := {&"spawn_to_a": 0.0, &"a_to_b": 20.0, &"b_to_c": 30.0}
 const DEPLOYMENT_CANDIDATE_OFFSETS: Array[Vector3] = [
 	Vector3.ZERO,
 	Vector3(5.8, 0.0, -1.7),
@@ -364,6 +370,9 @@ func _bind_product_anchors() -> bool:
 		edges["spawn_to_a"].size() >= 2
 		and edges["a_to_b"].size() >= 2
 		and edges["b_to_c"].size() >= 2
+		and _path_reaches_endpoints(raw_edges["spawn_to_a"], projected["spawn"], projected["alpha"])
+		and _path_reaches_endpoints(raw_edges["a_to_b"], projected["alpha"], projected["bravo"])
+		and _path_reaches_endpoints(raw_edges["b_to_c"], projected["bravo"], projected["charlie"])
 		and projected["alpha"].distance_to(projected["bravo"]) > 10.0
 		and projected["bravo"].distance_to(projected["charlie"]) > 10.0
 	)
@@ -373,6 +382,8 @@ func _bind_product_anchors() -> bool:
 	# fresh ordinary-input first-overlap receipt is the acceptance authority.
 	var route_pair_provisional_accepted: bool = deployment_anchor_selection.get("accepted", false) == true
 	var predicted_within_budget := predicted_effective_seconds >= ROUTE_MIN_EFFECTIVE_SECONDS and predicted_effective_seconds <= ROUTE_MAX_EFFECTIVE_SECONDS
+	var leg_budget_predictions := _route_leg_budget_snapshot(edges)
+	var all_leg_predictions_within_budget := leg_budget_predictions.values().all(func(leg: Dictionary) -> bool: return leg.get("predicted_within_budget", false) == true)
 	var route_budget_accepted := false
 	var anchor_validation := {}
 	if player != null:
@@ -433,6 +444,8 @@ func _bind_product_anchors() -> bool:
 		"predicted_effective_seconds": snappedf(predicted_effective_seconds, 0.01),
 		"predicted_within_budget": predicted_within_budget,
 		"route_budget_seconds": Vector2(ROUTE_MIN_EFFECTIVE_SECONDS, ROUTE_MAX_EFFECTIVE_SECONDS),
+		"leg_budget_predictions": leg_budget_predictions,
+		"all_leg_predictions_within_budget": all_leg_predictions_within_budget,
 		"route_budget_accepted": route_budget_accepted,
 		"route_budget_acceptance_authority": &"route_probe_first_legal_alpha_overlap",
 		"route_pair_provisional_accepted": route_pair_provisional_accepted,
@@ -538,7 +551,7 @@ func _evaluate_product_anchor_pair(
 	var spawn_position: Vector3 = projected["spawn"]
 	var alpha_position: Vector3 = projected["alpha"]
 	var raw_path := NavigationServer3D.map_get_path(nav_map, spawn_position, alpha_position, true)
-	if raw_path.size() < 2:
+	if raw_path.size() < 2 or not _path_reaches_endpoints(raw_path, spawn_position, alpha_position):
 		return {"accepted": false, "failure_reason": &"deterministic_spawn_alpha_disconnected"}
 	var repaired_path := _build_capsule_clear_route(raw_path, player, nav_map)
 	var clearance := _route_clearance_for_path(repaired_path, player)
@@ -585,6 +598,29 @@ func _path_length(path: PackedVector3Array) -> float:
 	for index in range(1, path.size()):
 		length += path[index - 1].distance_to(path[index])
 	return length
+
+
+func _path_reaches_endpoints(path: PackedVector3Array, from: Vector3, to: Vector3) -> bool:
+	return path.size() >= 2 and path[0].distance_to(from) <= 0.75 and path[path.size() - 1].distance_to(to) <= 0.75
+
+
+func _route_leg_budget_snapshot(edges: Dictionary) -> Dictionary:
+	var result: Dictionary = {}
+	for leg_id: StringName in ROUTE_LEG_BUDGETS:
+		var path: PackedVector3Array = edges.get(String(leg_id), PackedVector3Array())
+		var path_length := _path_length(path)
+		var engagement_seconds := float(ROUTE_ENGAGEMENT_DWELL.get(leg_id, 0.0))
+		var predicted_seconds := path_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED + engagement_seconds
+		var budget: Vector2 = ROUTE_LEG_BUDGETS[leg_id]
+		result[leg_id] = {
+			"path_length_m": snappedf(path_length, 0.01),
+			"traversal_seconds": snappedf(path_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED, 0.01),
+			"engagement_observation_seconds": engagement_seconds,
+			"predicted_effective_seconds": snappedf(predicted_seconds, 0.01),
+			"budget_seconds": budget,
+			"predicted_within_budget": predicted_seconds >= budget.x and predicted_seconds <= budget.y,
+		}
+	return result
 
 
 func _route_clearance_for_path(path: PackedVector3Array, player: CharacterBody3D) -> Dictionary:
@@ -849,8 +885,9 @@ func _atmosphere_snapshot() -> Dictionary:
 			"tonemap_mode": environment.tonemap_mode,
 			"direct_sun_energy": sun.light_energy,
 			"profile_id": &"loop11_coherent_daylight",
-			"coherent_profile_bound": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.ambient_light_energy, 0.75) and is_equal_approx(environment.ambient_light_sky_contribution, 0.7) and is_equal_approx(environment.tonemap_exposure, 1.0) and environment.tonemap_mode == Environment.TONE_MAPPER_FILMIC and is_equal_approx(sun.light_energy, 1.35),
-			"accepted_values_unchanged": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.ambient_light_energy, 0.75) and is_equal_approx(environment.ambient_light_sky_contribution, 0.7) and is_equal_approx(environment.tonemap_exposure, 1.0) and environment.tonemap_mode == Environment.TONE_MAPPER_FILMIC and is_equal_approx(sun.light_energy, 1.35),
+			"coherent_profile_bound": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.ambient_light_energy, 0.75) and is_equal_approx(environment.ambient_light_sky_contribution, 0.7) and environment.tonemap_mode == Environment.TONE_MAPPER_FILMIC and is_equal_approx(environment.tonemap_exposure, 1.0) and is_equal_approx(sun.light_energy, 1.35),
+			"highlight_recovery_calibration": true,
+			"calibration_owner": String(get_path()),
 		},
 		"source_sky": {"enabled": environment.sky != null, "background_mode": environment.background_mode, "profile": &"3d_fps_map_source"},
 		"source_shadows": {"enabled": sun.shadow_enabled, "max_distance": sun.directional_shadow_max_distance, "energy": sun.light_energy, "profile": &"3d_fps_map_source"},

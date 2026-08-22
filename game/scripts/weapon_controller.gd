@@ -1044,6 +1044,22 @@ func _visible_rig_audit() -> Dictionary:
 	var animation_players: Array[String] = []
 	var socket_bones: Array[String] = []
 	_audit_descendants(viewmodel, mesh_paths, skeleton_paths, animation_players, socket_bones)
+	var skeleton := _first_runtime_skeleton(viewmodel)
+	var animation_player := viewmodel.get("animation_player") as AnimationPlayer
+	var profile: FPSViewmodelProfile = viewmodel.call(&"current_profile") as FPSViewmodelProfile
+	var aliases: Dictionary = {}
+	for alias: StringName in [&"idle", &"draw", &"walk", &"run", &"fire", &"reload", &"reload_variant", &"empty_reload", &"inspect"]:
+		var clip := profile.animation_for(alias) if profile != null else &""
+		var available := animation_player != null and not clip.is_empty() and animation_player.has_animation(clip)
+		aliases[alias] = {
+			"resolved_clip": clip,
+			"available": available,
+			"length_seconds": animation_player.get_animation(clip).length if available else 0.0,
+		}
+	var left_hand := _runtime_bone_receipt(skeleton, ["hand_l", "left_hand"])
+	var right_hand := _runtime_bone_receipt(skeleton, ["hand_r", "right_hand"])
+	var rifle_socket := _runtime_bone_receipt(skeleton, ["rif_"])
+	var trigger_socket := _runtime_bone_receipt(skeleton, ["trigger"])
 	return {
 		"mesh_paths": mesh_paths,
 		"skeleton_paths": skeleton_paths,
@@ -1052,7 +1068,47 @@ func _visible_rig_audit() -> Dictionary:
 		"mesh_count": mesh_paths.size(),
 		"skeleton_count": skeleton_paths.size(),
 		"animation_player_count": animation_players.size(),
+		"adapter_owner_path": String(get_path()),
+		"component_internal_adaptation": false,
+		"intact_component_root": viewmodel.get_node_or_null("SourceAxisAdapter/ModelMount/ActiveWeaponModel") != null,
+		"bone_count": skeleton.get_bone_count() if skeleton != null else 0,
+		"bone_bindings": {
+			"left_hand": left_hand,
+			"right_hand": right_hand,
+			"rifle_socket": rifle_socket,
+			"trigger_socket": trigger_socket,
+		},
+		"both_hands_bound": left_hand.get("bound", false) == true and right_hand.get("bound", false) == true,
+		"semantic_aliases": aliases,
+		"required_aliases_available": profile != null and profile.required_animations_available(animation_player),
 	}
+
+
+func _first_runtime_skeleton(root: Node) -> Skeleton3D:
+	if root is Skeleton3D:
+		return root as Skeleton3D
+	for child: Node in root.get_children():
+		var found := _first_runtime_skeleton(child)
+		if found != null:
+			return found
+	return null
+
+
+func _runtime_bone_receipt(skeleton: Skeleton3D, tokens: Array[String]) -> Dictionary:
+	if skeleton == null:
+		return {"bound": false, "name": "", "index": -1}
+	for bone_index in skeleton.get_bone_count():
+		var bone_name := String(skeleton.get_bone_name(bone_index))
+		var lowered := bone_name.to_lower()
+		for token in tokens:
+			if token in lowered:
+				return {
+					"bound": true,
+					"name": bone_name,
+					"index": bone_index,
+					"skeleton_local_position": skeleton.get_bone_global_pose(bone_index).origin,
+				}
+	return {"bound": false, "name": "", "index": -1}
 
 
 func _audit_descendants(node: Node, mesh_paths: Array[String], skeleton_paths: Array[String], animation_players: Array[String], socket_bones: Array[String]) -> void:

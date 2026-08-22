@@ -10,14 +10,25 @@ const CACHE_LIMIT := 128
 const WARNING_THRESHOLDS: Array[int] = [30, 15, 10, 5]
 const VOICE_RECEIPT_LIMIT := 64
 const FOOTSTEP_ROLES: Array[StringName] = [&"enemy_step"]
-const FOOTSTEP_WALK_STREAM: AudioStream = preload("res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_walk.mp3")
-const FOOTSTEP_RUN_STREAM: AudioStream = preload("res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_run.wav")
+const CONCRETE_FOOTSTEPS: Array[AudioStream] = [
+	preload("res://assets/audio/foley/cogito_stone/footstep_stone-01.ogg"),
+	preload("res://assets/audio/foley/cogito_stone/footstep_stone-02.ogg"),
+	preload("res://assets/audio/foley/cogito_stone/footstep_stone-03.ogg"),
+	preload("res://assets/audio/foley/cogito_stone/footstep_stone-04.ogg"),
+]
+const METAL_FOOTSTEPS: Array[AudioStream] = [
+	preload("res://assets/audio/foley/kenney_hard/footstep00.ogg"),
+	preload("res://assets/audio/foley/kenney_hard/footstep01.ogg"),
+	preload("res://assets/audio/foley/kenney_hard/footstep02.ogg"),
+	preload("res://assets/audio/foley/kenney_hard/footstep03.ogg"),
+	preload("res://assets/audio/foley/kenney_hard/footstep04.ogg"),
+]
 const FOOTSTEP_STREAM_PATHS := {
-	&"player_walk": "res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_walk.mp3",
-	&"player_sprint": "res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_run.wav",
-	&"player_crouch": "res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_walk.mp3",
-	&"player_land": "res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_run.wav",
-	&"enemy_step": "res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_walk.mp3",
+	&"player_walk": "res://assets/audio/foley/cogito_stone/",
+	&"player_sprint": "res://assets/audio/foley/cogito_stone/",
+	&"player_crouch": "res://assets/audio/foley/cogito_stone/",
+	&"player_land": "res://assets/audio/foley/cogito_stone/",
+	&"enemy_step": "res://assets/audio/foley/cogito_stone/",
 }
 
 @export var mission_path: NodePath
@@ -58,6 +69,8 @@ var _latest_footstep_by_actor_role: Dictionary = {}
 var _retained_player_footstep_owner: Dictionary = {}
 var _enemy_locomotion_active: Dictionary = {}
 var _enemy_idle_elapsed: Dictionary = {}
+var _enemy_step_remaining: Dictionary = {}
+var _enemy_step_variant: Dictionary = {}
 var _paused_last_frame := false
 
 
@@ -158,6 +171,8 @@ func reset_feedback(clear_history := false) -> void:
 	_active_voice_lifetimes.clear()
 	_enemy_locomotion_active.clear()
 	_enemy_idle_elapsed.clear()
+	_enemy_step_remaining.clear()
+	_enemy_step_variant.clear()
 	_retained_player_footstep_owner.clear()
 
 
@@ -338,7 +353,7 @@ func _build_audio_mix() -> void:
 	for role: StringName in profiles:
 		var profile: Array = profiles[role]
 		var duration := float(profile[0])
-		var stream: AudioStream = FOOTSTEP_WALK_STREAM
+		var stream: AudioStream = CONCRETE_FOOTSTEPS[0]
 		if stream.get_length() > 0.0:
 			duration = stream.get_length()
 		_audio_streams[role] = stream
@@ -406,6 +421,7 @@ func _observe_footsteps(delta: float) -> void:
 			continue
 		var actor_key := String(enemy.get_path())
 		seen_actor_keys[actor_key] = true
+		_ensure_enemy_footstep_emitter(enemy)
 		var grounded := enemy.is_on_floor()
 		var speed := Vector2(enemy.velocity.x, enemy.velocity.z).length()
 		var mission_active: bool = enemy.get("mission_active") == true
@@ -420,6 +436,10 @@ func _observe_footsteps(delta: float) -> void:
 					_stop_enemy_locomotion_stream(actor_key, &"stable_idle")
 			else:
 				_enemy_idle_elapsed[actor_key] = 0.0
+				var remaining := float(_enemy_step_remaining.get(actor_key, 0.0)) - delta
+				_enemy_step_remaining[actor_key] = remaining
+				if remaining <= 0.0:
+					_play_enemy_contact(enemy)
 		elif mission_active and grounded and speed > 0.62:
 			_start_enemy_locomotion_stream(enemy)
 			_enemy_locomotion_active[actor_key] = true
@@ -430,6 +450,8 @@ func _observe_footsteps(delta: float) -> void:
 			_footstep_emitters.erase(actor_key)
 			_enemy_locomotion_active.erase(actor_key)
 			_enemy_idle_elapsed.erase(actor_key)
+			_enemy_step_remaining.erase(actor_key)
+			_enemy_step_variant.erase(actor_key)
 
 
 func _start_enemy_locomotion_stream(actor: CharacterBody3D) -> void:
@@ -438,6 +460,17 @@ func _start_enemy_locomotion_stream(actor: CharacterBody3D) -> void:
 	if not actor.is_in_group(&"fps_enemy"):
 		return
 	var actor_key := String(actor.get_path())
+	var emitter := _ensure_enemy_footstep_emitter(actor)
+	if emitter == null:
+		return
+	_enemy_step_remaining[actor_key] = 0.0
+	_play_enemy_contact(actor)
+
+
+func _ensure_enemy_footstep_emitter(actor: CharacterBody3D) -> AudioStreamPlayer3D:
+	if actor == null or not actor.is_in_group(&"fps_enemy"):
+		return null
+	var actor_key := String(actor.get_path())
 	var emitter := _footstep_emitters.get(actor_key) as AudioStreamPlayer3D
 	if emitter == null or not is_instance_valid(emitter):
 		emitter = AudioStreamPlayer3D.new()
@@ -445,48 +478,64 @@ func _start_enemy_locomotion_stream(actor: CharacterBody3D) -> void:
 		emitter.bus = &"Foley"
 		emitter.unit_size = 4.0
 		emitter.max_distance = 24.0
+		emitter.stream = CONCRETE_FOOTSTEPS[0]
 		actor.add_child(emitter)
 		_footstep_emitters[actor_key] = emitter
-		var source_stream := _audio_streams.get(&"enemy_step") as AudioStream
-		var continuous_stream: AudioStream
-		if source_stream != null:
-			continuous_stream = source_stream.duplicate() as AudioStream
-		if continuous_stream is AudioStreamMP3:
-			(continuous_stream as AudioStreamMP3).loop = true
-		emitter.stream = continuous_stream
-	if emitter.playing:
+	return emitter
+
+
+func _play_enemy_contact(actor: CharacterBody3D) -> void:
+	var actor_key := String(actor.get_path())
+	var emitter := _footstep_emitters.get(actor_key) as AudioStreamPlayer3D
+	if emitter == null or not is_instance_valid(emitter):
 		return
 	var surface := _surface_at(actor)
-	emitter.volume_db = -9.0
-	emitter.pitch_scale = 1.04 if surface == &"metal" else 0.94
+	var family := METAL_FOOTSTEPS if surface == &"metal" else CONCRETE_FOOTSTEPS
+	if family.is_empty():
+		return
+	var variant := int(_enemy_step_variant.get(actor_key, 0))
+	if emitter.playing:
+		emitter.stop()
+	emitter.stream = family[variant % family.size()]
+	_enemy_step_variant[actor_key] = variant + 1
+	emitter.volume_db = -6.0
+	emitter.pitch_scale = 1.04 if surface == &"metal" else 0.96
 	emitter.play()
+	var speed := Vector2(actor.velocity.x, actor.velocity.z).length()
+	var cadence_seconds := 0.38 if speed > 4.2 else 0.48
+	_enemy_step_remaining[actor_key] = cadence_seconds
+	var listener := get_viewport().get_camera_3d()
+	var listener_distance := actor.global_position.distance_to(listener.global_position) if listener != null else 0.0
+	var distance_attenuation_db := -20.0 * log(maxf(1.0, listener_distance / emitter.unit_size)) / log(10.0)
+	var mix := _bus_stage_snapshot(emitter.bus, emitter.volume_db, distance_attenuation_db)
 	var footstep_receipt := {
-		"event_id": "locomotion-enter-%d" % Time.get_ticks_usec(),
+		"event_id": "contact-%d" % Time.get_ticks_usec(),
 		"run_epoch": int(_mission.get("run_epoch")) if _mission != null else 0,
 		"role": &"enemy_step",
 		"bus": emitter.bus,
 		"voice_path": String(emitter.get_path()),
-		"stream_path": _stream_path_for_role(&"enemy_step"),
+		"stream_path": emitter.stream.resource_path,
 		"stream_bound": emitter.stream != null,
 		"playing": emitter.playing,
 		"decoded": _stream_is_decoded(emitter.stream),
-		"loop_enabled": emitter.stream is AudioStreamMP3 and (emitter.stream as AudioStreamMP3).loop,
-		"continuous_stream": true,
-		"transition": &"locomotion_enter",
+		"loop_enabled": false,
+		"continuous_stream": false,
+		"transition": &"ground_contact",
 		"onset_usec": Time.get_ticks_usec(),
 		"onset_frame": Engine.get_process_frames(),
 		"actor_id": String(actor.get("stable_id")),
 		"emitter_transform": actor.global_transform,
 		"surface": surface,
-		"cadence_seconds": 0.0,
+		"cadence_seconds": cadence_seconds,
 		"grounded": actor.is_on_floor(),
 		"contact_state": &"grounded_moving",
-		"attenuation": {"unit_size": emitter.unit_size, "max_distance": emitter.max_distance},
+		"attenuation": {"unit_size": emitter.unit_size, "max_distance": emitter.max_distance, "listener_distance": listener_distance, "estimated_db": distance_attenuation_db},
+		"mix_stages": mix,
 		"emitter_context": {"spatial": true, "owner": actor.get_path(), "owner_count": 1},
 		"concurrency": {"active": 1 if emitter.playing else 0, "limit": 1, "family": actor_key},
 		"cleanup_observed": false,
 		"cleanup_usec": 0,
-		"lifetime_seconds": float(_audio_durations.get(&"enemy_step", 0.0)),
+		"lifetime_seconds": emitter.stream.get_length(),
 	}
 	_append_voice_receipt(footstep_receipt)
 	var receipt_key := "%s:%s" % [String(footstep_receipt["actor_id"]), "enemy_step"]
@@ -507,7 +556,7 @@ func _stop_enemy_locomotion_stream(actor_key: String, reason: StringName) -> voi
 			"voice_path": String(emitter.get_path()),
 			"stream_path": _stream_path_for_role(&"enemy_step"),
 			"playing": false,
-			"continuous_stream": true,
+			"continuous_stream": false,
 			"transition": &"locomotion_exit",
 			"cleanup_observed": true,
 			"cleanup_reason": reason,
@@ -517,6 +566,7 @@ func _stop_enemy_locomotion_stream(actor_key: String, reason: StringName) -> voi
 		})
 	_enemy_locomotion_active[actor_key] = false
 	_enemy_idle_elapsed[actor_key] = 0.0
+	_enemy_step_remaining[actor_key] = 0.0
 
 
 func _observe_retained_player_footsteps(player: CharacterBody3D) -> void:
@@ -540,15 +590,44 @@ func _observe_retained_player_footsteps(player: CharacterBody3D) -> void:
 			"playing": walk.playing if walk != null else false,
 			"stream_bound": walk != null and walk.stream != null,
 			"bus": walk.bus if walk != null else StringName(),
-			"continuous_owner": true,
+			"continuous_owner": false,
+			"stream_path": walk.stream.resource_path if walk != null and walk.stream != null else "",
+			"duration_seconds": walk.stream.get_length() if walk != null and walk.stream != null else 0.0,
+			"volume_db": walk.volume_db if walk != null else 0.0,
+			"pitch_scale": walk.pitch_scale if walk != null else 1.0,
+			"mix_stages": _bus_stage_snapshot(walk.bus, walk.volume_db) if walk != null else {},
 		},
 		"run": {
 			"path": String(run.get_path()) if run != null else "",
 			"playing": run.playing if run != null else false,
 			"stream_bound": run != null and run.stream != null,
 			"bus": run.bus if run != null else StringName(),
-			"continuous_owner": true,
+			"continuous_owner": false,
+			"stream_path": run.stream.resource_path if run != null and run.stream != null else "",
+			"duration_seconds": run.stream.get_length() if run != null and run.stream != null else 0.0,
+			"volume_db": run.volume_db if run != null else 0.0,
+			"pitch_scale": run.pitch_scale if run != null else 1.0,
+			"mix_stages": _bus_stage_snapshot(run.bus, run.volume_db) if run != null else {},
 		},
+	}
+
+
+func _bus_stage_snapshot(bus: StringName, owner_volume_db: float, spatial_attenuation_db := 0.0) -> Dictionary:
+	var bus_index := AudioServer.get_bus_index(bus)
+	var bus_db := AudioServer.get_bus_volume_db(bus_index) if bus_index >= 0 else 0.0
+	var master_index := AudioServer.get_bus_index(&"Master")
+	var master_db := AudioServer.get_bus_volume_db(master_index) if master_index >= 0 else 0.0
+	return {
+		"owner_volume_db": owner_volume_db,
+		"spatial_attenuation_db": spatial_attenuation_db,
+		"bus": bus,
+		"bus_volume_db": bus_db,
+		"bus_muted": AudioServer.is_bus_mute(bus_index) if bus_index >= 0 else false,
+		"bus_solo": AudioServer.is_bus_solo(bus_index) if bus_index >= 0 else false,
+		"bus_effect_count": AudioServer.get_bus_effect_count(bus_index) if bus_index >= 0 else 0,
+		"master_volume_db": master_db,
+		"master_muted": AudioServer.is_bus_mute(master_index) if master_index >= 0 else false,
+		"effective_listener_gain_db": owner_volume_db + spatial_attenuation_db + bus_db + master_db,
 	}
 
 
@@ -627,7 +706,9 @@ func _footstep_ownership_snapshot() -> Dictionary:
 			"stream_path": _stream_path_for_role(&"enemy_step"),
 			"playing": emitter.playing if is_instance_valid(emitter) else false,
 			"locomotion_active": _enemy_locomotion_active.get(actor_key, false) == true,
-			"continuous_stream": true,
+			"continuous_stream": false,
+			"duration_seconds": emitter.stream.get_length() if is_instance_valid(emitter) and emitter.stream != null else 0.0,
+			"mix_stages": _bus_stage_snapshot(emitter.bus, emitter.volume_db) if is_instance_valid(emitter) else {},
 		}
 	return owners
 

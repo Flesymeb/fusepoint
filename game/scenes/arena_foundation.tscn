@@ -29,6 +29,7 @@ ambient_light_energy = 0.75
 ambient_light_sky_contribution = 0.7
 reflected_light_source = 2
 tonemap_mode = 2
+tonemap_exposure = 1.0
 ssao_enabled = true
 ssao_radius = 1.2
 ssao_intensity = 1.25
@@ -168,7 +169,7 @@ material_override = SubResource("Material_cloud_sheet_2")
 layer = 8
 
 [node name="AlphaRouteLight" type="OmniLight3D" parent="AtmospherePresentation"]
-position = Vector3(-16.984398, 2.4, -28.531097)
+position = Vector3(0, 2.4, -31.7311)
 light_color = Color(0.08, 0.82, 0.95, 1)
 light_energy = 0.35
 omni_range = 7.0
@@ -207,7 +208,7 @@ scale = Vector3(100, 100, 100)
 position = Vector3(3.215604, 0.2847, 29.668905)
 
 [node name="Alpha" type="Marker3D" parent="ProductAnchors"]
-position = Vector3(-16.984398, 0.2847, -28.531097)
+position = Vector3(0, 0.2847, -31.7311)
 
 [node name="Bravo" type="Marker3D" parent="ProductAnchors"]
 position = Vector3(-12, 0.2847, 18)
@@ -216,7 +217,7 @@ position = Vector3(-12, 0.2847, 18)
 position = Vector3(10, 0.2847, 29)
 
 [node name="Alpha" type="Area3D" parent="." groups=["mcp_watch"]]
-position = Vector3(-16.984398, 1.4847, -28.531097)
+position = Vector3(0, 1.4847, -31.7311)
 collision_layer = 0
 collision_mask = 1
 monitoring = true
