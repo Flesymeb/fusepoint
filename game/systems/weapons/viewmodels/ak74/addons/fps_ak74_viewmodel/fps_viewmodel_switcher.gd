@@ -185,6 +185,11 @@ func _replace_model(index: int, play_draw: bool, immediate: bool) -> void:
 		return
 	model_root.name = "ActiveWeaponModel"
 	model_mount.add_child(model_root)
+	# Restore the intact coupled source at the wrapper boundary. Imported gun,
+	# hands, skeleton, library, clips, and sockets remain unedited descendants.
+	source_axis_adapter.visible = true
+	model_mount.visible = true
+	model_root.visible = true
 	animation_player = _first_animation_player(model_root)
 	if animation_player == null:
 		push_error("Weapon profile %s has no AnimationPlayer" % profile.weapon_id)
@@ -239,3 +244,67 @@ func _first_animation_player(root: Node) -> AnimationPlayer:
 		if found != null:
 			return found
 	return null
+
+
+func _first_skeleton(root: Node) -> Skeleton3D:
+	if root is Skeleton3D:
+		return root as Skeleton3D
+	for child: Node in root.get_children():
+		var found := _first_skeleton(child)
+		if found != null:
+			return found
+	return null
+
+
+func _runtime_rig_audit() -> Dictionary:
+	var meshes: Array[Dictionary] = []
+	if model_root != null:
+		for node: Node in model_root.find_children("*", "MeshInstance3D", true, false):
+			var mesh := node as MeshInstance3D
+			meshes.append({
+				"path": String(mesh.get_path()),
+				"visible": mesh.is_visible_in_tree(),
+				"mesh_path": mesh.mesh.resource_path if mesh.mesh != null else "",
+				"skinned": mesh.skin != null,
+			})
+	var skeleton := _first_skeleton(model_root) if model_root != null else null
+	var bone_names: Array[String] = []
+	if skeleton != null:
+		for bone_index in skeleton.get_bone_count():
+			bone_names.append(String(skeleton.get_bone_name(bone_index)).to_lower())
+	var left_hand_bound := bone_names.any(func(name: String) -> bool:
+		return "hand_l" in name or "left_hand" in name
+	)
+	var right_hand_bound := bone_names.any(func(name: String) -> bool:
+		return "hand_r" in name or "right_hand" in name
+	)
+	return {
+		"intact_root": model_root != null and model_root.is_inside_tree(),
+		"root_visible": model_root != null and model_root.is_visible_in_tree(),
+		"mesh_count": meshes.size(),
+		"visible_mesh_count": meshes.filter(func(item: Dictionary) -> bool: return item.get("visible", false) == true).size(),
+		"skinned_mesh_count": meshes.filter(func(item: Dictionary) -> bool: return item.get("skinned", false) == true).size(),
+		"mesh_sources": meshes,
+		"skeleton_path": String(skeleton.get_path()) if skeleton != null else "",
+		"bone_count": skeleton.get_bone_count() if skeleton != null else 0,
+		"left_hand_bound": left_hand_bound,
+		"right_hand_bound": right_hand_bound,
+		"both_hands_bound": left_hand_bound and right_hand_bound,
+		"animation_player_path": String(animation_player.get_path()) if animation_player != null else "",
+		"animation_count": animation_player.get_animation_list().size() if animation_player != null else 0,
+	}
+
+
+func _mcp_state() -> Dictionary:
+	var profile := current_profile()
+	return {
+		"weapon_id": current_weapon_id(),
+		"current_clip": current_clip,
+		"animation_name": animation_player.current_animation if animation_player != null else &"",
+		"animation_position_seconds": animation_player.current_animation_position if animation_player != null else 0.0,
+		"aiming": aiming,
+		"switching": switching,
+		"hip_position": profile.hip_position if profile != null else Vector3.ZERO,
+		"aim_position": profile.aim_position if profile != null else Vector3.ZERO,
+		"runtime_rig": _runtime_rig_audit(),
+	}

@@ -23,6 +23,10 @@ const SOURCE_SUN_FLARE_SCRIPT := "res://scripts/source_sun_flare.gd"
 @onready var sun: DirectionalLight3D = $Sun
 @onready var cloud_layer: Node3D = $AtmospherePresentation/DayCloudLayer
 @onready var sun_flare: Control = $AtmospherePresentation/SunFlareCanvas/DirectionalSunFlare
+@onready var deployment_anchor: Marker3D = $ProductAnchors/Deployment
+@onready var alpha_anchor: Marker3D = $ProductAnchors/Alpha
+@onready var bravo_anchor: Marker3D = $ProductAnchors/Bravo
+@onready var charlie_anchor: Marker3D = $ProductAnchors/Charlie
 
 var map_bounds := AABB()
 var visible_mesh_count := 0
@@ -206,27 +210,18 @@ func _bind_product_anchors() -> bool:
 	NavigationServer3D.map_force_update(nav_map)
 	var player := get_tree().get_first_node_in_group(&"player") as CharacterBody3D
 	var hints := {
-		"alpha": $Alpha.global_position - Vector3.UP * 1.2,
-		"bravo": $Bravo.global_position - Vector3.UP * 1.2,
-		"charlie": $Charlie.global_position - Vector3.UP * 1.2,
+		"spawn": deployment_anchor.global_position,
+		"alpha": alpha_anchor.global_position,
+		"bravo": bravo_anchor.global_position,
+		"charlie": charlie_anchor.global_position,
 	}
 	var projected := {}
 	for id in hints:
 		projected[id] = NavigationServer3D.map_get_closest_point(nav_map, hints[id])
-	deployment_anchor_selection = _select_deployment_anchor(
-		nav_map,
-		projected["alpha"],
-		projected["bravo"],
-		projected["charlie"],
-		player,
-	)
+	deployment_anchor_selection = _validate_product_anchor_pair(nav_map, projected, hints, player)
 	if deployment_anchor_selection.get("accepted", false) == true:
 		projected["alpha"] = deployment_anchor_selection["alpha_position"]
-	projected["spawn"] = deployment_anchor_selection.get(
-		"position",
-		NavigationServer3D.map_get_closest_point(nav_map, Vector3.ZERO),
-	)
-	hints["spawn"] = deployment_anchor_selection.get("source_centroid", Vector3.ZERO)
+		projected["spawn"] = deployment_anchor_selection["position"]
 	var raw_edges := {
 		"spawn_to_a": NavigationServer3D.map_get_path(nav_map, projected["spawn"], projected["alpha"], true),
 		"a_to_b": NavigationServer3D.map_get_path(nav_map, projected["alpha"], projected["bravo"], true),
@@ -295,6 +290,7 @@ func _bind_product_anchors() -> bool:
 		failure_reason = &"spawn_alpha_route_budget_pending_observed_input"
 	topology_binding_report = {
 		"datum": "authored_standoff_navigation_map",
+		"anchor_binding_mode": &"deterministic_product_markers",
 		"hints": hints,
 		"projected": projected,
 		"projection_distance": {
@@ -330,186 +326,70 @@ func _bind_product_anchors() -> bool:
 	return transaction_accepted
 
 
-func _select_deployment_anchor(
+func _validate_product_anchor_pair(
 	nav_map: RID,
-	alpha_hint: Vector3,
-	bravo_position: Vector3,
-	charlie_position: Vector3,
+	projected: Dictionary,
+	hints: Dictionary,
 	player: CharacterBody3D,
 ) -> Dictionary:
 	if player == null:
 		return {"accepted": false, "failure_reason": &"player_missing"}
-	var navigation_mesh := navigation_region.navigation_mesh
-	var vertices := navigation_mesh.get_vertices()
-	var anchors: Array[Dictionary] = []
-	var minimum_route_length := INF
-	var maximum_route_length := 0.0
-	var minimum_position := Vector3.ZERO
-	var maximum_position := Vector3.ZERO
-	var has_navigation_bounds := false
-	for polygon_index in navigation_mesh.get_polygon_count():
-		var polygon := navigation_mesh.get_polygon(polygon_index)
-		if polygon.is_empty():
-			continue
-		var centroid := Vector3.ZERO
-		for vertex_index in polygon:
-			centroid += vertices[vertex_index]
-		centroid /= float(polygon.size())
-		centroid = navigation_region.global_transform * centroid
-		if has_navigation_bounds:
-			minimum_position = minimum_position.min(centroid)
-			maximum_position = maximum_position.max(centroid)
-		else:
-			minimum_position = centroid
-			maximum_position = centroid
-			has_navigation_bounds = true
-		if absf(centroid.y - bravo_position.y) > 0.75:
-			continue
-		var validation: Dictionary = player.call(
-			&"validate_recovery_destination",
-			Transform3D(player.global_basis, centroid + Vector3.UP * 0.9),
-			[],
-		)
-		if validation.get("accepted", false) != true:
-			continue
-		anchors.append({
-			"polygon_index": polygon_index,
-			"source_centroid": centroid,
-			"position": NavigationServer3D.map_get_closest_point(nav_map, centroid),
-			"occupancy": validation,
-		})
-	# The previous search fixed Alpha and could see only a 29 m spawn radius.
-	# Search both product-owned anchors across the intact low-street navigation
-	# surface; authored geometry, navigation, collision and B/C remain untouched.
-	var alpha_candidates: Array[Dictionary] = anchors.duplicate(true)
-	alpha_candidates.sort_custom(_alpha_candidate_before.bind(bravo_position, alpha_hint))
-	var raw_pairs: Array[Dictionary] = []
-	var evaluated_pair_count := 0
-	for alpha_index in mini(alpha_candidates.size(), 48):
-		var alpha_candidate: Dictionary = alpha_candidates[alpha_index]
-		var alpha_position: Vector3 = alpha_candidate["position"]
-		if alpha_position.distance_to(bravo_position) <= 10.0 or alpha_position.distance_to(charlie_position) <= 10.0:
-			continue
-		var alpha_to_bravo := NavigationServer3D.map_get_path(nav_map, alpha_position, bravo_position, true)
-		if alpha_to_bravo.size() < 2:
-			continue
-		var spawn_candidates: Array[Dictionary] = anchors.duplicate(true)
-		spawn_candidates.sort_custom(_spawn_candidate_before.bind(alpha_position))
-		for spawn_index in mini(spawn_candidates.size(), 72):
-			evaluated_pair_count += 1
-			var spawn_candidate: Dictionary = spawn_candidates[spawn_index]
-			var spawn_position: Vector3 = spawn_candidate["position"]
-			if spawn_position.distance_to(alpha_position) < ROUTE_MIN_EFFECTIVE_SECONDS * CALIBRATED_EFFECTIVE_ROUTE_SPEED * 0.62:
-				continue
-			var raw_path := NavigationServer3D.map_get_path(nav_map, spawn_position, alpha_position, true)
-			if raw_path.size() < 2:
-				continue
-			var route_length := _path_length(raw_path)
-			minimum_route_length = minf(minimum_route_length, route_length)
-			maximum_route_length = maxf(maximum_route_length, route_length)
-			var predicted_seconds := route_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED
-			# The intact map's measured native navigation diameter is slightly
-			# below the old linear pace estimate. Keep prediction diagnostic and
-			# admit the longest native pairs for ordinary-input qualification.
-			if route_length < ROUTE_MIN_EFFECTIVE_SECONDS * CALIBRATED_EFFECTIVE_ROUTE_SPEED * 0.88 or predicted_seconds > ROUTE_MAX_EFFECTIVE_SECONDS:
-				continue
-			var sightline_blocked := _is_alpha_sightline_blocked(spawn_position, alpha_position, player)
-			if not sightline_blocked:
-				continue
-			raw_pairs.append({
-				"polygon_index": int(spawn_candidate["polygon_index"]),
-				"alpha_polygon_index": int(alpha_candidate["polygon_index"]),
-				"source_centroid": spawn_candidate["source_centroid"],
-				"position": raw_path[0],
-				"alpha_position": raw_path[raw_path.size() - 1],
-				"alpha_source_centroid": alpha_candidate["source_centroid"],
-				"raw_path": raw_path,
-				"raw_path_length": route_length,
-				"alpha_to_bravo_length": _path_length(alpha_to_bravo),
-				"direct_distance": spawn_position.distance_to(alpha_position),
-				"predicted_effective_seconds": predicted_seconds,
-				"sightline_blocked": true,
-				"score": absf(predicted_seconds - ROUTE_TARGET_EFFECTIVE_SECONDS),
-				"occupancy": spawn_candidate["occupancy"],
-				"alpha_occupancy": alpha_candidate["occupancy"],
-			})
-	raw_pairs.sort_custom(_route_candidate_before)
-	var inspected_count := 0
-	for candidate in raw_pairs:
-		if inspected_count >= 32:
-			break
-		inspected_count += 1
-		var repaired_path := _build_capsule_clear_route(candidate["raw_path"], player, nav_map)
-		var repaired_length := _path_length(repaired_path)
-		var repaired_seconds := repaired_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED
-		if repaired_length < ROUTE_MIN_EFFECTIVE_SECONDS * CALIBRATED_EFFECTIVE_ROUTE_SPEED * 0.88 or repaired_seconds > ROUTE_MAX_EFFECTIVE_SECONDS:
-			continue
-		var clearance := _route_clearance_for_path(repaired_path, player)
-		var first_escape := _first_escape_validation(repaired_path, player)
-		if clearance.get("clear", false) != true or first_escape.get("accepted", false) != true:
-			continue
-		var selected := candidate.duplicate(true)
-		selected["accepted"] = true
-		selected["repaired_path"] = repaired_path
-		selected["repaired_path_length"] = repaired_length
-		selected["predicted_effective_seconds"] = repaired_seconds
-		selected["clearance"] = clearance
-		selected["first_escape"] = first_escape
-		selected["candidate_count"] = anchors.size()
-		selected["pair_candidate_count"] = raw_pairs.size()
-		selected["evaluated_pair_count"] = evaluated_pair_count
-		selected["inspected_count"] = inspected_count
-		selected["navigation_route_length_range"] = Vector2(
-			0.0 if is_inf(minimum_route_length) else minimum_route_length,
-			maximum_route_length,
-		)
-		selected["navigation_bounds"] = AABB(
-			minimum_position,
-			maximum_position - minimum_position if has_navigation_bounds else Vector3.ZERO,
-		)
-		return selected
+	for id in ["spawn", "alpha", "bravo", "charlie"]:
+		if not projected.has(id) or hints[id].distance_to(projected[id]) > 0.75:
+			return {
+				"accepted": false,
+				"failure_reason": &"product_anchor_projection_rejected",
+				"failed_anchor": id,
+				"projection_distance": hints[id].distance_to(projected.get(id, Vector3.ZERO)),
+			}
+	var spawn_position: Vector3 = projected["spawn"]
+	var alpha_position: Vector3 = projected["alpha"]
+	var raw_path := NavigationServer3D.map_get_path(nav_map, spawn_position, alpha_position, true)
+	if raw_path.size() < 2:
+		return {"accepted": false, "failure_reason": &"deterministic_spawn_alpha_disconnected"}
+	var repaired_path := _build_capsule_clear_route(raw_path, player, nav_map)
+	var clearance := _route_clearance_for_path(repaired_path, player)
+	var first_escape := _first_escape_validation(repaired_path, player)
+	var spawn_occupancy: Dictionary = player.call(
+		&"validate_recovery_destination",
+		Transform3D(player.global_basis, spawn_position + Vector3.UP * 0.9),
+		[],
+	)
+	var alpha_occupancy: Dictionary = player.call(
+		&"validate_recovery_destination",
+		Transform3D(player.global_basis, alpha_position + Vector3.UP * 0.9),
+		[],
+	)
+	var accepted: bool = (
+		repaired_path.size() >= 2
+		and clearance.get("clear", false) == true
+		and first_escape.get("accepted", false) == true
+		and spawn_occupancy.get("accepted", false) == true
+		and alpha_occupancy.get("accepted", false) == true
+	)
+	var repaired_length := _path_length(repaired_path)
 	return {
-		"accepted": false,
-		"failure_reason": &"no_collision_backed_spawn_alpha_pair_within_budget",
-		"candidate_count": anchors.size(),
-		"pair_candidate_count": raw_pairs.size(),
-		"evaluated_pair_count": evaluated_pair_count,
-		"inspected_count": inspected_count,
-		"navigation_route_length_range": Vector2(
-			0.0 if is_inf(minimum_route_length) else minimum_route_length,
-			maximum_route_length,
-		),
-		"navigation_bounds": AABB(
-			minimum_position,
-			maximum_position - minimum_position if has_navigation_bounds else Vector3.ZERO,
-		),
+		"accepted": accepted,
+		"failure_reason": &"" if accepted else &"deterministic_anchor_clearance_rejected",
+		"binding_mode": &"deterministic_product_markers",
+		"anchor_ids": [&"deployment", &"alpha"],
+		"position": spawn_position,
+		"alpha_position": alpha_position,
+		"raw_path": raw_path,
+		"raw_path_length": _path_length(raw_path),
+		"repaired_path": repaired_path,
+		"repaired_path_length": repaired_length,
+		"predicted_effective_seconds": repaired_length / CALIBRATED_EFFECTIVE_ROUTE_SPEED,
+		"direct_distance": spawn_position.distance_to(alpha_position),
+		"clearance": clearance,
+		"first_escape": first_escape,
+		"occupancy": spawn_occupancy,
+		"alpha_occupancy": alpha_occupancy,
+		"candidate_count": 1,
+		"pair_candidate_count": 1,
+		"evaluated_pair_count": 1,
+		"inspected_count": 1,
 	}
-
-
-func _alpha_candidate_before(a: Dictionary, b: Dictionary, bravo_position: Vector3, alpha_hint: Vector3) -> bool:
-	var a_position: Vector3 = a["position"]
-	var b_position: Vector3 = b["position"]
-	var a_score := a_position.distance_to(bravo_position) + a_position.distance_to(alpha_hint) * 0.15
-	var b_score := b_position.distance_to(bravo_position) + b_position.distance_to(alpha_hint) * 0.15
-	if is_equal_approx(a_score, b_score):
-		return int(a["polygon_index"]) < int(b["polygon_index"])
-	return a_score > b_score
-
-
-func _spawn_candidate_before(a: Dictionary, b: Dictionary, alpha_position: Vector3) -> bool:
-	var a_position: Vector3 = a["position"]
-	var b_position: Vector3 = b["position"]
-	var a_distance := a_position.distance_to(alpha_position)
-	var b_distance := b_position.distance_to(alpha_position)
-	if is_equal_approx(a_distance, b_distance):
-		return int(a["polygon_index"]) < int(b["polygon_index"])
-	return a_distance > b_distance
-
-
-func _route_candidate_before(a: Dictionary, b: Dictionary) -> bool:
-	if is_equal_approx(float(a["score"]), float(b["score"])):
-		return int(a["polygon_index"]) < int(b["polygon_index"])
-	return float(a["score"]) < float(b["score"])
 
 
 func _path_length(path: PackedVector3Array) -> float:

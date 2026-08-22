@@ -188,8 +188,22 @@ scale = Vector3(100, 100, 100)
 
 [node name="MapCollision" type="StaticBody3D" parent="."]
 
+[node name="ProductAnchors" type="Node3D" parent="."]
+
+[node name="Deployment" type="Marker3D" parent="ProductAnchors"]
+position = Vector3(3.215604, 0.2847, 29.668905)
+
+[node name="Alpha" type="Marker3D" parent="ProductAnchors"]
+position = Vector3(-16.984398, 0.2847, -28.531097)
+
+[node name="Bravo" type="Marker3D" parent="ProductAnchors"]
+position = Vector3(-12, 0.2847, 18)
+
+[node name="Charlie" type="Marker3D" parent="ProductAnchors"]
+position = Vector3(10, 0.2847, 29)
+
 [node name="Alpha" type="Area3D" parent="." groups=["mcp_watch"]]
-position = Vector3(-5, 1.2, -23.2)
+position = Vector3(-16.984398, 1.4847, -28.531097)
 collision_layer = 0
 collision_mask = 1
 monitoring = true

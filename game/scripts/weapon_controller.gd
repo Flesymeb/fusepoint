@@ -632,11 +632,17 @@ func _fresh_weapon_data() -> Dictionary:
 func _configure_component_feedback_boundary() -> void:
 	# The registered component keeps ownership of clips, audio and muzzle flash.
 	# Its exported recoil channel is disabled through public properties so the
-	# product adapter is the sole writer of the model mount transform.
+	# product adapter is the sole writer of the model mount transform. Product
+	# bus routing is likewise applied at this wrapper boundary without changing
+	# the materialized component scene or taking over playback ownership.
 	feedback.set("fire_recoil_back_distance", 0.0)
 	feedback.set("fire_recoil_pitch_degrees", 0.0)
 	feedback.set("fire_recoil_yaw_degrees", 0.0)
 	feedback.set("fire_recoil_roll_degrees", 0.0)
+	for player_name: StringName in [&"WalkAudio", &"RunAudio"]:
+		var player := feedback.get_node_or_null(NodePath(player_name)) as AudioStreamPlayer
+		if player != null:
+			player.bus = &"Foley"
 
 
 func set_run_epoch(epoch: int, reset_transients := true) -> bool:

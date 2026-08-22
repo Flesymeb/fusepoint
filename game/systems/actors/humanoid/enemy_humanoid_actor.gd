@@ -25,6 +25,8 @@ const UAL1_SCENE := preload("res://systems/actors/humanoid/assets/animations/ual
 const UAL2_SCENE := preload("res://systems/actors/humanoid/assets/animations/ual2_standard.glb")
 const PRIMARY_RIFLE_SCENE := preload("res://systems/actors/humanoid/assets/weapons/primary_rifle/m4_rifle.glb")
 const WEAPON_FAMILY := &"rifle"
+const RIFLE_FIRE_SECONDS := 0.18
+const RIFLE_RELOAD_SECONDS := 1.65
 const SKINS := {
 	"soldier_a": {
 		"label": "Mixamo Soldier A (68 bones)",
@@ -40,9 +42,9 @@ const SKINS := {
 	},
 }
 const STATE_CLIPS := {
-	# The intact UAL package does not expose a named rifle library. Use its
-	# neutral/carry/two-hand clips as the M4 adapter; pistol semantics are never
-	# selected for an actor whose visible weapon family is rifle.
+	# UAL does not contain third-person rifle-named actions. AIM/FIRE/RELOAD use
+	# one neutral two-hand rail base pose and product-owned rifle overlays below;
+	# no pistol, spell, interaction, prone, hit, or death clip is relabeled.
 	MotionState.IDLE: {"library": "ual1", "clip": "Idle", "loop": true},
 	MotionState.WALK: {"library": "ual1", "clip": "Walk", "loop": true},
 	MotionState.RUN: {"library": "ual1", "clip": "Jog_Fwd", "loop": true},
@@ -52,8 +54,8 @@ const STATE_CLIPS := {
 	MotionState.AIRBORNE: {"library": "ual1", "clip": "Jump", "loop": true},
 	MotionState.LAND: {"library": "ual1", "clip": "Jump_Land", "loop": false},
 	MotionState.AIM: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
-	MotionState.FIRE: {"library": "ual1", "clip": "Spell_Simple_Shoot", "loop": false},
-	MotionState.RELOAD: {"library": "ual1", "clip": "Interact", "loop": false},
+	MotionState.FIRE: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
+	MotionState.RELOAD: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
 	# A regular bullet hit should read as a short flinch, not a full-body
 	# knockback. Hit_Head gives the requested small head snap while preserving
 	# the actor's planted combat stance.
@@ -93,6 +95,8 @@ var _locomotion_playback_scale := 1.0
 var _state_change_count := 0
 var _aim_pitch_degrees := 0.0
 var _aim_pitch_serial := 0
+var _rifle_action_elapsed := 0.0
+var _rifle_action_duration := 0.0
 
 
 func _ready() -> void:
@@ -108,6 +112,11 @@ func _process(delta: float) -> void:
 	if player == null:
 		return
 	player.advance(delta * playback_speed * _locomotion_playback_scale)
+	if current_state in [MotionState.FIRE, MotionState.RELOAD]:
+		_rifle_action_elapsed += delta
+		if _rifle_action_elapsed >= _rifle_action_duration:
+			set_motion_state(_one_shot_return_state, true)
+			return
 	_apply_pose_and_ground()
 	if _custom_preview:
 		if _custom_loop and not player.is_playing():
@@ -210,6 +219,12 @@ func set_motion_state(next_state: MotionState, immediate := false, restart := fa
 		_one_shot_return_state = MotionState.AIM if current_state == MotionState.AIM else MotionState.IDLE
 	var previous_library := _active_library
 	current_state = next_state
+	_rifle_action_elapsed = 0.0
+	_rifle_action_duration = (
+		RIFLE_FIRE_SECONDS if next_state == MotionState.FIRE
+		else RIFLE_RELOAD_SECONDS if next_state == MotionState.RELOAD
+		else 0.0
+	)
 	_custom_preview = false
 	_custom_clip = ""
 	_locomotion_playback_scale = 1.0
@@ -381,6 +396,7 @@ func _hips_translation_mode() -> String:
 func _apply_pose_and_ground() -> void:
 	_retargeter.apply_pose(_hips_translation_mode())
 	_apply_rifle_aim_overlay()
+	_apply_rifle_action_overlay()
 	_apply_ground_contact()
 
 
@@ -409,6 +425,37 @@ func _apply_rifle_aim_overlay() -> void:
 		var base_rotation := _target_skeleton.get_bone_pose_rotation(bone_index)
 		var pitch_rotation := Quaternion(Vector3.RIGHT, pitch_radians * float(overlay["weight"]))
 		_target_skeleton.set_bone_pose_rotation(bone_index, base_rotation * pitch_rotation)
+
+
+func _apply_rifle_action_overlay() -> void:
+	if _target_skeleton == null or current_state not in [MotionState.FIRE, MotionState.RELOAD]:
+		return
+	var duration := maxf(_rifle_action_duration, 0.001)
+	var progress := clampf(_rifle_action_elapsed / duration, 0.0, 1.0)
+	var pulse := sin(progress * PI)
+	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
+	if current_state == MotionState.FIRE:
+		_rotate_overlay_bone(mapping, "chest", Vector3.RIGHT, deg_to_rad(-3.5 * pulse))
+		_rotate_overlay_bone(mapping, "right_shoulder", Vector3.UP, deg_to_rad(-2.0 * pulse))
+		_rotate_overlay_bone(mapping, "left_shoulder", Vector3.UP, deg_to_rad(-1.25 * pulse))
+		return
+	# Break the support-hand contact toward the magazine well, then reseat it.
+	# The rifle remains attached to the firing hand, so the root and muzzle stay
+	# stable while the left arm performs the only reload displacement.
+	var reach := sin(progress * PI)
+	_rotate_overlay_bone(mapping, "left_shoulder", Vector3.FORWARD, deg_to_rad(-24.0 * reach))
+	_rotate_overlay_bone(mapping, "left_upper_arm", Vector3.RIGHT, deg_to_rad(18.0 * reach))
+	_rotate_overlay_bone(mapping, "left_lower_arm", Vector3.UP, deg_to_rad(32.0 * reach))
+	_rotate_overlay_bone(mapping, "left_hand", Vector3.FORWARD, deg_to_rad(-38.0 * reach))
+	_rotate_overlay_bone(mapping, "chest", Vector3.UP, deg_to_rad(3.5 * reach))
+
+
+func _rotate_overlay_bone(mapping: Dictionary, canonical: String, axis: Vector3, angle: float) -> void:
+	if not mapping.has(canonical) or is_zero_approx(angle):
+		return
+	var bone_index: int = mapping[canonical]
+	var base_rotation := _target_skeleton.get_bone_pose_rotation(bone_index)
+	_target_skeleton.set_bone_pose_rotation(bone_index, base_rotation * Quaternion(axis, angle))
 
 
 func _apply_ground_contact() -> void:
@@ -516,6 +563,14 @@ func get_component_state() -> Dictionary:
 		"animation_library": _active_library,
 		"mode": "clip_browser" if _custom_preview else "semantic_state",
 		"animation": _custom_clip if _custom_preview else String(STATE_CLIPS[current_state]["clip"]),
+		"animation_semantic": (
+			&"rifle_fire_overlay" if current_state == MotionState.FIRE
+			else &"rifle_reload_overlay" if current_state == MotionState.RELOAD
+			else &"rifle_two_hand_aim" if current_state == MotionState.AIM
+			else StringName(state_name())
+		),
+		"rifle_semantic_procedural": current_state in [MotionState.AIM, MotionState.FIRE, MotionState.RELOAD],
+		"rifle_action_progress": clampf(_rifle_action_elapsed / maxf(_rifle_action_duration, 0.001), 0.0, 1.0) if _rifle_action_duration > 0.0 else 0.0,
 		"animation_position_seconds": animation_position,
 		"animation_length_seconds": animation_length,
 		"animation_normalized_time": clampf(animation_position / animation_length, 0.0, 1.0) if animation_length > 0.0 else 0.0,

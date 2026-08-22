@@ -9,7 +9,7 @@ signal mission_cue_presented(receipt: Dictionary)
 const CACHE_LIMIT := 128
 const WARNING_THRESHOLDS: Array[int] = [30, 15, 10, 5]
 const VOICE_RECEIPT_LIMIT := 64
-const FOOTSTEP_ROLES: Array[StringName] = [&"player_walk", &"player_sprint", &"player_crouch", &"player_land", &"enemy_step"]
+const FOOTSTEP_ROLES: Array[StringName] = [&"enemy_step"]
 const FOOTSTEP_WALK_STREAM: AudioStream = preload("res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_walk.mp3")
 const FOOTSTEP_RUN_STREAM: AudioStream = preload("res://systems/weapons/viewmodels/ak74/audio/sfx_footsteps_run.wav")
 const FOOTSTEP_STREAM_PATHS := {
@@ -55,10 +55,8 @@ var _voice_receipts: Array[Dictionary] = []
 var _retained_voice_receipts: Array[Dictionary] = []
 var _footstep_emitters: Dictionary = {}
 var _latest_footstep_by_actor_role: Dictionary = {}
+var _retained_player_footstep_owner: Dictionary = {}
 var _enemy_step_elapsed: Dictionary = {}
-var _player_step_elapsed := 0.0
-var _player_step_side := 0
-var _player_was_grounded := true
 var _paused_last_frame := false
 
 
@@ -158,7 +156,7 @@ func reset_feedback(clear_history := false) -> void:
 	_stop_spatial_voices()
 	_active_voice_lifetimes.clear()
 	_enemy_step_elapsed.clear()
-	_player_step_elapsed = 0.0
+	_retained_player_footstep_owner.clear()
 
 
 func _bind_player_lifecycle() -> void:
@@ -212,8 +210,14 @@ func snapshot() -> Dictionary:
 		"retained_voice_receipt_count": _retained_voice_receipts.size(),
 		"footstep_receipts": _footstep_receipts(),
 		"footstep_ownership": _footstep_ownership_snapshot(),
+		"retained_player_footstep_owner": _retained_player_footstep_owner.duplicate(true),
 		"latest_footstep_by_actor_role": _latest_footstep_by_actor_role.duplicate(true),
-		"audio_concurrency_limits": {"mission_family": 1, "footstep_emitters_per_actor": 1, "retained_receipts": VOICE_RECEIPT_LIMIT},
+		"audio_concurrency_limits": {
+			"mission_family": 1,
+			"player_mission_emitters": 0,
+			"enemy_footstep_emitters_per_actor": 1,
+			"retained_receipts": VOICE_RECEIPT_LIMIT,
+		},
 		"semantic_role_contract": {
 			"objective": [&"capture", &"route"],
 			"bomb": [&"defusal", &"warning", &"terminal"],
@@ -413,20 +417,7 @@ func _stop_mission_bed() -> void:
 func _observe_footsteps(delta: float) -> void:
 	var player := get_tree().get_first_node_in_group(&"player") as CharacterBody3D
 	if player != null:
-		var grounded := player.is_on_floor()
-		var horizontal_speed := Vector2(player.velocity.x, player.velocity.z).length()
-		var stance := StringName(player.get("_stance"))
-		var locomotion := StringName(player.get("_locomotion_mode"))
-		if grounded and not _player_was_grounded:
-			_emit_footstep(player, &"player_land", 0.0, &"landing")
-		_player_was_grounded = grounded
-		_player_step_elapsed = maxf(0.0, _player_step_elapsed - delta)
-		if grounded and horizontal_speed > 0.35 and _player_step_elapsed <= 0.0:
-			var role := &"player_crouch" if stance in [&"crouching", &"prone"] else &"player_sprint" if locomotion == &"sprint" else &"player_walk"
-			var cadence := 0.58 if role == &"player_crouch" else 0.29 if role == &"player_sprint" else 0.43
-			_emit_footstep(player, role, cadence, &"left" if _player_step_side % 2 == 0 else &"right")
-			_player_step_side += 1
-			_player_step_elapsed = cadence
+		_observe_retained_player_footsteps(player)
 	for node: Node in get_tree().get_nodes_in_group(&"fps_enemy"):
 		var enemy := node as CharacterBody3D
 		if enemy == null or enemy.get("mission_active") != true or not enemy.is_on_floor():
@@ -440,6 +431,10 @@ func _observe_footsteps(delta: float) -> void:
 
 
 func _emit_footstep(actor: CharacterBody3D, role: StringName, cadence: float, side: StringName) -> void:
+	# Player movement Foley belongs to the retained viewmodel component. Mission
+	# feedback may observe it but can only create spatial emitters for enemies.
+	if not actor.is_in_group(&"fps_enemy"):
+		return
 	var actor_key := String(actor.get_path())
 	var emitter := _footstep_emitters.get(actor_key) as AudioStreamPlayer3D
 	if emitter == null or not is_instance_valid(emitter):
@@ -484,6 +479,39 @@ func _emit_footstep(actor: CharacterBody3D, role: StringName, cadence: float, si
 	_append_voice_receipt(footstep_receipt)
 	var receipt_key := "%s:%s" % [String(footstep_receipt["actor_id"]), String(role)]
 	_latest_footstep_by_actor_role[receipt_key] = footstep_receipt.duplicate(true)
+
+
+func _observe_retained_player_footsteps(player: CharacterBody3D) -> void:
+	var feedback := player.get_node_or_null("Head/Camera3D/FPSViewmodelSwitcher/FPSViewmodelFeedback")
+	var walk: AudioStreamPlayer
+	var run: AudioStreamPlayer
+	if feedback != null:
+		walk = feedback.get_node_or_null("WalkAudio") as AudioStreamPlayer
+		run = feedback.get_node_or_null("RunAudio") as AudioStreamPlayer
+	_retained_player_footstep_owner = {
+		"actor_id": "player",
+		"owner_kind": &"retained_viewmodel_component",
+		"owner_path": String(feedback.get_path()) if feedback != null else "",
+		"mission_emitter_count": 0,
+		"playback_owner_count": 1 if feedback != null and walk != null and run != null else 0,
+		"grounded": player.is_on_floor(),
+		"locomotion": StringName(player.get("_locomotion_mode")),
+		"stance": StringName(player.get("_stance")),
+		"walk": {
+			"path": String(walk.get_path()) if walk != null else "",
+			"playing": walk.playing if walk != null else false,
+			"stream_bound": walk != null and walk.stream != null,
+			"bus": walk.bus if walk != null else StringName(),
+			"continuous_owner": true,
+		},
+		"run": {
+			"path": String(run.get_path()) if run != null else "",
+			"playing": run.playing if run != null else false,
+			"stream_bound": run != null and run.stream != null,
+			"bus": run.bus if run != null else StringName(),
+			"continuous_owner": true,
+		},
+	}
 
 
 func _surface_at(actor: CharacterBody3D) -> StringName:
@@ -551,7 +579,7 @@ func _footstep_receipts() -> Array[Dictionary]:
 
 
 func _footstep_ownership_snapshot() -> Dictionary:
-	var owners := {}
+	var owners := {"player": _retained_player_footstep_owner.duplicate(true)}
 	for actor_key: String in _footstep_emitters:
 		var emitter := _footstep_emitters.get(actor_key) as AudioStreamPlayer3D
 		owners[actor_key] = {
