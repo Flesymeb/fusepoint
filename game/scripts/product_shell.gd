@@ -143,6 +143,19 @@ func _connect_controls() -> void:
 	$Root/Pages/ResultPage/Menu/ReplayButton.pressed.connect(_replay)
 	$Root/Pages/ResultPage/Menu/RestartButton.pressed.connect(_restart_checkpoint)
 	$Root/Pages/ResultPage/Menu/HomeButton.pressed.connect(_return_home)
+	for slider: Range in [
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScale,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOV,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleSize,
+	]:
+		slider.value_changed.connect(func(_value: float) -> void: _sync_settings_value_copy())
+	for toggle: BaseButton in [
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ReducedMotion,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ScreenShake,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/HoldADS,
+	]:
+		toggle.toggled.connect(func(_pressed: bool) -> void: _sync_settings_value_copy())
 	_configure_settings_navigation()
 
 
@@ -158,6 +171,31 @@ func _settings_controls() -> Array[Control]:
 		$Root/Pages/SettingsPage/SafeArea/Layout/Actions/ApplyButton,
 		$Root/Pages/SettingsPage/SafeArea/Layout/Actions/CancelButton,
 	]
+
+
+func _settings_labels() -> Array[Control]:
+	return [
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterLabel,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScaleLabel,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOVLabel,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleLabel,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ReducedMotionLabel,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ShakeLabel,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ADSLabel,
+	]
+
+
+func _setting_label_for(control: Control) -> Control:
+	var controls := _settings_controls()
+	var index := controls.find(control)
+	return _settings_labels()[index] if index >= 0 and index < 7 else control
+
+
+func _settings_critical_nodes() -> Array[Control]:
+	var nodes: Array[Control] = [$Root/Pages/SettingsPage/SafeArea/Layout/Title]
+	nodes.append_array(_settings_labels())
+	nodes.append_array(_settings_controls())
+	return nodes
 
 
 func _configure_settings_navigation() -> void:
@@ -185,6 +223,8 @@ func _configure_settings_navigation() -> void:
 
 
 func _on_settings_focus_entered(control: Control) -> void:
+	if settings_scroll.is_ancestor_of(control):
+		settings_scroll.ensure_control_visible(control)
 	_finalize_settings_focus_receipt.call_deferred(control)
 
 
@@ -193,12 +233,20 @@ func _finalize_settings_focus_receipt(control: Control) -> void:
 		return
 	var scroll_rect := settings_scroll.get_global_rect()
 	var control_rect := control.get_global_rect()
+	var label := _setting_label_for(control)
+	var label_rect := label.get_global_rect()
+	var pair_visible := not settings_scroll.is_ancestor_of(control) or (scroll_rect.encloses(control_rect) and scroll_rect.encloses(label_rect))
+	var actions_rect: Rect2 = ($Root/Pages/SettingsPage/SafeArea/Layout/Actions as Control).get_global_rect()
 	_last_settings_focus_receipt = {
 		"run_epoch": int(mission.get("run_epoch")),
 		"page": STATE_SETTINGS,
 		"input_family": _last_input_family,
 		"focused_control": control.get_path(),
-		"focus_visible_in_scroll": not settings_scroll.is_ancestor_of(control) or scroll_rect.encloses(control_rect),
+		"focus_visible_in_scroll": pair_visible,
+		"associated_label": label.get_path(),
+		"associated_label_rect": label_rect,
+		"label_control_pair_visible": pair_visible,
+		"persistent_action_path_visible": Rect2(root.size * SAFE_AREA_RATIO, root.size * 0.9).encloses(actions_rect),
 		"scroll_vertical": settings_scroll.scroll_vertical,
 		"scroll_viewport_rect": scroll_rect,
 		"control_rect": control_rect,
@@ -513,6 +561,24 @@ func _load_settings_controls() -> void:
 	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ReducedMotion.button_pressed = bool(values["reduced_camera_motion"])
 	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ScreenShake.button_pressed = bool(values["screen_shake"])
 	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/HoldADS.button_pressed = bool(values["hold_ads"])
+	_sync_settings_value_copy()
+
+
+func _sync_settings_value_copy() -> void:
+	var master := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume as Range
+	var ui := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScale as Range
+	var fov := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOV as Range
+	var subtitle := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleSize as Range
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterLabel.text = "MASTER VOLUME   %d%%" % int(round(master.value))
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScaleLabel.text = "UI SCALE   %d%%" % int(round(ui.value))
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOVLabel.text = "FIELD OF VIEW   %d°" % int(round(fov.value))
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleLabel.text = "SUBTITLE SIZE / OUTLINE   %d PX" % int(round(subtitle.value))
+	var reduced := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ReducedMotion as BaseButton
+	var shake := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ScreenShake as BaseButton
+	var ads := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/HoldADS as BaseButton
+	reduced.text = "ENABLED" if reduced.button_pressed else "DISABLED"
+	shake.text = "ENABLED" if shake.button_pressed else "DISABLED"
+	ads.text = "HOLD" if ads.button_pressed else "TOGGLE"
 
 
 func _apply_settings() -> void:
@@ -783,15 +849,20 @@ func _layout_snapshot() -> Dictionary:
 				if not safe_rect.encloses(rect):
 					violations.append(str(control.get_path()))
 	if app_state == STATE_SETTINGS:
-		var critical_controls := _settings_controls()
+		var critical_controls := _settings_critical_nodes()
 		var focus_owner := get_viewport().gui_get_focus_owner() as Control
 		var scroll_rect := settings_scroll.get_global_rect()
 		var focused_in_scroll := focus_owner != null and settings_scroll.is_ancestor_of(focus_owner)
 		var focused_revealed := focus_owner != null and (not focused_in_scroll or scroll_rect.encloses(focus_owner.get_global_rect()))
 		var inaccessible: Array[String] = []
 		for control: Control in critical_controls:
-			if control.focus_mode == Control.FOCUS_NONE or not control.is_visible_in_tree():
+			var requires_focus := control in _settings_controls()
+			if not control.is_visible_in_tree() or (requires_focus and control.focus_mode == Control.FOCUS_NONE):
 				inaccessible.append(str(control.get_path()))
+		var focused_label := _setting_label_for(focus_owner) if focus_owner != null else null
+		var focused_pair_revealed := focused_revealed and (focused_label == null or not focused_in_scroll or scroll_rect.encloses(focused_label.get_global_rect()))
+		var action_row := $Root/Pages/SettingsPage/SafeArea/Layout/Actions as Control
+		var action_path_visible := safe_rect.encloses(action_row.get_global_rect())
 		settings_reflow = {
 			"mode": &"single_column" if settings_grid.columns == 1 else &"two_column",
 			"columns": settings_grid.columns,
@@ -803,14 +874,19 @@ func _layout_snapshot() -> Dictionary:
 			"scroll_viewport_rect": scroll_rect,
 			"content_minimum_size": settings_grid.get_combined_minimum_size(),
 			"scroll_required": settings_grid.get_combined_minimum_size().y > settings_scroll.size.y,
-			"critical_control_count": critical_controls.size(),
+			"critical_node_count": critical_controls.size(),
+			"setting_label_count": _settings_labels().size(),
+			"setting_control_count": 7,
 			"inaccessible_controls": inaccessible,
 			"focused_control": str(focus_owner.get_path()) if focus_owner != null else "",
-			"focused_revealed": focused_revealed,
+			"focused_revealed": focused_pair_revealed,
+			"focused_label": str(focused_label.get_path()) if focused_label != null else "",
+			"label_control_pair_visible": focused_pair_revealed,
+			"persistent_action_path_visible": action_path_visible,
 			"predecessor": _return_from_settings,
 			"all_critical_reachable": inaccessible.is_empty(),
 		}
-		if not settings_scroll.follow_focus or not focused_revealed or not inaccessible.is_empty():
+		if not settings_scroll.follow_focus or not focused_pair_revealed or not action_path_visible or not inaccessible.is_empty():
 			violations.append("settings_focus_reflow")
 	return {
 		"contract_id": LAYOUT_CONTRACT_ID,

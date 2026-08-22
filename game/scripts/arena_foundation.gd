@@ -9,25 +9,15 @@ const NAVIGATION_SOURCE_GROUP := &"fusepoint_structural_navigation_source"
 const DECORATIVE_COLLISION_TOKENS: Array[String] = ["decal", "2year"]
 const ROUTE_MIN_EFFECTIVE_SECONDS := 30.0
 const ROUTE_MAX_EFFECTIVE_SECONDS := 45.0
-const ROUTE_TARGET_EFFECTIVE_SECONDS := 37.5
 # Effective route pace includes normal cover checks and the preserved 0.45 m
 # step traversal; it selects product anchors only and never changes player speed.
-const CALIBRATED_EFFECTIVE_ROUTE_SPEED := 2.3
+const CALIBRATED_EFFECTIVE_ROUTE_SPEED := 2.28
 const ROUTE_LEG_BUDGETS := {
 	&"spawn_to_a": Vector2(30.0, 45.0),
 	&"a_to_b": Vector2(35.0, 55.0),
 	&"b_to_c": Vector2(40.0, 60.0),
 }
 const ROUTE_ENGAGEMENT_DWELL := {&"spawn_to_a": 0.0, &"a_to_b": 20.0, &"b_to_c": 30.0}
-const DEPLOYMENT_CANDIDATE_OFFSETS: Array[Vector3] = [
-	Vector3.ZERO,
-	Vector3(5.8, 0.0, -1.7),
-	Vector3(-9.2, 0.0, 2.3),
-]
-const ALPHA_CANDIDATE_OFFSETS: Array[Vector3] = [
-	Vector3.ZERO,
-	Vector3(-0.6, 0.0, -3.2),
-]
 const SOURCE_CLOUD_SHADER := "res://shaders/clouds.gdshader"
 const SOURCE_SUN_FLARE_SCRIPT := "res://scripts/source_sun_flare.gd"
 const MIGRATION_MANIFEST_PATH := "res://scenes/arena_foundation_migration_manifest.json"
@@ -425,7 +415,7 @@ func _bind_product_anchors() -> bool:
 		failure_reason = &"spawn_alpha_route_budget_pending_observed_input"
 	topology_binding_report = {
 		"datum": "authored_standoff_navigation_map",
-		"anchor_binding_mode": &"deterministic_candidate_transaction",
+		"anchor_binding_mode": &"direct_verified_native_street",
 		"hints": hints,
 		"projected": projected,
 		"projection_distance": {
@@ -509,77 +499,36 @@ func _validate_product_anchor_pair(
 ) -> Dictionary:
 	if player == null:
 		return {"accepted": false, "failure_reason": &"player_missing"}
-	var candidate_reports: Array[Dictionary] = []
-	var best_report: Dictionary = {}
-	var best_score := INF
-	var candidate_index := 0
-	var projected_candidate_count := 0
-	for spawn_offset in DEPLOYMENT_CANDIDATE_OFFSETS:
-		for alpha_offset in ALPHA_CANDIDATE_OFFSETS:
-			var spawn_hint: Vector3 = hints["spawn"] + spawn_offset
-			var alpha_hint: Vector3 = hints["alpha"] + alpha_offset
-			var spawn_position := NavigationServer3D.map_get_closest_point(nav_map, spawn_hint)
-			var alpha_position := NavigationServer3D.map_get_closest_point(nav_map, alpha_hint)
-			var spawn_projection_distance := spawn_hint.distance_to(spawn_position)
-			var alpha_projection_distance := alpha_hint.distance_to(alpha_position)
-			var candidate_id := "route_pair_%02d" % candidate_index
-			candidate_index += 1
-			if spawn_projection_distance > 0.75 or alpha_projection_distance > 0.75:
-				candidate_reports.append({
-					"candidate_id": candidate_id,
-					"accepted": false,
-					"failure_reason": &"candidate_projection_rejected",
-					"spawn_projection_distance": snappedf(spawn_projection_distance, 0.001),
-					"alpha_projection_distance": snappedf(alpha_projection_distance, 0.001),
-				})
-				continue
-			projected_candidate_count += 1
-			var candidate_projected := projected.duplicate()
-			candidate_projected["spawn"] = spawn_position
-			candidate_projected["alpha"] = alpha_position
-			var report := _evaluate_product_anchor_pair(nav_map, candidate_projected, player)
-			var predicted_seconds := float(report.get("predicted_effective_seconds", 0.0))
-			var within_budget := predicted_seconds >= ROUTE_MIN_EFFECTIVE_SECONDS and predicted_seconds <= ROUTE_MAX_EFFECTIVE_SECONDS
-			report["candidate_id"] = candidate_id
-			report["spawn_hint"] = spawn_hint
-			report["alpha_hint"] = alpha_hint
-			report["spawn_projection_distance"] = snappedf(spawn_projection_distance, 0.001)
-			report["alpha_projection_distance"] = snappedf(alpha_projection_distance, 0.001)
-			report["predicted_within_budget"] = within_budget
-			candidate_reports.append({
-				"candidate_id": candidate_id,
-				"accepted": report.get("accepted", false),
-				"failure_reason": report.get("failure_reason", &""),
-				"repaired_path_length": snappedf(float(report.get("repaired_path_length", 0.0)), 0.01),
-				"predicted_effective_seconds": snappedf(predicted_seconds, 0.01),
-				"predicted_within_budget": within_budget,
-				"spawn_projection_distance": snappedf(spawn_projection_distance, 0.001),
-				"alpha_projection_distance": snappedf(alpha_projection_distance, 0.001),
-			})
-			var score := absf(predicted_seconds - ROUTE_TARGET_EFFECTIVE_SECONDS)
-			if not within_budget:
-				score += 1000.0
-			if report.get("accepted", false) == true and score < best_score:
-				best_score = score
-				best_report = report
-	if best_report.is_empty():
+	var spawn_hint: Vector3 = hints["spawn"]
+	var alpha_hint: Vector3 = hints["alpha"]
+	var spawn_position: Vector3 = projected["spawn"]
+	var alpha_position: Vector3 = projected["alpha"]
+	var spawn_projection_distance := spawn_hint.distance_to(spawn_position)
+	var alpha_projection_distance := alpha_hint.distance_to(alpha_position)
+	if spawn_projection_distance > 0.75 or alpha_projection_distance > 0.75:
 		return {
 			"accepted": false,
-			"failure_reason": &"navigation_map_not_ready" if projected_candidate_count == 0 else &"spawn_alpha_route_budget_unavailable",
-			"binding_mode": &"deterministic_candidate_transaction",
-			"candidate_count": candidate_index,
-			"pair_candidate_count": candidate_index,
-			"evaluated_pair_count": projected_candidate_count,
-			"inspected_count": candidate_reports.size(),
-			"candidate_reports": candidate_reports,
+			"failure_reason": &"verified_native_anchor_projection_rejected",
+			"binding_mode": &"direct_verified_native_street",
+			"evaluated_pair_count": 1,
+			"spawn_projection_distance": snappedf(spawn_projection_distance, 0.001),
+			"alpha_projection_distance": snappedf(alpha_projection_distance, 0.001),
 		}
-	best_report["binding_mode"] = &"deterministic_candidate_transaction"
-	best_report["candidate_count"] = candidate_index
-	best_report["pair_candidate_count"] = candidate_index
-	best_report["evaluated_pair_count"] = candidate_reports.size()
-	best_report["inspected_count"] = candidate_reports.size()
-	best_report["candidate_reports"] = candidate_reports
-	return best_report
+	var direct_projected := projected.duplicate()
+	direct_projected["spawn"] = spawn_position
+	direct_projected["alpha"] = alpha_position
+	var report := _evaluate_product_anchor_pair(nav_map, direct_projected, player)
+	var predicted_seconds := float(report.get("predicted_effective_seconds", 0.0))
+	report["binding_mode"] = &"direct_verified_native_street"
+	report["anchor_pair_id"] = &"deployment_alpha_authored"
+	report["spawn_hint"] = spawn_hint
+	report["alpha_hint"] = alpha_hint
+	report["spawn_projection_distance"] = snappedf(spawn_projection_distance, 0.001)
+	report["alpha_projection_distance"] = snappedf(alpha_projection_distance, 0.001)
+	report["predicted_within_budget"] = predicted_seconds >= ROUTE_MIN_EFFECTIVE_SECONDS and predicted_seconds <= ROUTE_MAX_EFFECTIVE_SECONDS
+	report["evaluated_pair_count"] = 1
+	report["offset_search_used"] = false
+	return report
 
 
 func _evaluate_product_anchor_pair(

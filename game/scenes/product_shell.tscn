@@ -525,7 +525,7 @@ theme_override_font_sizes/font_size = 42
 text = "SETTINGS & ACCESSIBILITY"
 
 [node name="SettingsScroll" type="ScrollContainer" parent="Root/Pages/SettingsPage/SafeArea/Layout"]
-custom_minimum_size = Vector2(0, 320)
+custom_minimum_size = Vector2(0, 280)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
@@ -601,6 +601,7 @@ text = "HOLD / TOGGLE"
 [node name="Actions" type="HBoxContainer" parent="Root/Pages/SettingsPage/SafeArea/Layout"]
 custom_minimum_size = Vector2(0, 60)
 layout_mode = 2
+size_flags_vertical = 8
 theme_override_constants/separation = 12
 [node name="ApplyButton" type="Button" parent="Root/Pages/SettingsPage/SafeArea/Layout/Actions"]
 custom_minimum_size = Vector2(250, 50)
