@@ -849,6 +849,7 @@ func _atmosphere_snapshot() -> Dictionary:
 			"tonemap_mode": environment.tonemap_mode,
 			"direct_sun_energy": sun.light_energy,
 			"profile_id": &"loop11_coherent_daylight",
+			"coherent_profile_bound": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.ambient_light_energy, 0.75) and is_equal_approx(environment.ambient_light_sky_contribution, 0.7) and is_equal_approx(environment.tonemap_exposure, 1.0) and environment.tonemap_mode == Environment.TONE_MAPPER_FILMIC and is_equal_approx(sun.light_energy, 1.35),
 			"accepted_values_unchanged": is_equal_approx(environment.background_energy_multiplier, 0.8) and is_equal_approx(environment.ambient_light_energy, 0.75) and is_equal_approx(environment.ambient_light_sky_contribution, 0.7) and is_equal_approx(environment.tonemap_exposure, 1.0) and environment.tonemap_mode == Environment.TONE_MAPPER_FILMIC and is_equal_approx(sun.light_energy, 1.35),
 		},
 		"source_sky": {"enabled": environment.sky != null, "background_mode": environment.background_mode, "profile": &"3d_fps_map_source"},

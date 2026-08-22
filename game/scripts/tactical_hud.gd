@@ -8,6 +8,11 @@ const SAFE_AREA_RATIO := 0.05
 const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v2"
 const COMBAT_ROW_LIFETIME_SECONDS := 6.0
 const COMBAT_ROW_LIMIT := 5
+const COMBAT_FEED_ALLOWED_KINDS: Array[StringName] = [
+	&"capture_started", &"capture_contested", &"capture_completed",
+	&"key_committed", &"route_unlocked", &"checkpoint_committed",
+	&"enemy_died", &"terminal_submitted", &"player_death",
+]
 
 @onready var root: Control = $Root
 @onready var minimap: Control = $Root/Minimap
@@ -39,6 +44,8 @@ var _event_rows: Array[String] = []
 var _event_row_receipts: Array[Dictionary] = []
 var _event_row_expiries: Array[float] = []
 var _event_cleanup_receipts: Array[Dictionary] = []
+var _suppressed_combat_event_count := 0
+var _last_suppressed_combat_event: Dictionary = {}
 var _minimap_bound := false
 var _hud_enabled := false
 var _applied_ui_scale := 1.0
@@ -366,27 +373,17 @@ func _on_weapon_shot(event: Dictionary) -> void:
 	var event_id := String(event.get("shot_id", ""))
 	if event_id.is_empty():
 		return
-	var result := StringName(event.get("result", &"miss"))
-	var target := String(event.get("collider_path", "")).get_file().replace("_", " ").replace("-", " ").to_upper()
-	var text := "ROUND CLEAR"
-	var kind := &"player_miss"
-	var style := &"compact_feed"
-	if result == &"hit":
-		text = "HIT  %s" % (target if not target.is_empty() else "RIFT HOSTILE")
-		kind = &"enemy_hit"
-		style = &"confirmed_hit"
-	elif result == &"blocked":
-		text = "IMPACT  %s" % String(event.get("surface_kind", &"surface")).to_upper()
-		kind = &"material_impact"
-	_push_combat_row({
+	# ShotFeedback owns the causal reticle, tracer, world VFX and audio. A shot
+	# result is not an authoritative feed record, so misses, material impacts and
+	# ordinary hit confirmations all terminate at that presentation boundary.
+	_suppressed_combat_event_count += 1
+	_last_suppressed_combat_event = {
 		"event_id": event_id,
-		"kind": kind,
-		"text": text,
-		"style": style,
-		"result": result,
-		"screen_projection": event.get("screen_projection", {}),
+		"kind": &"weapon_shot",
+		"result": StringName(event.get("result", &"miss")),
+		"reason": &"owned_by_reticle_world_feedback",
 		"presentation_only": true,
-	})
+	}
 
 
 func _on_player_damage(event: Dictionary) -> void:
@@ -420,6 +417,16 @@ func _on_player_death(event: Dictionary) -> void:
 func _push_combat_row(receipt: Dictionary) -> void:
 	var event_id := String(receipt.get("event_id", ""))
 	if event_id.is_empty():
+		return
+	var kind := StringName(receipt.get("kind", &""))
+	if kind not in COMBAT_FEED_ALLOWED_KINDS:
+		_suppressed_combat_event_count += 1
+		_last_suppressed_combat_event = {
+			"event_id": event_id,
+			"kind": kind,
+			"reason": &"not_authoritative_feed_kind",
+			"presentation_only": true,
+		}
 		return
 	var existing := -1
 	for index in _event_row_receipts.size():
@@ -567,6 +574,9 @@ func _mcp_state() -> Dictionary:
 		"combat_row_cleanup_receipts": _event_cleanup_receipts,
 		"combat_row_limit": COMBAT_ROW_LIMIT,
 		"combat_row_lifetime_seconds": COMBAT_ROW_LIFETIME_SECONDS,
+		"combat_feed_allowed_kinds": COMBAT_FEED_ALLOWED_KINDS,
+		"suppressed_combat_event_count": _suppressed_combat_event_count,
+		"last_suppressed_combat_event": _last_suppressed_combat_event,
 		"applied_subtitle_size": _applied_subtitle_size,
 		"restore_epoch": _restore_epoch,
 		"narrative_visible_line_count": narrative.text.count("\n") + 1 if narrative.visible else 0,

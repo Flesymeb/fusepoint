@@ -573,6 +573,18 @@ func _apply_responsive_layout() -> void:
 	var margin := Vector2(maxf(viewport.x * SAFE_AREA_RATIO, 32.0), maxf(viewport.y * SAFE_AREA_RATIO, 24.0))
 	var safe := Rect2(margin, viewport - margin * 2.0)
 	var expanded := _applied_ui_scale > 1.5
+	# Settings uses semantic typography scaling, then reflows its content. At the
+	# largest accessibility scale each label/control pair becomes two full-width
+	# rows inside the focus-following ScrollContainer; no CanvasLayer transform or
+	# fixed 820/420 px accommodation is involved.
+	var settings_single_column := expanded or safe.size.x < 960.0
+	settings_grid.columns = 1 if settings_single_column else 2
+	settings_grid.custom_minimum_size.x = 0.0
+	settings_grid.add_theme_constant_override("h_separation", 0 if settings_single_column else 36)
+	settings_grid.add_theme_constant_override("v_separation", 10 if settings_single_column else 18)
+	for control: Control in _settings_controls().slice(0, 7):
+		control.custom_minimum_size.x = 0.0 if settings_single_column else 280.0
+		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_set_rect(^"Root/Pages/TitlePage/Accent", Rect2(safe.position, Vector2(4.0, safe.size.y - 28.0)))
 	_set_rect(^"Root/Pages/TitlePage/Brand", Rect2(safe.position + Vector2(28.0, 24.0), Vector2(560.0, 212.0)))
 	_set_rect(^"Root/Pages/TitlePage/Menu", Rect2(safe.position + Vector2(24.0, 292.0), Vector2(430.0, 238.0)))
@@ -781,7 +793,11 @@ func _layout_snapshot() -> Dictionary:
 			if control.focus_mode == Control.FOCUS_NONE or not control.is_visible_in_tree():
 				inaccessible.append(str(control.get_path()))
 		settings_reflow = {
-			"mode": &"focus_following_bounded_scroll",
+			"mode": &"single_column" if settings_grid.columns == 1 else &"two_column",
+			"columns": settings_grid.columns,
+			"container_driven": true,
+			"fixed_width_contract": false,
+			"available_width": settings_scroll.size.x,
 			"follow_focus": settings_scroll.follow_focus,
 			"scroll_vertical": settings_scroll.scroll_vertical,
 			"scroll_viewport_rect": scroll_rect,

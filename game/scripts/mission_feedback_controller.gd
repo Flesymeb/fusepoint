@@ -56,7 +56,8 @@ var _retained_voice_receipts: Array[Dictionary] = []
 var _footstep_emitters: Dictionary = {}
 var _latest_footstep_by_actor_role: Dictionary = {}
 var _retained_player_footstep_owner: Dictionary = {}
-var _enemy_step_elapsed: Dictionary = {}
+var _enemy_locomotion_active: Dictionary = {}
+var _enemy_idle_elapsed: Dictionary = {}
 var _paused_last_frame := false
 
 
@@ -111,7 +112,7 @@ func present_event(event: Dictionary) -> bool:
 		_start_mission_bed(event_id)
 	elif kind == &"terminal_submitted":
 		_stop_mission_bed()
-		_stop_spatial_voices()
+		_stop_spatial_voices(&"terminal_submitted")
 		_archive_voice_receipts(&"terminal_submitted")
 	_remember_event(event_id)
 	if active_cue_count > 0:
@@ -142,6 +143,7 @@ func present_event(event: Dictionary) -> bool:
 
 
 func reset_feedback(clear_history := false) -> void:
+	_stop_spatial_voices(&"feedback_reset")
 	_archive_voice_receipts(&"feedback_reset")
 	_clear_active_cue()
 	_warning_thresholds_seen.clear()
@@ -153,9 +155,9 @@ func reset_feedback(clear_history := false) -> void:
 		_last_sequence = 0
 	for player: AudioStreamPlayer in _audio_players.values():
 		player.stop()
-	_stop_spatial_voices()
 	_active_voice_lifetimes.clear()
-	_enemy_step_elapsed.clear()
+	_enemy_locomotion_active.clear()
+	_enemy_idle_elapsed.clear()
 	_retained_player_footstep_owner.clear()
 
 
@@ -180,10 +182,9 @@ func _on_player_died(_event: Dictionary) -> void:
 	reset_feedback(false)
 
 
-func _stop_spatial_voices() -> void:
-	for emitter: AudioStreamPlayer3D in _footstep_emitters.values():
-		if is_instance_valid(emitter):
-			emitter.stop()
+func _stop_spatial_voices(reason: StringName) -> void:
+	for actor_key: String in _footstep_emitters.keys():
+		_stop_enemy_locomotion_stream(actor_key, reason)
 
 
 func snapshot() -> Dictionary:
@@ -365,7 +366,7 @@ func _play_role(role: StringName, priority: int, source_id: String) -> void:
 		"playing": player.playing,
 		"onset_usec": Time.get_ticks_usec(),
 		"onset_frame": Engine.get_process_frames(),
-		"lifetime_seconds": float(_audio_durations.get(role, 0.0)),
+		"lifetime_seconds": float(_audio_durations.get(&"enemy_step", 0.0)),
 		"attenuation": &"non_spatial",
 		"emitter_context": {"spatial": false, "owner": get_path()},
 		"concurrency": {"active": 1 if player.playing else 0, "limit": 1, "family": role},
@@ -398,19 +399,40 @@ func _observe_footsteps(delta: float) -> void:
 	var player := get_tree().get_first_node_in_group(&"player") as CharacterBody3D
 	if player != null:
 		_observe_retained_player_footsteps(player)
+	var seen_actor_keys: Dictionary = {}
 	for node: Node in get_tree().get_nodes_in_group(&"fps_enemy"):
 		var enemy := node as CharacterBody3D
-		if enemy == null or enemy.get("mission_active") != true or not enemy.is_on_floor():
+		if enemy == null:
 			continue
-		var actor_id := String(enemy.get("stable_id"))
-		var remaining := maxf(0.0, float(_enemy_step_elapsed.get(actor_id, 0.0)) - delta)
-		_enemy_step_elapsed[actor_id] = remaining
-		if Vector2(enemy.velocity.x, enemy.velocity.z).length() > 0.55 and remaining <= 0.0:
-			_emit_footstep(enemy, &"enemy_step", 0.46, &"alternating")
-			_enemy_step_elapsed[actor_id] = 0.46
+		var actor_key := String(enemy.get_path())
+		seen_actor_keys[actor_key] = true
+		var grounded := enemy.is_on_floor()
+		var speed := Vector2(enemy.velocity.x, enemy.velocity.z).length()
+		var mission_active: bool = enemy.get("mission_active") == true
+		var was_active: bool = _enemy_locomotion_active.get(actor_key, false) == true
+		if was_active:
+			if not mission_active or not grounded:
+				_stop_enemy_locomotion_stream(actor_key, &"mission_inactive" if not mission_active else &"lost_grounding")
+			elif speed <= 0.18:
+				var idle_elapsed := float(_enemy_idle_elapsed.get(actor_key, 0.0)) + delta
+				_enemy_idle_elapsed[actor_key] = idle_elapsed
+				if idle_elapsed >= 0.24:
+					_stop_enemy_locomotion_stream(actor_key, &"stable_idle")
+			else:
+				_enemy_idle_elapsed[actor_key] = 0.0
+		elif mission_active and grounded and speed > 0.62:
+			_start_enemy_locomotion_stream(enemy)
+			_enemy_locomotion_active[actor_key] = true
+			_enemy_idle_elapsed[actor_key] = 0.0
+	for actor_key: String in _footstep_emitters.keys():
+		if not seen_actor_keys.has(actor_key):
+			_stop_enemy_locomotion_stream(actor_key, &"actor_removed")
+			_footstep_emitters.erase(actor_key)
+			_enemy_locomotion_active.erase(actor_key)
+			_enemy_idle_elapsed.erase(actor_key)
 
 
-func _emit_footstep(actor: CharacterBody3D, role: StringName, cadence: float, side: StringName) -> void:
+func _start_enemy_locomotion_stream(actor: CharacterBody3D) -> void:
 	# Player movement Foley belongs to the retained viewmodel component. Mission
 	# feedback may observe it but can only create spatial emitters for enemies.
 	if not actor.is_in_group(&"fps_enemy"):
@@ -425,40 +447,76 @@ func _emit_footstep(actor: CharacterBody3D, role: StringName, cadence: float, si
 		emitter.max_distance = 24.0
 		actor.add_child(emitter)
 		_footstep_emitters[actor_key] = emitter
+		var source_stream := _audio_streams.get(&"enemy_step") as AudioStream
+		var continuous_stream: AudioStream
+		if source_stream != null:
+			continuous_stream = source_stream.duplicate() as AudioStream
+		if continuous_stream is AudioStreamMP3:
+			(continuous_stream as AudioStreamMP3).loop = true
+		emitter.stream = continuous_stream
+	if emitter.playing:
+		return
 	var surface := _surface_at(actor)
-	emitter.stream = _audio_streams.get(role)
-	emitter.volume_db = -9.0 if role == &"enemy_step" else -7.0
-	emitter.pitch_scale = (1.08 if surface == &"metal" else 0.94) * (1.025 if side == &"right" else 0.985)
+	emitter.volume_db = -9.0
+	emitter.pitch_scale = 1.04 if surface == &"metal" else 0.94
 	emitter.play()
 	var footstep_receipt := {
-		"event_id": "step-%d" % Time.get_ticks_usec(),
+		"event_id": "locomotion-enter-%d" % Time.get_ticks_usec(),
 		"run_epoch": int(_mission.get("run_epoch")) if _mission != null else 0,
-		"role": role,
+		"role": &"enemy_step",
 		"bus": emitter.bus,
 		"voice_path": String(emitter.get_path()),
-		"stream_path": _stream_path_for_role(role),
+		"stream_path": _stream_path_for_role(&"enemy_step"),
 		"stream_bound": emitter.stream != null,
 		"playing": emitter.playing,
 		"decoded": _stream_is_decoded(emitter.stream),
+		"loop_enabled": emitter.stream is AudioStreamMP3 and (emitter.stream as AudioStreamMP3).loop,
+		"continuous_stream": true,
+		"transition": &"locomotion_enter",
 		"onset_usec": Time.get_ticks_usec(),
 		"onset_frame": Engine.get_process_frames(),
-		"actor_id": String(actor.get("stable_id")) if actor.is_in_group(&"fps_enemy") else "player",
+		"actor_id": String(actor.get("stable_id")),
 		"emitter_transform": actor.global_transform,
 		"surface": surface,
-		"side": side,
-		"cadence_seconds": cadence,
+		"cadence_seconds": 0.0,
 		"grounded": actor.is_on_floor(),
-		"contact_state": &"landing" if role == &"player_land" else &"grounded_contact",
+		"contact_state": &"grounded_moving",
 		"attenuation": {"unit_size": emitter.unit_size, "max_distance": emitter.max_distance},
 		"emitter_context": {"spatial": true, "owner": actor.get_path(), "owner_count": 1},
 		"concurrency": {"active": 1 if emitter.playing else 0, "limit": 1, "family": actor_key},
 		"cleanup_observed": false,
 		"cleanup_usec": 0,
-		"lifetime_seconds": float(_audio_durations.get(role, 0.0)),
+		"lifetime_seconds": float(_audio_durations.get(&"enemy_step", 0.0)),
 	}
 	_append_voice_receipt(footstep_receipt)
-	var receipt_key := "%s:%s" % [String(footstep_receipt["actor_id"]), String(role)]
+	var receipt_key := "%s:%s" % [String(footstep_receipt["actor_id"]), "enemy_step"]
 	_latest_footstep_by_actor_role[receipt_key] = footstep_receipt.duplicate(true)
+
+
+func _stop_enemy_locomotion_stream(actor_key: String, reason: StringName) -> void:
+	var emitter := _footstep_emitters.get(actor_key) as AudioStreamPlayer3D
+	if emitter == null or not is_instance_valid(emitter):
+		_enemy_locomotion_active[actor_key] = false
+		return
+	var was_playing := emitter.playing
+	if was_playing:
+		emitter.stop()
+		_append_voice_receipt({
+			"event_id": "locomotion-exit-%d" % Time.get_ticks_usec(),
+			"role": &"enemy_step",
+			"voice_path": String(emitter.get_path()),
+			"stream_path": _stream_path_for_role(&"enemy_step"),
+			"playing": false,
+			"continuous_stream": true,
+			"transition": &"locomotion_exit",
+			"cleanup_observed": true,
+			"cleanup_reason": reason,
+			"cleanup_usec": Time.get_ticks_usec(),
+			"cleanup_frame": Engine.get_process_frames(),
+			"emitter_context": {"spatial": true, "owner": actor_key, "owner_count": 1},
+		})
+	_enemy_locomotion_active[actor_key] = false
+	_enemy_idle_elapsed[actor_key] = 0.0
 
 
 func _observe_retained_player_footsteps(player: CharacterBody3D) -> void:
@@ -566,14 +624,19 @@ func _footstep_ownership_snapshot() -> Dictionary:
 			"emitter_path": String(emitter.get_path()) if is_instance_valid(emitter) else "",
 			"emitter_count": 1 if is_instance_valid(emitter) else 0,
 			"bus": emitter.bus if is_instance_valid(emitter) else &"Foley",
+			"stream_path": _stream_path_for_role(&"enemy_step"),
+			"playing": emitter.playing if is_instance_valid(emitter) else false,
+			"locomotion_active": _enemy_locomotion_active.get(actor_key, false) == true,
+			"continuous_stream": true,
 		}
 	return owners
 
 
 func _recent_role_playing(role: StringName) -> bool:
-	var expected_stream: AudioStream = _audio_streams.get(role)
+	if role != &"enemy_step":
+		return false
 	for emitter: AudioStreamPlayer3D in _footstep_emitters.values():
-		if is_instance_valid(emitter) and emitter.playing and emitter.stream == expected_stream:
+		if is_instance_valid(emitter) and emitter.playing:
 			return true
 	return false
 
