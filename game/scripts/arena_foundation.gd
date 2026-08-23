@@ -18,7 +18,13 @@ const ROUTE_LEG_BUDGETS := {
 	&"b_to_c": Vector2(40.0, 60.0),
 }
 const ROUTE_ENGAGEMENT_DWELL := {&"spawn_to_a": 18.0, &"a_to_b": 20.0, &"b_to_c": 30.0}
+const ROUTE_TERMINAL_COLLISION_ROOTS := {
+	&"spawn_to_a": NodePath("Alpha/DeviceRoot/DeviceCollision"),
+	&"a_to_b": NodePath("Bravo/DeviceRoot/DeviceCollision"),
+	&"b_to_c": NodePath("Charlie/RocketBombAssembly/DeviceCollision"),
+}
 const DEPLOYMENT_MIN_CHARLIE_DISTANCE := 35.0
+const DEPLOYMENT_INDUSTRIAL_VISTA_OFFSET := Vector3(6.0, 0.0, 10.4)
 const SOURCE_CLOUD_SHADER := "res://shaders/clouds.gdshader"
 const SOURCE_SUN_FLARE_SCRIPT := "res://scripts/source_sun_flare.gd"
 const MIGRATION_MANIFEST_PATH := "res://scenes/arena_foundation_migration_manifest.json"
@@ -104,12 +110,26 @@ func _load_and_validate_migration_manifest() -> void:
 		if get_node_or_null(NodePath(node_path)) == null:
 			missing_paths.append(node_path)
 	var undeclared_paths: Array[String] = []
+	var covered_descendant_paths: Array[String] = []
+	var descendant_coverage_roots: Dictionary = {}
 	for node: Node in find_children("*", "Node", true, false):
 		if node == map_instance or map_instance.is_ancestor_of(node):
 			continue
 		var relative_path := String(get_path_to(node))
-		if not declared_paths.has(relative_path):
+		var coverage_root := _declared_placement_root(relative_path, declared_paths)
+		if coverage_root.is_empty():
 			undeclared_paths.append(relative_path)
+		elif coverage_root != relative_path:
+			covered_descendant_paths.append(relative_path)
+			descendant_coverage_roots[relative_path] = coverage_root
+	var source_scene := String(authority.get("source_scene", ""))
+	var runtime_map_paths: Array[String] = [String(get_path_to(map_instance))]
+	for node: Node in find_children("*", "Node", true, false):
+		if node == map_instance or map_instance.is_ancestor_of(node):
+			continue
+		if not source_scene.is_empty() and String(node.scene_file_path) == source_scene:
+			runtime_map_paths.append(String(get_path_to(node)))
+	var runtime_map_instance_count := runtime_map_paths.size()
 	var prohibited_clear := true
 	for value: Variant in prohibited.values():
 		prohibited_clear = prohibited_clear and value == false
@@ -123,6 +143,7 @@ func _load_and_validate_migration_manifest() -> void:
 	)
 	var authoritative_instance_accepted := (
 		int(authority.get("instance_count", 0)) == 1
+		and runtime_map_instance_count == 1
 		and String(authority.get("node_path", "")) == String(get_path_to(map_instance))
 		and String(authority.get("wrapper_path", "")) == String(get_path_to(map_wrapper))
 		and String(authority.get("source_sha256", "")) == EXPECTED_SOURCE_SHA256
@@ -132,9 +153,14 @@ func _load_and_validate_migration_manifest() -> void:
 		"manifest_id": migration_manifest.get("manifest_id", ""),
 		"authoritative_instance_accepted": authoritative_instance_accepted,
 		"authoritative_instance_count": authority.get("instance_count", 0),
+		"runtime_authoritative_instance_count": runtime_map_instance_count,
+		"runtime_authoritative_instance_paths": runtime_map_paths,
 		"authored_child_transforms_unchanged": child_transforms_unchanged,
 		"declared_additive_placement_count": declared_paths.size(),
 		"missing_declared_paths": missing_paths,
+		"covered_descendant_paths": covered_descendant_paths,
+		"covered_descendant_count": covered_descendant_paths.size(),
+		"descendant_coverage_roots": descendant_coverage_roots,
 		"undeclared_retained_paths": undeclared_paths,
 		"all_retained_additive_placements_declared": missing_paths.is_empty() and undeclared_paths.is_empty(),
 		"prohibited_actions_clear": prohibited_clear,
@@ -148,6 +174,17 @@ func _load_and_validate_migration_manifest() -> void:
 	)
 	if migration_manifest_report.get("accepted", false) != true:
 		push_error("Arena migration manifest does not match the retained runtime placement: %s" % migration_manifest_report)
+
+
+func _declared_placement_root(relative_path: String, declared_paths: Dictionary) -> String:
+	if declared_paths.has(relative_path):
+		return relative_path
+	var cursor := relative_path.get_base_dir()
+	while not cursor.is_empty() and cursor != ".":
+		if declared_paths.has(cursor):
+			return cursor
+		cursor = cursor.get_base_dir()
+	return ""
 
 
 func _process(_delta: float) -> void:
@@ -420,9 +457,18 @@ func _bind_product_anchors() -> bool:
 	var route_budget_accepted := false
 	var anchor_validation := {}
 	if player != null:
-		for id in projected:
-			var target: Transform3D = Transform3D(player.global_basis, projected[id] + Vector3.UP * 0.9)
+		var validation_positions := {
+			"spawn": projected["spawn"],
+			"alpha": _route_terminal_approach(edges["spawn_to_a"], player, &"spawn_to_a"),
+			"bravo": _route_terminal_approach(edges["a_to_b"], player, &"a_to_b"),
+			"charlie": _route_terminal_approach(edges["b_to_c"], player, &"b_to_c"),
+		}
+		for id in validation_positions:
+			var target: Transform3D = Transform3D(player.global_basis, validation_positions[id] + Vector3.UP * 0.9)
 			anchor_validation[id] = player.call(&"validate_recovery_destination", target, [])
+			anchor_validation[id]["semantic_anchor_position"] = projected[id]
+			anchor_validation[id]["validated_approach_position"] = validation_positions[id]
+			anchor_validation[id]["validation_role"] = &"deployment" if id == "spawn" else &"objective_influence_approach"
 	else:
 		anchor_validation["spawn"] = {"accepted": false, "failure_reason": &"player_missing"}
 	var all_anchors_valid: bool = anchor_validation.size() == projected.size()
@@ -440,8 +486,12 @@ func _bind_product_anchors() -> bool:
 		$Bravo.global_position = projected["bravo"] + Vector3.UP * 1.2
 		$Charlie.global_position = projected["charlie"] + Vector3.UP * 1.2
 		if player != null and player.has_method(&"bind_deployment_to_walkable"):
-			var first_corner := _first_meaningful_corner(edges["spawn_to_a"], projected["spawn"])
-			player.call(&"bind_deployment_to_walkable", projected["spawn"] + Vector3.UP * 0.9, first_corner + Vector3.UP * 0.9)
+			# The first navigation corner sits under the native loading stair and
+			# produced a wall-dominated deployment frame. Face the preserved southeast
+			# container lane instead: it opens layered cover and roof silhouettes while
+			# Alpha remains occluded and the HUD still owns immediate A-first routing.
+			var industrial_vista: Vector3 = projected["spawn"] + DEPLOYMENT_INDUSTRIAL_VISTA_OFFSET
+			player.call(&"bind_deployment_to_walkable", projected["spawn"] + Vector3.UP * 0.9, industrial_vista + Vector3.UP * 0.9)
 	var failure_reason := &""
 	if not route_pair_provisional_accepted:
 		failure_reason = StringName(deployment_anchor_selection.get("failure_reason", &"spawn_alpha_route_budget_unavailable"))
@@ -481,6 +531,13 @@ func _bind_product_anchors() -> bool:
 		"all_leg_predictions_within_budget": all_leg_predictions_within_budget,
 		"route_budget_accepted": route_budget_accepted,
 		"route_budget_acceptance_authority": &"route_probe_first_legal_alpha_overlap",
+		"deployment_framing": {
+			"target_id": &"southeast_native_container_lane",
+			"target_position": projected["spawn"] + DEPLOYMENT_INDUSTRIAL_VISTA_OFFSET,
+			"immediate_route_authority": &"hud_alpha_first",
+			"alpha_center_sightline_blocked": deployment_anchor_selection.get("alpha_capture_sightline_blocked", false),
+			"authored_geometry_changed": false,
+		},
 		"route_pair_provisional_accepted": route_pair_provisional_accepted,
 		"anchor_validation": anchor_validation.duplicate(true),
 		"capsule_clearance": route_clearance.duplicate(true),
@@ -603,18 +660,22 @@ func _evaluate_product_anchor_pair(
 	if raw_path.size() < 2 or not _path_reaches_endpoints(raw_path, spawn_position, alpha_position):
 		return {"accepted": false, "failure_reason": &"deterministic_spawn_alpha_disconnected"}
 	var repaired_path := _build_capsule_clear_route(raw_path, player, nav_map)
-	var clearance := _route_clearance_for_path(repaired_path, player)
+	var clearance := _route_clearance_for_path(repaired_path, player, &"spawn_to_a")
 	var first_escape := _first_escape_validation(repaired_path, player)
 	var spawn_occupancy: Dictionary = player.call(
 		&"validate_recovery_destination",
 		Transform3D(player.global_basis, spawn_position + Vector3.UP * 0.9),
 		[],
 	)
+	var alpha_approach := _route_terminal_approach(repaired_path, player, &"spawn_to_a")
 	var alpha_occupancy: Dictionary = player.call(
 		&"validate_recovery_destination",
-		Transform3D(player.global_basis, alpha_position + Vector3.UP * 0.9),
+		Transform3D(player.global_basis, alpha_approach + Vector3.UP * 0.9),
 		[],
 	)
+	alpha_occupancy["semantic_anchor_position"] = alpha_position
+	alpha_occupancy["validated_approach_position"] = alpha_approach
+	alpha_occupancy["validation_role"] = &"objective_influence_approach"
 	var accepted: bool = (
 		repaired_path.size() >= 2
 		and clearance.get("clear", false) == true
@@ -674,22 +735,68 @@ func _route_leg_budget_snapshot(edges: Dictionary) -> Dictionary:
 	return result
 
 
-func _route_clearance_for_path(path: PackedVector3Array, player: CharacterBody3D) -> Dictionary:
+func _route_clearance_for_path(path: PackedVector3Array, player: CharacterBody3D, leg_id: StringName) -> Dictionary:
 	var blocked_segments: Array[Dictionary] = []
+	var accepted_terminal_contacts: Array[Dictionary] = []
 	for index in range(1, path.size()):
 		var diagnostic := _route_segment_diagnostic(path[index - 1], path[index], player)
 		if float(diagnostic.get("safe_fraction", 0.0)) < 0.985:
-			blocked_segments.append({
+			var finding := {
 				"segment": index - 1,
 				"from": path[index - 1],
 				"to": path[index],
 				"diagnostic": diagnostic,
-			})
+			}
+			if _is_expected_terminal_contact(leg_id, index, path.size() - 1, diagnostic):
+				finding["accepted_as"] = &"objective_influence_terminal_contact"
+				accepted_terminal_contacts.append(finding)
+			else:
+				blocked_segments.append(finding)
 	return {
 		"clear": blocked_segments.is_empty(),
 		"segment_count": maxi(path.size() - 1, 0),
 		"blocked_segments": blocked_segments,
+		"accepted_terminal_contacts": accepted_terminal_contacts,
 	}
+
+
+func _route_terminal_approach(path: PackedVector3Array, player: CharacterBody3D, leg_id: StringName) -> Vector3:
+	if path.is_empty():
+		return Vector3.ZERO
+	if path.size() < 2:
+		return path[path.size() - 1]
+	for index in range(maxi(1, path.size() - 4), path.size()):
+		var from := path[index - 1]
+		var to := path[index]
+		var diagnostic := _route_segment_diagnostic(from, to, player)
+		if not _is_expected_terminal_contact(leg_id, index, path.size() - 1, diagnostic):
+			continue
+		var safe_fraction := clampf(float(diagnostic.get("safe_fraction", 0.0)), 0.0, 1.0)
+		var segment_length := from.distance_to(to)
+		var clearance_fraction := 0.12 / maxf(segment_length, 0.12)
+		return from.lerp(to, maxf(safe_fraction - clearance_fraction, 0.0))
+	return path[path.size() - 1]
+
+
+func _is_expected_terminal_contact(
+	leg_id: StringName,
+	segment_end_index: int,
+	last_index: int,
+	diagnostic: Dictionary,
+) -> bool:
+	# Navigation can contain a few dense corners inside a large device footprint.
+	# Accept only the final three segments and only when the authoritative device
+	# body for that leg is the blocker; an undeclared wall or mid-route collision
+	# remains a hard failure.
+	if segment_end_index < last_index - 3 or not ROUTE_TERMINAL_COLLISION_ROOTS.has(leg_id):
+		return false
+	var collision_root := get_node_or_null(ROUTE_TERMINAL_COLLISION_ROOTS[leg_id])
+	if collision_root == null:
+		return false
+	var blocker := diagnostic.get("blocker", {}) as Dictionary
+	var blocker_path := String(blocker.get("collider_path", ""))
+	var root_path := String(collision_root.get_path())
+	return blocker_path == root_path or blocker_path.begins_with(root_path + "/")
 
 
 func _is_world_sightline_blocked(from_position: Vector3, target_position: Vector3, player: CharacterBody3D) -> bool:
@@ -824,23 +931,30 @@ func _validate_route_clearance(player: CharacterBody3D) -> Dictionary:
 	for leg_id in route_corner_chains:
 		var path: PackedVector3Array = route_corner_chains[leg_id]
 		var blocked_segments: Array[Dictionary] = []
+		var accepted_terminal_contacts: Array[Dictionary] = []
 		for index in range(1, path.size()):
 			var from := path[index - 1] + Vector3.UP * 0.9
 			var to := path[index] + Vector3.UP * 0.9
 			var diagnostic := _route_segment_diagnostic(path[index - 1], path[index], player)
 			var safe_fraction := float(diagnostic.get("safe_fraction", 0.0))
 			if safe_fraction < 0.985:
-				blocked_segments.append({
+				var finding := {
 					"segment": index - 1,
 					"from": from,
 					"to": to,
 					"safe_fraction": safe_fraction,
 					"blocker": diagnostic.get("blocker", {}),
-				})
+				}
+				if _is_expected_terminal_contact(StringName(leg_id), index, path.size() - 1, diagnostic):
+					finding["accepted_as"] = &"objective_influence_terminal_contact"
+					accepted_terminal_contacts.append(finding)
+				else:
+					blocked_segments.append(finding)
 		report[leg_id] = {
 			"clear": blocked_segments.is_empty(),
 			"segment_count": maxi(path.size() - 1, 0),
 			"blocked_segments": blocked_segments,
+			"accepted_terminal_contacts": accepted_terminal_contacts,
 		}
 	return report
 

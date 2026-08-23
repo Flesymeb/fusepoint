@@ -503,23 +503,36 @@ func tester_advance_defusal_stage(expected_generation: int) -> Dictionary:
 	elif tester_prepared_defusal_stage != bomb_stage_index or not _active_bomb_stage:
 		receipt["failure_reason"] = &"mismatched_prepared_stage"
 	else:
-		var completed_stage := BOMB_STAGE_IDS[bomb_stage_index]
-		bomb_stage_progress = 1.0
-		tester_prepared_defusal_stage = -1
-		_complete_bomb_stage()
-		receipt.merge({
-			"resolved": true,
-			"accepted": true,
-			"stage_id": completed_stage,
-			"completed_stage_count": bomb_stage_index,
-			"terminal_commit_count": terminal_commit_count,
-			"reset_isolation": {
-				"prepared_fixture_cleared": tester_prepared_defusal_stage < 0,
-				"completed_stage_latched": completed_stage in BOMB_STAGE_IDS and bomb_completed[BOMB_STAGE_IDS.find(completed_stage)],
-				"route_acceptance_claimed": false,
-			},
-			"failure_reason": &"",
-		}, true)
+		# Defusal preparation borrows the stable Charlie roster hold. Release that
+		# exact generation as part of the matching advancement before committing the
+		# stage, otherwise a completed stage leaves the fixture pinned and prevents
+		# the next 1/3 -> 2/3 preparation from resolving.
+		var roster_release: Dictionary = enemy_roster.call(
+			&"tester_release_prepared_region", &"charlie", expected_generation
+		) if enemy_roster != null and enemy_roster.has_method(&"tester_release_prepared_region") else {}
+		if roster_release.get("accepted", false) != true:
+			receipt["roster_release"] = roster_release
+			receipt["failure_reason"] = &"charlie_roster_release_failed"
+		else:
+			var completed_stage := BOMB_STAGE_IDS[bomb_stage_index]
+			bomb_stage_progress = 1.0
+			tester_prepared_defusal_stage = -1
+			_complete_bomb_stage()
+			receipt.merge({
+				"resolved": true,
+				"accepted": true,
+				"stage_id": completed_stage,
+				"completed_stage_count": bomb_stage_index,
+				"terminal_commit_count": terminal_commit_count,
+				"roster_release": roster_release,
+				"reset_isolation": {
+					"prepared_fixture_cleared": tester_prepared_defusal_stage < 0,
+					"completed_stage_latched": completed_stage in BOMB_STAGE_IDS and bomb_completed[BOMB_STAGE_IDS.find(completed_stage)],
+					"charlie_roster_hold_released": roster_release.get("accepted", false) == true,
+					"route_acceptance_claimed": false,
+				},
+				"failure_reason": &"",
+			}, true)
 	last_tester_defusal_receipt = receipt.duplicate(true)
 	_record_event(&"tester_defusal_stage_advanced", receipt.duplicate(true), false)
 	return receipt.duplicate(true)
