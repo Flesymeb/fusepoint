@@ -275,6 +275,17 @@ func is_contesting(objective_position: Vector3, radius: float) -> bool:
 
 
 func authoritative_snapshot() -> Dictionary:
+	if not is_observation_ready():
+		return {
+			"run_epoch": run_epoch,
+			"id": stable_id,
+			"region": region_id,
+			"role": tactical_role,
+			"route_slot": route_slot,
+			"observation_ready": false,
+			"observation_rejected": true,
+			"observation_rejection_reason": &"actor_constructing_or_tearing_down",
+		}
 	var combat := snapshot()
 	var presentation_state := _presentation_actor.get_component_state() if _presentation_actor != null else {}
 	var capsule_occupancy := _capsule_occupancy_snapshot()
@@ -284,6 +295,8 @@ func authoritative_snapshot() -> Dictionary:
 	return {
 		"run_epoch": run_epoch,
 		"id": stable_id,
+		"observation_ready": true,
+		"observation_rejected": false,
 		# One compact, front-loaded inspection cell keeps every required combat
 		# datum visible even when a bounded runtime digest truncates the richer
 		# presentation and feedback payload later in this snapshot.
@@ -413,6 +426,17 @@ func authoritative_snapshot() -> Dictionary:
 		"restore_readiness": _restore_readiness,
 		"last_event": _last_enemy_event,
 	}
+
+
+func is_observation_ready() -> bool:
+	return (
+		is_inside_tree()
+		and not is_queued_for_deletion()
+		and _health != null
+		and is_instance_valid(_health)
+		and _shot_feedback != null
+		and is_instance_valid(_shot_feedback)
+	)
 
 
 func _capsule_occupancy_snapshot() -> Dictionary:

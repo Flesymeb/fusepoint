@@ -105,6 +105,7 @@ func show_shot(event: Dictionary) -> bool:
 	_spawn_muzzle(from, direction, tracer_color, event, variant_index)
 	_spawn_tracer(from, trace_to, tracer_color, event, result, variant_index)
 	var world_impact_suppressed := false
+	var world_surface_audio_suppressed := false
 	var suppression_reason := &""
 	if local_player_hit:
 		world_impact_suppressed = true
@@ -115,7 +116,8 @@ func show_shot(event: Dictionary) -> bool:
 	elif result in [&"hit", &"blocked"]:
 		_spawn_impact(to, event)
 		roles.append(&"character_hit" if surface == &"character" else &"metal_sparks" if surface == &"metal" else &"concrete_dust")
-		roles.append(&"surface_impact_audio")
+		world_surface_audio_suppressed = source_team == &"player" and surface != &"character"
+		roles.append(&"world_surface_vfx_audio_suppressed" if world_surface_audio_suppressed else &"character_hit_audio" if surface == &"character" else &"surface_impact_audio")
 	_spawn_audio(from, to, result, surface, source_team, local_player_hit, event_identity)
 	_last_presentation = {
 		"shot_id": shot_id,
@@ -135,6 +137,7 @@ func show_shot(event: Dictionary) -> bool:
 		"trace_camera_clip": trace_clip,
 		"local_player_hit": local_player_hit,
 		"world_impact_suppressed": world_impact_suppressed,
+		"world_surface_audio_suppressed": world_surface_audio_suppressed,
 		"suppression_reason": suppression_reason,
 		"player_report_suppressed": player_report_suppressed,
 		"report_audio_owner": &"weapon_component_fire_audio" if player_report_suppressed else &"enemy_spatial_feedback",
@@ -384,7 +387,7 @@ func _spawn_audio(muzzle_position: Vector3, impact_position: Vector3, result: St
 		_spawn_audio_cue(muzzle_position, _get_shot_audio(), &"spatial_report_audio", -5.0, 0.92, event_identity)
 	if result == &"miss":
 		_spawn_audio_cue(impact_position, _get_near_miss_audio(), &"near_miss_audio", -10.0, 1.0, event_identity)
-	elif result in [&"hit", &"blocked"] and not local_player_hit:
+	elif result in [&"hit", &"blocked"] and not local_player_hit and (source_team != &"player" or surface == &"character"):
 		var stream := _get_character_impact_audio() if surface == &"character" else _get_metal_impact_audio() if surface == &"metal" else _get_concrete_impact_audio()
 		_spawn_audio_cue(impact_position, stream, &"surface_impact_audio", -8.0, 1.0, event_identity)
 

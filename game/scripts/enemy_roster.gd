@@ -76,6 +76,8 @@ var _tester_prepared_region: StringName = &""
 var _tester_prepared_generation := 0
 var _tester_advanced_region: StringName = &""
 var _tester_advanced_generation := 0
+var observation_skip_count := 0
+var observation_skip_history: Array[Dictionary] = []
 
 @onready var player: Node3D = get_node(player_path) as Node3D
 @onready var mission_controller: Node = get_node(mission_controller_path)
@@ -554,7 +556,10 @@ func _store_tester_setup_receipt() -> void:
 
 func contest_count(point_id: StringName, objective_position: Vector3, radius := 4.5) -> int:
 	var count := 0
-	for enemy: FusepointEnemyAgent in enemies.values():
+	for candidate: Variant in enemies.values():
+		var enemy := _observation_enemy(candidate, &"contest_count")
+		if enemy == null:
+			continue
 		if enemy.region_id == point_id and enemy.is_contesting(objective_position, radius):
 			count += 1
 	return count
@@ -563,8 +568,36 @@ func contest_count(point_id: StringName, objective_position: Vector3, radius := 
 func snapshot_all() -> Dictionary:
 	var snapshots := {}
 	for id: StringName in enemies:
-		snapshots[id] = (enemies[id] as FusepointEnemyAgent).authoritative_snapshot()
+		var enemy := _observation_enemy(enemies.get(id), &"snapshot_all", id)
+		if enemy == null:
+			continue
+		var actor_snapshot := enemy.authoritative_snapshot()
+		if actor_snapshot.get("observation_ready", false) == true:
+			snapshots[id] = actor_snapshot
+		else:
+			_record_observation_skip(id, &"snapshot_all", &"snapshot_rejected")
 	return snapshots
+
+
+func _observation_enemy(candidate: Variant, context: StringName, expected_id: StringName = &"") -> FusepointEnemyAgent:
+	if candidate != null and is_instance_valid(candidate) and candidate is FusepointEnemyAgent:
+		var enemy := candidate as FusepointEnemyAgent
+		if enemy.is_observation_ready():
+			return enemy
+	_record_observation_skip(expected_id, context, &"actor_not_observation_ready")
+	return null
+
+
+func _record_observation_skip(actor_id: StringName, context: StringName, reason: StringName) -> void:
+	observation_skip_count += 1
+	observation_skip_history.append({
+		"actor_id": actor_id,
+		"context": context,
+		"reason": reason,
+		"frame": Engine.get_process_frames(),
+	})
+	while observation_skip_history.size() > 12:
+		observation_skip_history.pop_front()
 
 
 func begin_restore_epoch() -> int:
@@ -811,7 +844,10 @@ func _summary() -> Dictionary:
 	var active_count := 0
 	var alive_count := 0
 	var actor_index: Array[Dictionary] = []
-	for enemy: FusepointEnemyAgent in enemies.values():
+	for candidate: Variant in enemies.values():
+		var enemy := _observation_enemy(candidate, &"roster_summary")
+		if enemy == null:
+			continue
 		region_counts[enemy.region_id] += 1
 		if enemy.route_pressure:
 			route_pressure_counts[enemy.region_id] += 1
@@ -857,6 +893,9 @@ func _summary() -> Dictionary:
 		"allocation_failure": reservation_failure,
 		"ready": roster_initialized,
 		"stable_identity_count": enemies.size(),
+		"observable_identity_count": actor_index.size(),
+		"observation_skip_count": observation_skip_count,
+		"observation_skip_history": observation_skip_history.duplicate(true),
 		"region_counts": region_counts,
 		"route_pressure_counts": route_pressure_counts,
 		"active_count": active_count,
@@ -957,7 +996,7 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 func combat_actor_page(region_id: StringName = &"", offset := 0, limit := ACTOR_PAGE_LIMIT) -> Dictionary:
 	var ids: Array[StringName] = []
 	for actor_id: StringName in enemies:
-		var enemy := enemies.get(actor_id) as FusepointEnemyAgent
+		var enemy := _observation_enemy(enemies.get(actor_id), &"combat_actor_page_index", actor_id)
 		if enemy != null and (region_id.is_empty() or enemy.region_id == region_id):
 			ids.append(actor_id)
 	ids.sort_custom(func(a: StringName, b: StringName) -> bool: return String(a) < String(b))
@@ -966,7 +1005,7 @@ func combat_actor_page(region_id: StringName = &"", offset := 0, limit := ACTOR_
 	var end := mini(bounded_offset + bounded_limit, ids.size())
 	var items: Array[Dictionary] = []
 	for index in range(bounded_offset, end):
-		var enemy := enemies.get(ids[index]) as FusepointEnemyAgent
+		var enemy := _observation_enemy(enemies.get(ids[index]), &"combat_actor_page_item", ids[index])
 		if enemy != null:
 			items.append(_compact_actor_state(enemy))
 	return {
@@ -1117,6 +1156,8 @@ func _record_region_milestone(region_id: StringName) -> void:
 
 
 func _update_qualification_actor(kind: StringName, enemy: FusepointEnemyAgent, source_event: Dictionary = {}) -> void:
+	if _observation_enemy(enemy, &"qualification_event", enemy.stable_id if enemy != null and is_instance_valid(enemy) else &"") == null:
+		return
 	if not qualification_actors.has(enemy.stable_id):
 		return
 	qualification_event_sequence += 1
@@ -1143,7 +1184,10 @@ func _update_qualification_actor(kind: StringName, enemy: FusepointEnemyAgent, s
 
 
 func _refresh_qualification_live_state() -> void:
-	for enemy: FusepointEnemyAgent in enemies.values():
+	for candidate: Variant in enemies.values():
+		var enemy := _observation_enemy(candidate, &"qualification_refresh")
+		if enemy == null:
+			continue
 		if not qualification_actors.has(enemy.stable_id):
 			continue
 		var actor: Dictionary = qualification_actors[enemy.stable_id]

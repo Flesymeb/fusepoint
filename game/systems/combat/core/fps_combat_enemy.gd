@@ -120,6 +120,8 @@ var _navigation_safe_velocity := Vector3.ZERO
 var _navigation_safe_velocity_ready := false
 var _navigation_desired_velocity := Vector3.ZERO
 var _navigation_default_target_desired_distance := 0.0
+var _peer_observation_skip_count := 0
+var _last_peer_observation_skip: Dictionary = {}
 var _cover_anchor: FPSCoverAnchor
 var _pending_cover_after_hurt := false
 var _cover_remaining := 0.0
@@ -371,12 +373,14 @@ func _fire_block_reason() -> String:
 
 
 func snapshot() -> Dictionary:
+	var target_observable := _is_observable_actor(target)
+	var nearest_enemy_distance := _nearest_enemy_distance()
 	return {
 		"run_epoch": run_epoch,
 		"state": state_name(),
-		"target": String(target.get_path()) if target != null and target.is_inside_tree() else "",
-		"target_distance": global_position.distance_to(target.global_position) if target != null and is_instance_valid(target) else -1.0,
-		"target_visible": _can_detect_target(target) if target != null and is_instance_valid(target) else false,
+		"target": String(target.get_path()) if target_observable else "",
+		"target_distance": global_position.distance_to(target.global_position) if target_observable else -1.0,
+		"target_visible": _can_detect_target(target) if target_observable else false,
 		"fire_block_reason": _fire_block_reason(),
 		"health": _health.snapshot() if _health != null else {},
 		"reaction_remaining": _reaction_remaining,
@@ -414,9 +418,11 @@ func snapshot() -> Dictionary:
 		"engagement_slot_index": _engagement_slot_index,
 		"engagement_slot_position": _engagement_destination(),
 		"engagement_projection_rejection": _engagement_projection_rejection,
-		"engagement_reservation_count": FPSEngagementSlots.reservation_count(target),
-		"nearest_enemy_distance": _nearest_enemy_distance(),
-		"crowded": _is_crowded(),
+		"engagement_reservation_count": FPSEngagementSlots.reservation_count(target) if target_observable else 0,
+		"nearest_enemy_distance": nearest_enemy_distance,
+		"crowded": nearest_enemy_distance < personal_space_radius,
+		"peer_observation_skip_count": _peer_observation_skip_count,
+		"last_peer_observation_skip": _last_peer_observation_skip.duplicate(true),
 		"reposition_decision_remaining": _reposition_decision_remaining,
 		"reposition_timeout_remaining": _reposition_timeout_remaining,
 		"flank_reposition_chance": _effective_flank_reposition_chance(),
@@ -760,7 +766,10 @@ func _candidate_has_line_of_fire(position: Vector3) -> bool:
 func _nearest_enemy_distance() -> float:
 	var nearest := INF
 	for node: Node in get_tree().get_nodes_in_group(&"fps_enemy"):
-		if node == self or not node is Node3D:
+		if node == self:
+			continue
+		if not _is_observable_actor(node):
+			_record_peer_observation_skip(node, &"nearest_peer")
 			continue
 		var actor := node as Node3D
 		var actor_health := _find_damage_receiver(actor)
@@ -772,6 +781,23 @@ func _nearest_enemy_distance() -> float:
 
 func _is_crowded() -> bool:
 	return _nearest_enemy_distance() < personal_space_radius
+
+
+func _is_observable_actor(candidate: Variant) -> bool:
+	if candidate == null or not is_instance_valid(candidate) or not candidate is Node3D:
+		return false
+	var actor := candidate as Node3D
+	return actor.is_inside_tree() and not actor.is_queued_for_deletion() and actor.get_world_3d() == get_world_3d()
+
+
+func _record_peer_observation_skip(candidate: Variant, context: StringName) -> void:
+	_peer_observation_skip_count += 1
+	_last_peer_observation_skip = {
+		"context": context,
+		"candidate_class": candidate.get_class() if candidate != null and is_instance_valid(candidate) and candidate is Object else "invalid",
+		"frame": Engine.get_process_frames(),
+		"reason": &"peer_not_observable",
+	}
 
 
 func _process_cover_response(delta: float) -> void:

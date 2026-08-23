@@ -16,3 +16,10 @@ arbitrary prefix used only to meet a duration cap.
 
 Source license and attribution remain in
 `systems/weapons/viewmodels/ak74/SOURCE_ATTRIBUTION.txt`.
+
+The current concrete (`hammer_fall.wav`, 1.040 s) and metal
+(`metal_twang.wav`, 1.962 s) candidates are retained only as isolated debug
+audition stems. Their long ringing bodies can mask or resemble the player
+report, so ordinary player world-surface hits render impact VFX without these
+two cues. Character-hit feedback and bounded enemy spatial reports remain
+enabled. No source PCM is sliced at runtime.

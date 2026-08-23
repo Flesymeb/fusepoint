@@ -105,6 +105,7 @@ var _victory_video_failed := false
 var _victory_video_finished := false
 var _victory_video_completion_reason := &"none"
 var _victory_fallback_started_at := 0.0
+var _native_victory_reveal_complete := false
 
 
 func _ready() -> void:
@@ -112,6 +113,7 @@ func _ready() -> void:
 	mission.mission_event_committed.connect(_on_mission_event)
 	_tactical_hud = get_tree().get_first_node_in_group(&"tactical_hud")
 	victory_avatar.visible = false
+	victory_sequence.camera_reveal_complete.connect(_on_native_victory_reveal_complete)
 	death_video.finished.connect(_on_death_video_finished)
 	victory_video.finished.connect(_on_victory_video_finished)
 	_clear_overlay()
@@ -217,9 +219,15 @@ func _begin_success() -> void:
 	media_title.text = "ALL CLEAR — ROCKET BAY PRESERVED"
 	media_copy.text = "AEGIS EOD SIGNAL RESTORED\nBASE ALARM CLEARING  •  DEVICE SAFE"
 	media_skip.text = "[ENTER / E]  SKIP PRESENTATION"
-	_begin_victory_video()
 	if not victory_sequence.begin(camera, victory_avatar, "DEVICE SAFE  •  %02d:%02d REMAINING" % [int(mission.remaining_time) / 60, int(mission.remaining_time) % 60]):
-		phase = &"victory_fallback"
+		_begin_victory_video()
+
+
+func _on_native_victory_reveal_complete() -> void:
+	if not active or branch != &"success" or _completed_current:
+		return
+	_native_victory_reveal_complete = true
+	_begin_victory_video()
 
 
 func _begin_victory_video() -> void:
@@ -427,6 +435,11 @@ func _tick_failure() -> void:
 
 
 func _tick_success() -> void:
+	# Native pullback/orbit/dance remains unobscured until its reveal completes.
+	# Optional full-bleed media is a later phase, never a concurrent replacement.
+	if not _native_victory_reveal_complete and not _victory_video_play_requested and elapsed_seconds >= 3.25:
+		_native_victory_reveal_complete = true
+		_begin_victory_video()
 	if _victory_video_play_requested and not _victory_video_started and not _victory_video_failed:
 		if victory_video.is_playing():
 			_victory_video_started = true
@@ -530,6 +543,7 @@ func reset_presentation(clear_event_cache := true, restore_camera := true) -> vo
 	_victory_video_finished = false
 	_victory_video_completion_reason = &"none"
 	_victory_fallback_started_at = 0.0
+	_native_victory_reveal_complete = false
 	if clear_event_cache:
 		_observed_event_ids.clear()
 
