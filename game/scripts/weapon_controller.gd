@@ -8,8 +8,6 @@ const WEAPON_ORDER: Array[StringName] = [&"ak74m", &"saiga12"]
 const FIRE_MODE_SEMI := &"SEMI"
 const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
-const PLAYER_SINGLE_REPORT: AudioStream = preload("res://assets/audio/combat/player_rifle_single_report.wav")
-const SINGLE_REPORT_MAX_SECONDS := 0.232
 const AK74_PRODUCT_FRAME_OFFSET := Vector3(0.0, 0.12, 0.0)
 const AK74_PRODUCT_FRAME_SCALE := Vector3.ONE * 0.88
 
@@ -120,7 +118,7 @@ func _ready() -> void:
 	viewmodel.set("handle_right_mouse", false)
 	viewmodel.set("handle_mouse_wheel", false)
 	_configure_component_feedback_boundary()
-	_configure_product_single_report_stream()
+	_capture_retained_component_report_identity()
 	if viewmodel.has_signal(&"weapon_changed"):
 		viewmodel.connect(&"weapon_changed", _on_viewmodel_weapon_changed)
 	if viewmodel.has_signal(&"aiming_changed"):
@@ -706,19 +704,17 @@ func _configure_component_feedback_boundary() -> void:
 	feedback.set("fire_recoil_roll_degrees", 0.0)
 
 
-func _configure_product_single_report_stream() -> void:
+func _capture_retained_component_report_identity() -> void:
 	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
-	if single_player == null or PLAYER_SINGLE_REPORT == null:
+	if single_player == null or single_player.stream == null:
 		return
-	# Keep the retained component node as the sole player-report voice while the
-	# product boundary supplies a dedicated, physically bounded source. The old
-	# adapter PCM derivative is not loaded or played by this controller.
-	_single_report_source_path = PLAYER_SINGLE_REPORT.resource_path
-	single_player.stream = PLAYER_SINGLE_REPORT
-	feedback.set("semi_fire_audio_seconds", PLAYER_SINGLE_REPORT.get_length())
-	_bounded_single_report_bound = true
+	# Observation only: the retained component owns both report players and their
+	# accepted streams. The product adapter authorizes shot playback and lifecycle
+	# cleanup, but must never substitute, derive, or rewrite either source.
+	_single_report_source_path = single_player.stream.resource_path
+	_bounded_single_report_bound = false
 	_bounded_single_report_bytes = 0
-	_bounded_single_report_duration = PLAYER_SINGLE_REPORT.get_length()
+	_bounded_single_report_duration = single_player.stream.get_length()
 
 
 func set_run_epoch(epoch: int, reset_transients := true) -> bool:
@@ -1583,13 +1579,13 @@ func _mcp_state() -> Dictionary:
 			"generation": _single_report_generation,
 			"shot_id": _single_report_shot_id,
 			"deadline_seconds": _single_report_deadline,
-			"max_duration_seconds": SINGLE_REPORT_MAX_SECONDS,
 			"owner": &"retained_component_fire_audio",
 			"audio_server_bounded_stream": _bounded_single_report_bound,
 			"source_stream_path": _single_report_source_path,
 			"bounded_stream_bytes": _bounded_single_report_bytes,
 			"bounded_stream_duration_seconds": _bounded_single_report_duration,
-			"source_provenance": "res://assets/audio/combat/player_rifle_single_report.source.json",
+			"source_identity_policy": &"retained_component_stream_unchanged",
+			"adapter_source_substitution_used": false,
 			"product_pcm_prefix_derivative_used": false,
 		},
 		"tester_audio_generation": _tester_audio_generation,
@@ -1703,6 +1699,8 @@ func _fire_audio_player_state() -> Dictionary:
 			"playback_stream_class": single_player.stream.get_class() if single_player != null and single_player.stream != null else "",
 			"playback_stream_length": single_player.stream.get_length() if single_player != null and single_player.stream != null else 0.0,
 			"audio_server_bounded": _bounded_single_report_bound,
+			"retained_stream_unchanged": single_player != null and single_player.stream != null and single_player.stream.resource_path == _single_report_source_path,
+			"adapter_source_substitution_used": false,
 		},
 		"sustained": {
 			"path": String(auto_player.get_path()) if auto_player != null else "",

@@ -12,6 +12,9 @@ const SAFE_AREA_RATIO := 0.05
 const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v3_priority_lanes"
 const COMBAT_ROW_LIFETIME_SECONDS := 6.0
 const COMBAT_ROW_LIMIT := 5
+const STORY_TYPE_SECONDS := 6.0
+const STORY_HOLD_UNTIL_SECONDS := 10.0
+const STORY_END_SECONDS := 13.0
 const COMBAT_FEED_ALLOWED_KINDS: Array[StringName] = [
 	&"capture_started", &"capture_contested", &"capture_interrupted", &"capture_completed",
 	&"key_committed", &"route_unlocked", &"checkpoint_committed",
@@ -52,6 +55,9 @@ var _story_event_id := ""
 var _story_advance_count := 0
 var _story_confirmation_source := &""
 var _story_weapon_lock_active := false
+var _story_full_text := ""
+var _story_phase := &"inactive"
+var _story_visible_characters := 0
 var _event_rows: Array[String] = []
 var _event_row_receipts: Array[Dictionary] = []
 var _event_row_expiries: Array[float] = []
@@ -121,7 +127,7 @@ func set_hud_enabled(enabled: bool) -> void:
 func apply_accessibility_settings(values: Dictionary) -> void:
 	_applied_ui_scale = clampf(float(values.get("ui_scale", 1.0)), 1.0, 2.0)
 	_applied_subtitle_size = clampi(int(values.get("subtitle_size", 18)), 14, 32)
-	narrative.add_theme_font_size_override("font_size", maxi(_applied_subtitle_size, 36))
+	narrative.add_theme_font_size_override("font_size", clampi(_applied_subtitle_size + 2, 20, 32))
 	# Accessibility scale is semantic and persistent; layout absorbs the growth
 	# by reflowing priority regions instead of scaling the whole CanvasLayer.
 	var multiplier := 1.0 + (_applied_ui_scale - 1.0) * 0.38
@@ -134,7 +140,7 @@ func apply_accessibility_settings(values: Dictionary) -> void:
 		var base_size := int(control.get_meta(&"fusepoint_hud_base_font_size"))
 		if base_size > 0 and base_size < 34:
 			control.add_theme_font_size_override("font_size", int(round(base_size * multiplier)))
-	narrative.add_theme_font_size_override("font_size", maxi(36, int(round(_applied_subtitle_size * multiplier))))
+	narrative.add_theme_font_size_override("font_size", clampi(int(round((_applied_subtitle_size + 2) * multiplier)), 20, 32))
 	_apply_responsive_layout.call_deferred()
 
 
@@ -169,9 +175,9 @@ func _apply_responsive_layout() -> void:
 	feed.size = Vector2(324.0, 152.0 if expanded else 128.0)
 	reticle.position = center - Vector2(14.0, 14.0)
 	reticle.size = Vector2(28.0, 28.0)
-	var narrative_width := minf(920.0, viewport_size.x - safe.x * 2.0 - 8.0)
-	narrative.position = Vector2(center.x - narrative_width * 0.5, viewport_size.y - safe.y - (286.0 if expanded else 250.0))
-	narrative.size = Vector2(narrative_width, 112.0 if expanded else 96.0)
+	var narrative_width := minf(760.0, viewport_size.x - safe.x * 2.0 - 8.0)
+	narrative.position = Vector2(center.x - narrative_width * 0.5, safe.y + (156.0 if expanded else 138.0))
+	narrative.size = Vector2(narrative_width, 132.0 if expanded else 112.0)
 	var objective_width := minf(500.0 if expanded else 620.0, viewport_size.x - safe.x * 2.0 - 8.0)
 	objective_band.position = Vector2(center.x - objective_width * 0.5, viewport_size.y - safe.y - (122.0 if expanded else 138.0))
 	objective_band.size = Vector2(objective_width, 100.0 if expanded else 86.0)
@@ -253,6 +259,9 @@ func reset_transient_feedback_for_restore(epoch: int) -> void:
 	_story_cue_index = -1
 	_story_event_id = ""
 	_story_confirmation_source = &""
+	_story_full_text = ""
+	_story_phase = &"inactive"
+	_story_visible_characters = 0
 	_set_story_weapon_lock(false)
 	narrative.visible = false
 	narrative.text = ""
@@ -272,16 +281,7 @@ func _input(event: InputEvent) -> void:
 
 
 func _is_story_advance_input(event: InputEvent) -> bool:
-	if event is InputEventKey:
-		var key_event := event as InputEventKey
-		return key_event.pressed and not key_event.echo and (
-			key_event.physical_keycode in [KEY_ENTER, KEY_KP_ENTER]
-			or key_event.keycode in [KEY_ENTER, KEY_KP_ENTER]
-		)
-	if event is InputEventMouseButton:
-		var mouse_event := event as InputEventMouseButton
-		return mouse_event.pressed and mouse_event.button_index == MOUSE_BUTTON_LEFT
-	return false
+	return event.is_action_pressed(&"skip_presentation")
 
 
 func _process(delta: float) -> void:
@@ -632,10 +632,23 @@ func _row_receipt(event: Dictionary) -> Dictionary:
 func _update_story(delta: float) -> void:
 	if not _story_active:
 		return
-	if weapon != null and weapon.get("gameplay_input_enabled") == true:
-		weapon.call(&"set_gameplay_input_enabled", false)
 	_story_elapsed += delta
-	narrative.modulate.a = 1.0
+	if _story_elapsed < STORY_TYPE_SECONDS:
+		_story_phase = &"typing"
+		_story_visible_characters = clampi(int(floor(float(_story_full_text.length()) * _story_elapsed / STORY_TYPE_SECONDS)), 0, _story_full_text.length())
+		narrative.text = _story_full_text.left(_story_visible_characters)
+		narrative.modulate.a = 1.0
+	elif _story_elapsed < STORY_HOLD_UNTIL_SECONDS:
+		_story_phase = &"hold"
+		_story_visible_characters = _story_full_text.length()
+		narrative.text = _story_full_text
+		narrative.modulate.a = 1.0
+	elif _story_elapsed < STORY_END_SECONDS:
+		_story_phase = &"fade"
+		narrative.text = _story_full_text
+		narrative.modulate.a = 1.0 - (_story_elapsed - STORY_HOLD_UNTIL_SECONDS) / (STORY_END_SECONDS - STORY_HOLD_UNTIL_SECONDS)
+	else:
+		_finish_story(&"timeline_complete")
 
 
 func _begin_story_cues(cues: Array[String], event_id: String) -> void:
@@ -647,24 +660,33 @@ func _begin_story_cues(cues: Array[String], event_id: String) -> void:
 	_story_elapsed = 0.0
 	_story_active = true
 	_story_confirmation_source = &""
-	narrative.text = _story_cues[0]
+	_story_full_text = ""
+	for cue: String in _story_cues:
+		if not _story_full_text.is_empty():
+			_story_full_text += "\n"
+		_story_full_text += cue
+	_story_phase = &"typing"
+	_story_visible_characters = 0
+	narrative.text = ""
 	narrative.visible = true
 	narrative.modulate.a = 1.0
-	_set_story_weapon_lock(true)
+	_set_story_weapon_lock(false)
 
 
 func _advance_story_cue() -> void:
 	if not _story_active:
 		return
 	_story_advance_count += 1
-	_story_cue_index += 1
-	_story_elapsed = 0.0
-	if _story_cue_index < _story_cues.size():
-		narrative.text = _story_cues[_story_cue_index]
-		return
+	_finish_story(&"player_skip")
+
+
+func _finish_story(source: StringName) -> void:
 	_story_active = false
+	_story_phase = &"complete"
+	_story_confirmation_source = source
 	narrative.visible = false
 	narrative.text = ""
+	narrative.modulate.a = 0.0
 	_set_story_weapon_lock(false)
 
 
@@ -689,11 +711,16 @@ func _mcp_state() -> Dictionary:
 		"story_cue_index": _story_cue_index,
 		"story_cue_count": _story_cues.size(),
 		"story_current_text": narrative.text,
-		"story_indefinite_dwell": _story_active,
+		"story_indefinite_dwell": false,
+		"story_phase": _story_phase,
+		"story_visible_characters": _story_visible_characters,
+		"story_total_characters": _story_full_text.length(),
+		"story_timing_seconds": {"type": STORY_TYPE_SECONDS, "hold_until": STORY_HOLD_UNTIL_SECONDS, "end": STORY_END_SECONDS},
 		"story_advance_count": _story_advance_count,
 		"story_confirmation_source": _story_confirmation_source,
 		"story_weapon_lock_active": _story_weapon_lock_active,
-		"story_minimum_font_px": 36,
+		"story_font_px": narrative.get_theme_font_size("font_size"),
+		"story_non_blocking_gameplay": not _story_weapon_lock_active,
 		"minimap_component": minimap.get_path(),
 		"vitals_component": vitals.get_path(),
 		"weapon_component": weapon_hud.get_path(),

@@ -91,6 +91,16 @@ func _mcp_state() -> Dictionary:
 	state["authority_path"] = mission_controller.get_path()
 	state["player_position"] = player.global_position
 	state["authored_device"] = {
+		"family_id": &"rocket_bomb_objective",
+		"prd_style": &"grounded_military_maintenance",
+		"source_quality": &"authored_textured_pbr",
+		"expected_runtime_uses": 1,
+		"semantic_singleton": true,
+		"distinct_source_variants": 1,
+		"runtime_variants": 1,
+		"maximum_single_variant_share": 1.0,
+		"diversity_axes": [&"physical_modules", &"indicators", &"safe_detonated_materials", &"staged_animation"],
+		"declared_background": &"opaque_3d",
 		"assembly_path": String(assembly.get_path()),
 		"production_source": String(assembly.get_meta(&"production_source", "")),
 		"mechanism": StringName(assembly.get_meta(&"mechanism", &"")),

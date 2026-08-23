@@ -59,7 +59,10 @@ func _unique_material(mesh: MeshInstance3D) -> StandardMaterial3D:
 func _update_device_presentation(state: Dictionary) -> void:
 	var point_state := StringName(state.get("state", &"held_rift"))
 	var progress := clampf(float(state.get("progress", 0.0)), 0.0, 1.0)
-	var color := Color(0.92, 0.055, 0.012)
+	# Preserve state truth while keeping the two device functions visually
+	# distinct: Alpha reads as warning-yellow topology gear and Bravo as a cyan
+	# communications console before state animation takes over.
+	var color := Color(1.0, 0.52, 0.035) if objective_id == &"alpha" else Color(0.04, 0.68, 0.96)
 	match point_state:
 		&"capturing_aegis": color = Color(0.02, 0.72, 0.92)
 		&"contested": color = Color(1.0, 0.52, 0.035)
@@ -167,6 +170,15 @@ func _mcp_state() -> Dictionary:
 	state["player_position"] = player.global_position
 	state["notice_budget"] = notice_budget_state()
 	state["authored_device"] = {
+		"family_id": &"capture_objective_devices",
+		"prd_style": &"grounded_military_industrial",
+		"source_quality": &"authored_textured_pbr",
+		"expected_runtime_uses": 2,
+		"distinct_source_variants": 2,
+		"runtime_variants": 2,
+		"maximum_single_variant_share": 0.5,
+		"diversity_axes": [&"device_silhouette", &"function", &"materials", &"light_assembly", &"state_motion"],
+		"declared_background": &"opaque_3d",
 		"device_path": String(device_root.get_path()) if device_root != null else "",
 		"production_source": String(device_root.get_meta(&"production_source", "")) if device_root != null else "",
 		"mechanism": StringName(device_root.get_meta(&"mechanism", &"")) if device_root != null else &"",

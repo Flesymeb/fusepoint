@@ -24,10 +24,10 @@ report, so ordinary player world-surface hits render impact VFX without these
 two cues. Character-hit feedback and bounded enemy spatial reports remain
 enabled. No source PCM is sliced at runtime.
 
-The active player report is now `player_rifle_single_report.wav`, the original
-231 ms CC0 source published as Freesound 258198 by wadaltmon. It is bound at the
-product adapter boundary to the retained component's `FireAudio` node. The
-physical file EOF supplies the report boundary; the old product PCM derivative
-is retained only as provenance history and is not used by normal play or tester
-acceptance lanes. Exact source and license metadata live in
-`player_rifle_single_report.source.json`.
+`player_rifle_single_report.wav` remains a licensed, auditionable candidate but
+is not substituted into the retained weapon component. Normal player fire keeps
+the component-authored `FireAudio` and `AutoFireAudio` stream identities. The
+product controller only authorizes their playback and stops them at lifecycle
+boundaries; it does not create a runtime PCM derivative, slice a frame-zero
+prefix, or rewrite either stream. Isolated mixed-output audition remains the
+authority for report quality.
