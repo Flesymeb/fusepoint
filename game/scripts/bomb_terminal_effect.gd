@@ -58,7 +58,7 @@ func play(event_id: String, authority_origin: Vector3, visible_origin: Vector3, 
 	flash_core.visible = true
 	flash_core.transparency = 0.0
 	var flash_tween := create_tween().set_parallel(true)
-	flash_tween.tween_property(flash_core, "scale", Vector3.ONE * 1.55, 0.12).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	flash_tween.tween_property(flash_core, "scale", Vector3.ONE * 2.35, 0.14).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
 	flash_tween.tween_property(flash_core, "transparency", 1.0, 0.18).set_delay(0.04)
 	flash_tween.chain().tween_callback(flash_core.set_visible.bind(false)).set_delay(0.04)
 
@@ -66,13 +66,13 @@ func play(event_id: String, authority_origin: Vector3, visible_origin: Vector3, 
 	pressure_wave.visible = true
 	pressure_wave.transparency = 0.0
 	var wave_tween := create_tween().set_parallel(true)
-	wave_tween.tween_property(pressure_wave, "scale", Vector3(9.5, 1.0, 9.5), 0.82).set_delay(0.16).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	wave_tween.tween_property(pressure_wave, "scale", Vector3(14.0, 1.0, 14.0), 0.9).set_delay(0.14).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	wave_tween.tween_property(pressure_wave, "transparency", 1.0, 0.86).set_delay(0.28)
 	var wave_hide := create_tween()
 	wave_hide.tween_interval(1.08)
 	wave_hide.tween_callback(pressure_wave.set_visible.bind(false))
 
-	local_light.light_energy = 10.0
+	local_light.light_energy = 22.0
 	var light_tween := create_tween()
 	light_tween.tween_property(local_light, "light_energy", 2.0, 0.22)
 	light_tween.tween_property(local_light, "light_energy", 0.0, 1.25)
@@ -97,7 +97,7 @@ func layer_receipts() -> Array[Dictionary]:
 	var receipts: Array[Dictionary] = []
 	for index in nodes.size():
 		var node := nodes[index]
-		receipts.append({
+		var receipt := {
 			"name": LAYER_NAMES[index],
 			"path": String(node.get_path()),
 			"terminal_event_id": terminal_event_id,
@@ -109,5 +109,15 @@ func layer_receipts() -> Array[Dictionary]:
 			"visible": node.visible and visible,
 			"production_authored_scene": true,
 			"cleanup_pending": is_inside_tree(),
-		})
+		}
+		if node is GPUParticles3D:
+			receipt["emitting"] = (node as GPUParticles3D).emitting
+			receipt["amount_ratio"] = (node as GPUParticles3D).amount_ratio
+		elif node is MeshInstance3D:
+			receipt["scale"] = (node as MeshInstance3D).scale
+			receipt["transparency"] = (node as MeshInstance3D).transparency
+		elif node is OmniLight3D:
+			receipt["light_energy"] = (node as OmniLight3D).light_energy
+			receipt["omni_range"] = (node as OmniLight3D).omni_range
+		receipts.append(receipt)
 	return receipts

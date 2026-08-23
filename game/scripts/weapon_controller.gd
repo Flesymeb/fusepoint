@@ -9,6 +9,7 @@ const FIRE_MODE_SEMI := &"SEMI"
 const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
 const PRODUCT_SINGLE_REPORT: AudioStream = preload("res://assets/audio/combat/ak74_single_report_product.wav")
+const RETAINED_COMPONENT_SINGLE_REPORT: AudioStream = preload("res://systems/weapons/viewmodels/ak74/audio/sfx_fire_single.wav")
 const SINGLE_REPORT_MAX_SECONDS := 0.46
 const AK74_PRODUCT_FRAME_OFFSET := Vector3(0.0, 0.12, 0.0)
 const AK74_PRODUCT_FRAME_SCALE := Vector3.ONE * 0.88
@@ -109,6 +110,10 @@ var _single_report_source_path := ""
 var _bounded_single_report_bound := false
 var _bounded_single_report_bytes := 0
 var _bounded_single_report_duration := 0.0
+var _tester_audio_generation := 0
+var _tester_audio_player: AudioStreamPlayer
+var _last_tester_audio_receipt: Dictionary = {}
+var _tester_audio_history: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -1110,6 +1115,7 @@ func restore_weapon_state(snapshot: Dictionary, epoch := 0, allow_same_epoch := 
 
 
 func reset_transient_state_for_restore() -> void:
+	_stop_tester_audio_fixture(&"checkpoint_restore")
 	_cancel_queued_fire_edges("checkpoint_restore")
 	_cancel_held_fire("checkpoint_restore")
 	_observed_fire_down = false
@@ -1135,6 +1141,82 @@ func reset_transient_state_for_restore() -> void:
 	_clear_live_impacts()
 	_cancel_product_recoil()
 	_transient_reset_complete = true
+
+
+func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
+	_tester_audio_generation += 1
+	var generation := _tester_audio_generation
+	var receipt := {
+		"fixture_id": "tester-audio-%s-%06d" % [String(stem_id), generation],
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"stem_id": stem_id,
+		"setup_generation": generation,
+		"release_guard": &"OS.is_debug_build",
+		"non_release": OS.is_debug_build(),
+		"run_epoch": _run_epoch,
+		"normal_player_report_owner_count": 1,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return _store_tester_audio_receipt(receipt)
+	_stop_tester_audio_fixture(&"new_prepare")
+	if stem_id == &"component_report" or stem_id == &"bounded_adapter_report":
+		var stream := RETAINED_COMPONENT_SINGLE_REPORT if stem_id == &"component_report" else PRODUCT_SINGLE_REPORT
+		if _tester_audio_player == null:
+			_tester_audio_player = AudioStreamPlayer.new()
+			_tester_audio_player.name = "TesterIsolatedReport"
+			_tester_audio_player.bus = &"Combat"
+			add_child(_tester_audio_player)
+		_tester_audio_player.stream = stream
+		_tester_audio_player.volume_db = -7.0
+		_tester_audio_player.play()
+		receipt.merge({
+			"resolved": true,
+			"accepted": _tester_audio_player.playing,
+			"branch_id": StringName("audio_stem:%s" % String(stem_id)),
+			"source_path": stream.resource_path,
+			"owner_path": _tester_audio_player.get_path(),
+			"duration_seconds": stream.get_length(),
+			"bounded_product_derivative": stem_id == &"bounded_adapter_report",
+			"normal_fire_path_used": false,
+			"reset_isolation": {"authoritative_shot_committed": false, "diagnostic_owner_separate": true},
+			"failure_reason": &"" if _tester_audio_player.playing else &"playback_did_not_start",
+		}, true)
+	else:
+		var delegated: Dictionary
+		if stem_id == &"capacity_cleanup":
+			delegated = shot_feedback.tester_prepare_capacity_cleanup(generation)
+		elif stem_id == &"reset":
+			delegated = shot_feedback.tester_reset_feedback_fixture(generation)
+		else:
+			delegated = shot_feedback.tester_prepare_audio_stem(stem_id, generation)
+		receipt["resolved"] = delegated.get("resolved", false)
+		receipt["accepted"] = delegated.get("accepted", false)
+		receipt["branch_id"] = delegated.get("branch_id", StringName("audio_stem:%s" % String(stem_id)))
+		receipt["delegated_feedback_receipt"] = delegated
+		receipt["source_path"] = delegated.get("source_path", "")
+		receipt["owner_path"] = delegated.get("owner_path", "")
+		receipt["reset_isolation"] = delegated.get("reset_isolation", {})
+		receipt["failure_reason"] = delegated.get("failure_reason", &"")
+	return _store_tester_audio_receipt(receipt)
+
+
+func _stop_tester_audio_fixture(reason: StringName) -> void:
+	if _tester_audio_player != null:
+		_tester_audio_player.stop()
+	if not _last_tester_audio_receipt.is_empty():
+		_last_tester_audio_receipt["stop_reason"] = reason
+		_last_tester_audio_receipt["stopped"] = true
+
+
+func _store_tester_audio_receipt(receipt: Dictionary) -> Dictionary:
+	_last_tester_audio_receipt = receipt.duplicate(true)
+	_tester_audio_history.append(_last_tester_audio_receipt.duplicate(true))
+	while _tester_audio_history.size() > 12:
+		_tester_audio_history.pop_front()
+	return _last_tester_audio_receipt.duplicate(true)
 
 
 func _visible_rig_audit() -> Dictionary:
@@ -1440,6 +1522,9 @@ func _mcp_state() -> Dictionary:
 			"bounded_stream_duration_seconds": _bounded_single_report_duration,
 			"derivative_provenance": "res://assets/audio/combat/README_weapon_reports.md",
 		},
+		"tester_audio_generation": _tester_audio_generation,
+		"last_tester_audio_receipt": _last_tester_audio_receipt,
+		"tester_audio_history": _tester_audio_history,
 		"last_report_stop_reason": _last_report_stop_reason,
 		"last_report_receipt": _last_report_receipt,
 		"fire_audio_players": _fire_audio_player_state(),

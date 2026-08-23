@@ -1,51 +1,56 @@
 {
   "schema_version": 1,
   "asset_id": "fusepoint_opening_daylight_i2v",
-  "status": "provisionally_bound_pending_runtime_review",
+  "status": "accepted_runtime_bound",
   "provider": "bailian-i2v",
   "model": "wan2.7-i2v-2026-04-25",
-  "provider_task_id": "6460b7e8-eb91-4317-89f9-d5ecc38455ec",
+  "provider_task_id": "efecc80b-becf-4092-855c-25e6ff56f93d",
   "asset_kind": "environment",
-  "prompt": "bright clear late-morning daylight cinematic continuation of this realistic military industrial rocket maintenance base, preserve the blue sky, sunlit concrete, converter hall, pipes, cranes, wet ground, readable natural shadows, restrained cyan safety beacons and amber warning lights; slow stable forward camera move through the service yard toward the red-lit converter; grounded tactical photorealism matching a modern FPS map; no night, no dusk, no people, no characters, no logos, no text, no subtitles, no interface, no watermark, one continuous 16:9 shot",
+  "prompt": "bright clear late-morning military industrial rocket maintenance base, one continuous ten-second tactical establishing shot, stable deliberate forward camera move that visibly travels down the wet service lane, passes the two grounded rocket assemblies, cranes and pipe galleries, and approaches the red-lit converter hall, strong non-repeating parallax and continuous forward progression from wide yard to closer converter view, preserve blue sky and natural readable daylight, photoreal grounded modern FPS visual language, restrained cyan safety beacons and amber warning lights, no people, no characters, no logos, no text, no subtitles, no interface, no watermark, no cut, no loop, no freeze, no reverse motion",
   "input_frames": [
     {
-      "path": "../opening_fusepoint_daylight/frames/frame_000.png",
-      "sha256": "2378d63030b4ee2d98e9c6a9e0884c27fc731ba1dce020b822d2bd6d643a2a35"
-    },
-    {
-      "path": "../opening_fusepoint_daylight/frames/frame_063.png",
-      "sha256": "0f51796a5c3d763ee6865ebfff67f3ecdbe4afd350a5c6da2339e86b539ccf4d"
+      "path": "approved_inputs_loop49/input_frame_000.png",
+      "sha256": "d0c21fc2b4c941e2f4a656a07e0f2a9a863a8780b62bed991ae2c4241b6036eb"
     }
   ],
   "provider_output": {
     "path": "source.mp4",
-    "sha256": "d9f644fbd0eae977e6985be8a80ae23af9b39b7282d60f2caca032c5b15a66a0",
-    "duration_seconds": 5.06,
+    "sha256": "bdc0b23db7cb38538953df6420d7573cc0122e30a91e816320744269081476e2",
+    "duration_seconds": 10.030998,
     "width": 1264,
     "height": 728,
-    "frame_count": 60
+    "frame_count": 301
   },
   "runtime_materialization": {
     "path": "../../../../assets/cinematics/fusepoint_opening.ogv",
-    "sha256": "1529447bdd1cdeaa3c34abf3aa6920d402b58d8abd295f8d538374d61bfc6352",
+    "sha256": "7eb2dc179b1be18705a21b2914e0edce7ab9cfa00443a6e1591d89006fd8adce",
     "video_codec": "theora",
     "audio_codec": "vorbis",
-    "looped_under_native_captions": true,
-    "minimum_presentation_seconds": 9.6
+    "decoded_duration_seconds": 10.03102,
+    "looped_under_native_captions": false,
+    "minimum_presentation_seconds": 10.0,
+    "scene_binding": "res://scenes/product_shell.tscn::Root/Pages/BriefingPage/OpeningVideo"
   },
+  "approved_keyframes": [
+    {"path": "approved_keyframes_loop49/frame_000.png", "sha256": "104d6048460b52edab9e792aa8ecb181a4be65c4db62f492fd5a094a064918fe"},
+    {"path": "approved_keyframes_loop49/frame_030.png", "sha256": "29d927b378ee377b56b8999c7574d2d1b797b7810dea902b72ede122f245b0d3"},
+    {"path": "approved_keyframes_loop49/frame_060.png", "sha256": "7100d49b20e1299b17357af81316538d9659a65c2dcab7596d84a61ec13a1fdf"},
+    {"path": "approved_keyframes_loop49/frame_090.png", "sha256": "bf88e6901f3e7f920ac16042aa66b43066f8719cf73752f629627553b2a8a32a"},
+    {"path": "approved_keyframes_loop49/frame_119.png", "sha256": "c45d4fe45eb398a23bcbeeb7d48c49a41d154c2ee2dd9c1d7150f58fba3e736a"}
+  ],
   "provider_receipts": [
     {
       "path": "bailian_create_response.json",
-      "sha256": "32dd45ed6d610be6568be52e566c04c0455e8493cbc7cd30c8f9bdd77daaacbc"
+      "sha256": "9b62dafdf5252f65b57329a7b63d903b4463df2d4ce23b75548b10f5b5c78ff3"
     },
     {
       "path": "bailian_task_response.json",
-      "sha256": "4834b8c78129e21b52550537fa7d5b291700c320f5b27353f668b56cf81c1a20"
+      "sha256": "7b46ca4ad9eb5b684fd3f0c32ae47f2da753be4ee886768dd427c9b8486d1c1b"
     },
     {
       "path": "manifest.json",
-      "sha256": "612959f2ef8d8206e16122c699c16a7902342f7472e07a8107d9a2fd9e0c0f14"
+      "sha256": "87b102de84675f7777291c67b8223ab0d77a73120bb09379b25f9b1865cc92c0"
     }
   ],
-  "selection_notes": "Chosen after contact-sheet review because its bright daylight, blue sky, wet industrial yard, cyan safety beacons, amber accents, and absence of baked text match the accepted environment baseline and Fusepoint visual hierarchy. Runtime acceptance remains subject to candidate-bound Godot playback evidence."
+  "selection_notes": "Selected after first, quarter, middle, three-quarter, and final frame review. The camera advances continuously from the wide rocket yard to the red converter entrance with strong parallax, no cut, no freeze, no reverse, no repeated composition, no baked text, and a decoded duration covering the full four-cue timeline. Full extracted frames, spritesheet, preview GIF, and standalone preview were removed after selection; only the provider output, approved input, five review keyframes, compact receipts, and runtime transcode remain."
 }

@@ -57,6 +57,9 @@ var _local_impact_suppression_count := 0
 var _player_report_suppression_count := 0
 var _audio_receipts: Array[Dictionary] = []
 var _audio_cleanup_count := 0
+var _tester_feedback_generation := 0
+var _last_tester_feedback_receipt: Dictionary = {}
+var _tester_feedback_history: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -213,6 +216,9 @@ func snapshot() -> Dictionary:
 		"invalidated_retirement_callback_count": _invalidated_retirement_callback_count,
 		"effect_cleanup_history": _effect_cleanup_history.duplicate(true),
 		"retirement_authority": &"token_scoped_cancellable_owner",
+		"tester_feedback_generation": _tester_feedback_generation,
+		"last_tester_feedback_receipt": _last_tester_feedback_receipt,
+		"tester_feedback_history": _tester_feedback_history.duplicate(true),
 		"variant_roles": [&"compact_muzzle", &"bounded_tracer", &"near_miss", &"character_hit", &"metal_sparks", &"concrete_dust"],
 	}
 
@@ -690,6 +696,131 @@ func _get_concrete_impact_audio() -> AudioStream:
 
 func _get_near_miss_audio() -> AudioStream:
 	return _near_miss_audio
+
+
+func tester_prepare_audio_stem(stem_id: StringName, requested_generation := -1) -> Dictionary:
+	_tester_feedback_generation = maxi(_tester_feedback_generation + 1, requested_generation)
+	var generation := _tester_feedback_generation
+	var receipt := {
+		"fixture_id": "tester-feedback-%s-%06d" % [String(stem_id), generation],
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"stem_id": stem_id,
+		"setup_generation": generation,
+		"release_guard": &"OS.is_debug_build",
+		"non_release": OS.is_debug_build(),
+		"run_epoch": current_run_epoch,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return _store_tester_feedback_receipt(receipt)
+	var stem_map := {
+		&"enemy_report": {"stream": _get_shot_audio(), "role": &"spatial_report_audio", "volume_db": -5.0, "pitch": 0.92},
+		&"near_miss": {"stream": _get_near_miss_audio(), "role": &"near_miss_audio", "volume_db": -10.0, "pitch": 1.0},
+		&"concrete_impact": {"stream": _get_concrete_impact_audio(), "role": &"surface_impact_audio", "volume_db": -8.0, "pitch": 1.0},
+		&"metal_impact": {"stream": _get_metal_impact_audio(), "role": &"surface_impact_audio", "volume_db": -8.0, "pitch": 1.0},
+		&"character_hit": {"stream": _get_character_impact_audio(), "role": &"character_hit_audio", "volume_db": -8.0, "pitch": 1.0},
+	}
+	if not stem_map.has(stem_id):
+		receipt["failure_reason"] = &"unknown_stem"
+		return _store_tester_feedback_receipt(receipt)
+	reset_feedback(current_run_epoch)
+	var spec: Dictionary = stem_map[stem_id]
+	var identity := "run-%06d:tester-stem:%06d" % [current_run_epoch, generation]
+	_spawn_audio_cue(global_position, spec["stream"], spec["role"], spec["volume_db"], spec["pitch"], identity)
+	var latest: Dictionary = _audio_receipts.back() if not _audio_receipts.is_empty() else {}
+	receipt.merge({
+		"resolved": not latest.is_empty(),
+		"accepted": not latest.is_empty() and latest.get("playing_at_onset", false) == true,
+		"source_path": latest.get("stream_path", ""),
+		"owner_path": latest.get("voice_path", ""),
+		"role": latest.get("role", &""),
+		"branch_id": StringName("audio_stem:%s" % String(stem_id)),
+		"reset_isolation": {
+			"authoritative_shot_committed": false,
+			"presentation_only": true,
+			"active_voice_count": _active_audio_voice_count(),
+			"duplicate_cleanup_callback_count": _duplicate_cleanup_callback_count,
+		},
+		"failure_reason": &"" if not latest.is_empty() else &"voice_spawn_failed",
+	}, true)
+	return _store_tester_feedback_receipt(receipt)
+
+
+func tester_prepare_capacity_cleanup(requested_generation := -1) -> Dictionary:
+	_tester_feedback_generation = maxi(_tester_feedback_generation + 1, requested_generation)
+	var generation := _tester_feedback_generation
+	var receipt := {
+		"fixture_id": "tester-feedback-capacity-%06d" % generation,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"stem_id": &"capacity_cleanup",
+		"setup_generation": generation,
+		"release_guard": &"OS.is_debug_build",
+		"non_release": OS.is_debug_build(),
+		"run_epoch": current_run_epoch,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return _store_tester_feedback_receipt(receipt)
+	reset_feedback(current_run_epoch)
+	var cleanup_before := _effect_cleanup_count
+	var duplicates_before := _duplicate_cleanup_callback_count
+	var overflow_count := 6
+	for index in max_active_effects + overflow_count:
+		var effect := Node3D.new()
+		effect.name = "TesterCapacity_%03d" % index
+		_add_effect(effect, &"tester_capacity", 30.0)
+	receipt.merge({
+		"resolved": true,
+		"accepted": active_effect_count == max_active_effects and _culled_effect_count == overflow_count,
+		"branch_id": &"capacity_cleanup",
+		"active_effect_count": active_effect_count,
+		"capacity": max_active_effects,
+		"capacity_cull_count": _culled_effect_count,
+		"cleanup_delta": _effect_cleanup_count - cleanup_before,
+		"reset_isolation": {
+			"authoritative_shot_committed": false,
+			"presentation_only": true,
+			"duplicate_cleanup_delta": _duplicate_cleanup_callback_count - duplicates_before,
+			"stable_until_reset": true,
+		},
+		"failure_reason": &"" if active_effect_count == max_active_effects and _culled_effect_count == overflow_count else &"capacity_contract_failed",
+	}, true)
+	return _store_tester_feedback_receipt(receipt)
+
+
+func tester_reset_feedback_fixture(requested_generation := -1) -> Dictionary:
+	_tester_feedback_generation = maxi(_tester_feedback_generation + 1, requested_generation)
+	var generation := _tester_feedback_generation
+	var active_before := active_effect_count
+	var duplicates_before := _duplicate_cleanup_callback_count
+	reset_feedback(current_run_epoch)
+	return _store_tester_feedback_receipt({
+		"fixture_id": "tester-feedback-reset-%06d" % generation,
+		"requested": true,
+		"resolved": true,
+		"accepted": OS.is_debug_build() and active_effect_count == 0 and _duplicate_cleanup_callback_count == duplicates_before,
+		"stem_id": &"reset",
+		"setup_generation": generation,
+		"release_guard": &"OS.is_debug_build",
+		"non_release": OS.is_debug_build(),
+		"active_before": active_before,
+		"active_effect_count": active_effect_count,
+		"duplicate_cleanup_delta": _duplicate_cleanup_callback_count - duplicates_before,
+		"reset_isolation": {"all_effects_retired": active_effect_count == 0, "authoritative_shot_committed": false},
+		"failure_reason": &"" if OS.is_debug_build() and active_effect_count == 0 else &"release_build_forbidden" if not OS.is_debug_build() else &"reset_incomplete",
+	})
+
+
+func _store_tester_feedback_receipt(receipt: Dictionary) -> Dictionary:
+	_last_tester_feedback_receipt = receipt.duplicate(true)
+	_tester_feedback_history.append(_last_tester_feedback_receipt.duplicate(true))
+	while _tester_feedback_history.size() > 12:
+		_tester_feedback_history.pop_front()
+	return _last_tester_feedback_receipt.duplicate(true)
 
 
 func _mcp_state() -> Dictionary:

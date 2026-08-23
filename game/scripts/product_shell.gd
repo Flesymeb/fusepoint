@@ -100,6 +100,7 @@ var _terminal_result_receipts: Array[Dictionary] = []
 var _opening_media_status := &"uninitialized"
 var _opening_completion_source := &""
 var _opening_completion_count := 0
+var _briefing_manual_advance_count := 0
 var _activation_serial := 0
 var _activation_frame := -1
 var _last_activation_receipt: Dictionary = {}
@@ -417,11 +418,18 @@ func _input(event: InputEvent) -> void:
 		_tester_prepare_replay()
 		get_viewport().set_input_as_handled()
 		return
-	if app_state == STATE_BRIEFING and not _briefing_complete and (
-		event.is_action_pressed(&"skip_presentation") or _is_physical_briefing_skip(event)
-	):
+	var tester_audio_stem := _tester_audio_stem_for_event(event)
+	if not tester_audio_stem.is_empty():
+		_tester_prepare_audio_stem(tester_audio_stem)
+		get_viewport().set_input_as_handled()
+		return
+	if app_state == STATE_BRIEFING and not _briefing_complete and _is_physical_briefing_skip(event):
 		_complete_briefing(true)
 		_deploy()
+		get_viewport().set_input_as_handled()
+		return
+	if app_state == STATE_BRIEFING and not _briefing_complete and _is_briefing_cue_advance(event):
+		_advance_briefing_cue()
 		get_viewport().set_input_as_handled()
 		return
 	if app_state == STATE_GAMEPLAY and event.is_action_pressed(&"restart"):
@@ -450,6 +458,57 @@ func _is_physical_briefing_skip(event: InputEvent) -> bool:
 	return event is InputEventKey and event.pressed and not event.echo and (
 		event.physical_keycode == KEY_G or event.keycode == KEY_G
 	)
+
+
+func _tester_audio_stem_for_event(event: InputEvent) -> StringName:
+	var actions := {
+		&"tester_feedback_component_report_prepare": &"component_report",
+		&"tester_feedback_adapter_report_prepare": &"bounded_adapter_report",
+		&"tester_feedback_enemy_report_prepare": &"enemy_report",
+		&"tester_feedback_miss_prepare": &"near_miss",
+		&"tester_feedback_concrete_prepare": &"concrete_impact",
+		&"tester_feedback_metal_prepare": &"metal_impact",
+		&"tester_feedback_character_prepare": &"character_hit",
+		&"tester_feedback_capacity_prepare": &"capacity_cleanup",
+		&"tester_feedback_reset": &"reset",
+	}
+	for action: StringName in actions:
+		if event.is_action_pressed(action):
+			return StringName(actions[action])
+	return &""
+
+
+func _tester_prepare_audio_stem(stem_id: StringName) -> void:
+	var receipt := _new_tester_setup_receipt(StringName("feedback_%s_prepare" % String(stem_id)))
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var prepared: Dictionary = weapon.call(&"tester_prepare_audio_stem", stem_id)
+	receipt["feedback_setup"] = prepared
+	receipt["resolved"] = prepared.get("resolved", false)
+	receipt["accepted"] = prepared.get("accepted", false)
+	receipt["branch_id"] = prepared.get("branch_id", StringName("audio_stem:%s" % String(stem_id)))
+	receipt["setup_generation"] = prepared.get("setup_generation", 0)
+	receipt["release_guard"] = prepared.get("release_guard", &"OS.is_debug_build")
+	receipt["reset_isolation"] = prepared.get("reset_isolation", {})
+	receipt["failure_reason"] = prepared.get("failure_reason", &"")
+	_store_tester_setup_receipt(receipt)
+
+
+func _is_briefing_cue_advance(event: InputEvent) -> bool:
+	if event is InputEventKey:
+		return event.pressed and not event.echo and (
+			event.physical_keycode in [KEY_ENTER, KEY_KP_ENTER]
+			or event.keycode in [KEY_ENTER, KEY_KP_ENTER]
+		)
+	if event is InputEventMouseButton:
+		var mouse_event := event as InputEventMouseButton
+		if mouse_event.button_index != MOUSE_BUTTON_LEFT or not mouse_event.pressed:
+			return false
+		# Buttons retain their ordinary click semantics; clicking the cinematic or
+		# caption field advances exactly one cue.
+		return not ($Root/Pages/BriefingPage/Actions as Control).get_global_rect().has_point(mouse_event.position)
+	return false
 
 
 func _tester_prepare_alpha_checkpoint() -> void:
@@ -884,10 +943,11 @@ func _start_briefing() -> void:
 	_deployment_requested = false
 	_opening_completion_source = &""
 	_opening_completion_count = 0
+	_briefing_manual_advance_count = 0
 	$Root/Pages/BriefingPage/Error.text = ""
 	var deploy_button := $Root/Pages/BriefingPage/Actions/DeployButton as Button
 	var pause_button := $Root/Pages/BriefingPage/Actions/PauseButton as Button
-	deploy_button.text = "SKIP BRIEFING  ▶"
+	deploy_button.text = "ADVANCE BRIEFING  ▶"
 	deploy_button.disabled = false
 	pause_button.text = "Ⅱ  PAUSE"
 	pause_button.disabled = briefing_video.stream == null
@@ -918,9 +978,22 @@ func _briefing_primary_action() -> void:
 	if app_state != STATE_BRIEFING:
 		return
 	if not _briefing_complete:
-		_complete_briefing(true)
+		_advance_briefing_cue()
 		return
 	_deploy()
+
+
+func _advance_briefing_cue() -> void:
+	if app_state != STATE_BRIEFING or _briefing_complete:
+		return
+	_briefing_manual_advance_count += 1
+	var next_index := _briefing_caption_index + 1
+	if next_index >= BRIEFING_CAPTIONS.size():
+		_complete_briefing(false, &"manual_cue_complete")
+		return
+	_briefing_elapsed = maxf(_briefing_elapsed, float(next_index) * BRIEFING_BEAT_SECONDS)
+	_briefing_caption_index = next_index
+	$Root/Pages/BriefingPage/Copy.text = BRIEFING_CAPTIONS[next_index]
 
 
 func _toggle_opening_pause() -> void:
@@ -931,12 +1004,12 @@ func _toggle_opening_pause() -> void:
 	($Root/Pages/BriefingPage/Actions/PauseButton as Button).text = "▶  RESUME" if briefing_video.paused else "Ⅱ  PAUSE"
 
 
-func _complete_briefing(skipped: bool) -> void:
+func _complete_briefing(skipped: bool, completion_source := &"") -> void:
 	if _briefing_complete:
 		return
 	_briefing_complete = true
 	_opening_completion_count += 1
-	_opening_completion_source = &"skip" if skipped else &"video_finished" if _opening_media_status == &"finished" else &"timed_caption_complete"
+	_opening_completion_source = completion_source if not completion_source.is_empty() else &"skip" if skipped else &"video_finished" if _opening_media_status == &"finished" else &"timed_caption_complete"
 	if briefing_video.is_playing():
 		briefing_video.stop()
 	($Root/Pages/BriefingPage/Actions/PauseButton as Button).disabled = true
@@ -1544,9 +1617,14 @@ func _mcp_state() -> Dictionary:
 		"briefing_caption_line_count": ($Root/Pages/BriefingPage/Copy as Label).text.count("\n") + 1,
 		"briefing_complete": _briefing_complete,
 		"briefing_skip_count": _briefing_skip_count,
+		"briefing_manual_advance_count": _briefing_manual_advance_count,
 		"opening_media_status": _opening_media_status,
 		"opening_stream_bound": briefing_video.stream != null,
 		"opening_video_playing": briefing_video.is_playing(),
+		"opening_video_paused": briefing_video.paused,
+		"opening_video_loop": briefing_video.loop,
+		"opening_video_stream_position": briefing_video.stream_position,
+		"opening_video_stream_length": briefing_video.get_stream_length() if briefing_video.stream != null else 0.0,
 		"opening_completion_source": _opening_completion_source,
 		"opening_completion_count": _opening_completion_count,
 		"opening_video_path": "res://assets/cinematics/fusepoint_opening.ogv",
