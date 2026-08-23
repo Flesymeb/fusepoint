@@ -8,6 +8,7 @@ const WEAPON_ORDER: Array[StringName] = [&"ak74m", &"saiga12"]
 const FIRE_MODE_SEMI := &"SEMI"
 const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
+const SINGLE_REPORT_MAX_SECONDS := 0.12
 const AK74_PRODUCT_FRAME_OFFSET := Vector3(0.0, 0.12, 0.0)
 const AK74_PRODUCT_FRAME_SCALE := Vector3.ONE * 0.88
 
@@ -68,6 +69,7 @@ var _active_fire_source := &"none"
 var _active_fire_press_edge_id := ""
 var _active_fire_press_time_usec := 0
 var _active_fire_press_shot_count := 0
+var _active_fire_continuation_authorized := false
 var _input_edge_serial := 0
 var _last_input_receipt: Dictionary = {}
 var _input_history: Array[Dictionary] = []
@@ -99,6 +101,13 @@ var _report_serial := 0
 var _last_report_receipt: Dictionary = {}
 var _report_history: Array[Dictionary] = []
 var _last_report_stop_reason := &"initial_state"
+var _single_report_generation := 0
+var _single_report_deadline := -1.0
+var _single_report_shot_id := ""
+var _single_report_source_path := ""
+var _bounded_single_report_bound := false
+var _bounded_single_report_bytes := 0
+var _bounded_single_report_duration := 0.0
 
 
 func _ready() -> void:
@@ -107,6 +116,7 @@ func _ready() -> void:
 	viewmodel.set("handle_right_mouse", false)
 	viewmodel.set("handle_mouse_wheel", false)
 	_configure_component_feedback_boundary()
+	_configure_bounded_single_report_stream()
 	if viewmodel.has_signal(&"weapon_changed"):
 		viewmodel.connect(&"weapon_changed", _on_viewmodel_weapon_changed)
 	if viewmodel.has_signal(&"aiming_changed"):
@@ -203,6 +213,8 @@ func _process(_delta: float) -> void:
 		_sync_hud()
 		return
 	var now := _now()
+	_authorize_auto_continuation_after_input_pump(now)
+	_enforce_single_report_deadline(now)
 	if _action_state == &"reload" and now >= _action_until:
 		_commit_reload()
 	elif _action_state == &"inspect" and now >= _action_until:
@@ -215,15 +227,6 @@ func _process(_delta: float) -> void:
 		_action_state = &"ads" if _ads_held else &"hip"
 	if hud_result != null and now >= _last_result_until and not hud_result.text.is_empty():
 		hud_result.text = ""
-	# AUTO cadence is evaluated once after the render-frame input pump. A raw
-	# release queued for this frame therefore cancels before a repeat can commit,
-	# even when several physics ticks occurred between rendered frames.
-	var scheduled_shots := 0
-	while _trigger_held and not _active_fire_press_edge_id.is_empty() and _current_weapon()["fire_mode"] == FIRE_MODE_AUTO and _now() >= _next_shot_time and scheduled_shots < 8:
-		if _try_submit_shot().is_empty():
-			break
-		_next_shot_time += _fire_interval()
-		scheduled_shots += 1
 	_enforce_product_recoil_baseline_if_settled()
 	_sync_hud()
 
@@ -234,8 +237,34 @@ func _physics_process(delta: float) -> void:
 	if gameplay_input_enabled:
 		_combat_clock_seconds += maxf(delta, 0.0)
 	_drain_fire_edges()
-	if not gameplay_input_enabled:
+	if gameplay_input_enabled:
+		_schedule_auto_continuation()
+
+
+func _schedule_auto_continuation() -> void:
+	# The raw event observer flips _observed_fire_down before either process loop
+	# can drain its queued release. That level is only a veto: the active press
+	# generation remains the sole authority that can schedule cadence commits.
+	var scheduled_shots := 0
+	while _active_fire_continuation_authorized and _trigger_held and _observed_fire_down and not _active_fire_press_edge_id.is_empty() and _current_weapon()["fire_mode"] == FIRE_MODE_AUTO and _now() >= _next_shot_time and scheduled_shots < 8:
+		if _try_submit_shot().is_empty():
+			break
+		_next_shot_time += _fire_interval()
+		scheduled_shots += 1
+
+
+func _authorize_auto_continuation_after_input_pump(now: float) -> void:
+	if _active_fire_continuation_authorized:
 		return
+	if not _trigger_held or not _observed_fire_down or _active_fire_press_edge_id.is_empty():
+		return
+	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or now < _next_shot_time:
+		return
+	# A quick press can cross cadence inside several physics ticks before its
+	# queued release is delivered by the next render input pump. Requiring this
+	# later pump to observe the same generation still down distinguishes a real
+	# hold from a sub-cadence tap without sampling a new press authority.
+	_active_fire_continuation_authorized = true
 
 
 func _observe_fire_transition(pressed: bool, source: StringName, captured_at_usec := 0) -> void:
@@ -290,6 +319,7 @@ func _begin_fire(source := &"mapped_action", edge_id := "", captured_at_usec := 
 	_active_fire_press_edge_id = edge_id
 	_active_fire_press_time_usec = captured_at_usec
 	_active_fire_press_shot_count = 0
+	_active_fire_continuation_authorized = false
 	var receipt := _try_submit_shot()
 	_next_shot_time = _now() + _fire_interval()
 	if _current_weapon()["fire_mode"] == FIRE_MODE_SEMI:
@@ -315,6 +345,7 @@ func _end_fire(source := &"mapped_action", cancellation_reason := "release", edg
 	_active_fire_press_edge_id = ""
 	_active_fire_press_time_usec = 0
 	_active_fire_press_shot_count = 0
+	_active_fire_continuation_authorized = false
 	if cancellation_reason == "release":
 		var magazine := int(_current_weapon()["magazine"])
 		_record_input_edge(source, &"release", was_held or not _observed_fire_down, "released", "", magazine, magazine, "", edge_id)
@@ -364,6 +395,7 @@ func _try_submit_shot() -> Dictionary:
 	_action_until = _now() + 0.07
 	_recovery_until = _now() + float(weapon["recovery_seconds"])
 	feedback.call(&"trigger_fire", sustained_authorized)
+	_arm_single_report_deadline(receipt)
 	_record_report_request(receipt, playback_class, sustained_authorized)
 	_trigger_product_recoil(weapon["fire_mode"] == FIRE_MODE_AUTO)
 	_present_shot_result(receipt)
@@ -670,6 +702,62 @@ func _configure_component_feedback_boundary() -> void:
 	feedback.set("fire_recoil_pitch_degrees", 0.0)
 	feedback.set("fire_recoil_yaw_degrees", 0.0)
 	feedback.set("fire_recoil_roll_degrees", 0.0)
+
+
+func _configure_bounded_single_report_stream() -> void:
+	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
+	if single_player == null or not single_player.stream is AudioStreamWAV:
+		return
+	var imported_source := single_player.stream as AudioStreamWAV
+	_single_report_source_path = imported_source.resource_path
+	if _single_report_source_path.is_empty():
+		return
+	# Decode the unchanged source WAV once into PCM, then hand the audio server a
+	# physically bounded buffer. End-of-stream no longer depends on a render or
+	# game-thread timeout firing during capture stalls.
+	var decoded_source := AudioStreamWAV.load_from_file(
+		ProjectSettings.globalize_path(_single_report_source_path),
+		{"compress/mode": 0, "edit/loop_mode": 1},
+	)
+	if decoded_source == null or decoded_source.format not in [AudioStreamWAV.FORMAT_8_BITS, AudioStreamWAV.FORMAT_16_BITS]:
+		return
+	var bytes_per_sample := 1 if decoded_source.format == AudioStreamWAV.FORMAT_8_BITS else 2
+	var channel_count := 2 if decoded_source.stereo else 1
+	var bytes_per_frame := bytes_per_sample * channel_count
+	var target_frame_count := int(floor(float(decoded_source.mix_rate) * SINGLE_REPORT_MAX_SECONDS))
+	var target_byte_count := mini(decoded_source.data.size(), target_frame_count * bytes_per_frame)
+	target_byte_count -= target_byte_count % bytes_per_frame
+	if target_byte_count <= 0:
+		return
+	var bounded_data := decoded_source.data.slice(0, target_byte_count)
+	_taper_bounded_pcm_tail(bounded_data, decoded_source.format, decoded_source.mix_rate, channel_count)
+	var bounded_stream := AudioStreamWAV.new()
+	bounded_stream.format = decoded_source.format
+	bounded_stream.mix_rate = decoded_source.mix_rate
+	bounded_stream.stereo = decoded_source.stereo
+	bounded_stream.loop_mode = AudioStreamWAV.LOOP_DISABLED
+	bounded_stream.data = bounded_data
+	single_player.stream = bounded_stream
+	_bounded_single_report_bound = true
+	_bounded_single_report_bytes = bounded_data.size()
+	_bounded_single_report_duration = bounded_stream.get_length()
+
+
+func _taper_bounded_pcm_tail(data: PackedByteArray, format: int, mix_rate: int, channel_count: int) -> void:
+	var bytes_per_sample := 1 if format == AudioStreamWAV.FORMAT_8_BITS else 2
+	var bytes_per_frame := bytes_per_sample * channel_count
+	var total_frames := int(data.size() / bytes_per_frame)
+	var fade_frames := mini(int(float(mix_rate) * 0.008), total_frames)
+	if fade_frames <= 0:
+		return
+	for frame_index in range(total_frames - fade_frames, total_frames):
+		var gain := float(total_frames - frame_index - 1) / float(fade_frames)
+		for channel_index in channel_count:
+			var byte_offset := frame_index * bytes_per_frame + channel_index * bytes_per_sample
+			if format == AudioStreamWAV.FORMAT_16_BITS:
+				data.encode_s16(byte_offset, int(round(float(data.decode_s16(byte_offset)) * gain)))
+			else:
+				data.encode_s8(byte_offset, int(round(float(data.decode_s8(byte_offset)) * gain)))
 
 
 func set_run_epoch(epoch: int, reset_transients := true) -> bool:
@@ -1075,6 +1163,7 @@ func reset_transient_state_for_restore() -> void:
 	_active_fire_press_edge_id = ""
 	_active_fire_press_time_usec = 0
 	_active_fire_press_shot_count = 0
+	_active_fire_continuation_authorized = false
 	_shot_commits.clear()
 	_shot_history.clear()
 	_last_shot.clear()
@@ -1236,6 +1325,7 @@ func _cancel_held_fire(reason: String) -> void:
 	_active_fire_press_edge_id = ""
 	_active_fire_press_time_usec = 0
 	_active_fire_press_shot_count = 0
+	_active_fire_continuation_authorized = false
 
 
 func _stop_fire_report(reason: StringName, stop_single_transient: bool) -> void:
@@ -1248,6 +1338,9 @@ func _stop_fire_report(reason: StringName, stop_single_transient: bool) -> void:
 	var auto_player := feedback.get_node_or_null("AutoFireAudio") as AudioStreamPlayer
 	if stop_single_transient and single_player != null:
 		single_player.stop()
+		_single_report_generation += 1
+		_single_report_deadline = -1.0
+		_single_report_shot_id = ""
 	if auto_player != null:
 		auto_player.stop()
 	_last_report_stop_reason = reason
@@ -1261,6 +1354,36 @@ func _stop_fire_report(reason: StringName, stop_single_transient: bool) -> void:
 		"single_player_playing": single_player.playing if single_player != null else false,
 		"auto_player_playing": auto_player.playing if auto_player != null else false,
 		"timestamp_seconds": _now(),
+	}
+	_append_report_receipt(_last_report_receipt)
+
+
+func _arm_single_report_deadline(receipt: Dictionary) -> void:
+	_single_report_generation += 1
+	_single_report_deadline = _now() + SINGLE_REPORT_MAX_SECONDS
+	_single_report_shot_id = String(receipt.get("shot_id", ""))
+
+
+func _enforce_single_report_deadline(now: float) -> void:
+	if _single_report_deadline < 0.0 or now < _single_report_deadline:
+		return
+	var completed_generation := _single_report_generation
+	var completed_shot_id := _single_report_shot_id
+	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
+	if single_player != null:
+		single_player.stop()
+	_single_report_deadline = -1.0
+	_single_report_shot_id = ""
+	_report_serial += 1
+	_last_report_receipt = {
+		"report_event_id": "run-%06d:report:%06d" % [_run_epoch, _report_serial],
+		"kind": &"single_transient_completed",
+		"shot_id": completed_shot_id,
+		"single_report_generation": completed_generation,
+		"bounded_duration_seconds": SINGLE_REPORT_MAX_SECONDS,
+		"single_player_playing": single_player.playing if single_player != null else false,
+		"auto_player_playing": (feedback.get_node_or_null("AutoFireAudio") as AudioStreamPlayer).playing if feedback.get_node_or_null("AutoFireAudio") is AudioStreamPlayer else false,
+		"timestamp_seconds": now,
 	}
 	_append_report_receipt(_last_report_receipt)
 
@@ -1356,6 +1479,8 @@ func _mcp_state() -> Dictionary:
 			"shot_ordinal": _active_fire_press_shot_count,
 			"trigger_held": _trigger_held,
 			"queued_release_precedence": true,
+			"raw_release_vetoes_continuation": true,
+			"render_confirmed_hold": _active_fire_continuation_authorized,
 			"shot_count": _shot_serial,
 			"magazine": weapon.get("magazine", 0),
 			"last_shot_id": _last_shot.get("shot_id", ""),
@@ -1376,6 +1501,17 @@ func _mcp_state() -> Dictionary:
 		"active_fire_press_edge_id": _active_fire_press_edge_id,
 		"active_fire_press_shot_count": _active_fire_press_shot_count,
 		"report_authority": &"press_scoped_second_commit_sustained",
+		"single_report_boundary": {
+			"generation": _single_report_generation,
+			"shot_id": _single_report_shot_id,
+			"deadline_seconds": _single_report_deadline,
+			"max_duration_seconds": SINGLE_REPORT_MAX_SECONDS,
+			"owner": &"product_adapter_combat_clock",
+			"audio_server_bounded_stream": _bounded_single_report_bound,
+			"source_stream_path": _single_report_source_path,
+			"bounded_stream_bytes": _bounded_single_report_bytes,
+			"bounded_stream_duration_seconds": _bounded_single_report_duration,
+		},
 		"last_report_stop_reason": _last_report_stop_reason,
 		"last_report_receipt": _last_report_receipt,
 		"fire_audio_players": _fire_audio_player_state(),
@@ -1480,6 +1616,10 @@ func _fire_audio_player_state() -> Dictionary:
 			"path": String(single_player.get_path()) if single_player != null else "",
 			"playing": single_player.playing if single_player != null else false,
 			"stream_path": single_player.stream.resource_path if single_player != null and single_player.stream != null else "",
+			"source_stream_path": _single_report_source_path,
+			"playback_stream_class": single_player.stream.get_class() if single_player != null and single_player.stream != null else "",
+			"playback_stream_length": single_player.stream.get_length() if single_player != null and single_player.stream != null else 0.0,
+			"audio_server_bounded": _bounded_single_report_bound,
 		},
 		"sustained": {
 			"path": String(auto_player.get_path()) if auto_player != null else "",

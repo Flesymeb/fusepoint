@@ -127,6 +127,14 @@ var _movement_hold_origin := Vector3.ZERO
 var _movement_egress_latched := false
 var _movement_gate_observed := true
 
+var yaw_degrees: float:
+	get:
+		return rotation_degrees.y
+
+var pitch_degrees: float:
+	get:
+		return head.rotation_degrees.x if head != null else rad_to_deg(_pitch)
+
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS

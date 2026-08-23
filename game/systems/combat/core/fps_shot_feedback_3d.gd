@@ -43,6 +43,7 @@ var _retired_effect_order: Array[int] = []
 var _effect_serial := 0
 var _effect_cleanup_count := 0
 var _duplicate_cleanup_callback_count := 0
+var _invalidated_retirement_callback_count := 0
 var _effect_cleanup_history: Array[Dictionary] = []
 var _shot_audio: AudioStream = SHOT_AUDIO
 var _character_impact_audio: AudioStream = CHARACTER_IMPACT_AUDIO
@@ -197,8 +198,9 @@ func snapshot() -> Dictionary:
 		"audio_cleanup_count": _audio_cleanup_count,
 		"effect_cleanup_count": _effect_cleanup_count,
 		"duplicate_cleanup_callback_count": _duplicate_cleanup_callback_count,
+		"invalidated_retirement_callback_count": _invalidated_retirement_callback_count,
 		"effect_cleanup_history": _effect_cleanup_history.duplicate(true),
-		"retirement_authority": &"monotonic_effect_token",
+		"retirement_authority": &"token_scoped_cancellable_owner",
 		"variant_roles": [&"compact_muzzle", &"bounded_tracer", &"near_miss", &"character_hit", &"metal_sparks", &"concrete_dust"],
 	}
 
@@ -243,7 +245,7 @@ func _spawn_muzzle(position: Vector3, direction: Vector3, color: Color, event: D
 	root.scale = Vector3.ONE * 0.7
 	var tween := root.create_tween().set_parallel(true)
 	tween.tween_property(root, "scale", Vector3.ONE, muzzle_seconds)
-	tween.finished.connect(_retire_effect_token.bind(retirement_token, &"tween_finished"))
+	_bind_effect_retirement(retirement_token, tween, &"finished", &"tween_finished")
 
 
 func _spawn_tracer(from: Vector3, to: Vector3, color: Color, event: Dictionary, result: StringName, variant_index: int) -> void:
@@ -272,7 +274,7 @@ func _spawn_tracer(from: Vector3, to: Vector3, color: Color, event: Dictionary, 
 	var tween := tracer.create_tween().set_parallel(true)
 	tween.tween_property(tracer, "transparency", 1.0, tracer_seconds)
 	tween.tween_property(tracer, "scale", Vector3(0.25, 0.35, 0.25), tracer_seconds)
-	tween.finished.connect(_retire_effect_token.bind(retirement_token, &"tween_finished"))
+	_bind_effect_retirement(retirement_token, tween, &"finished", &"tween_finished")
 
 
 func _spawn_impact(position: Vector3, event: Dictionary) -> void:
@@ -299,7 +301,7 @@ func _spawn_impact(position: Vector3, event: Dictionary) -> void:
 	var target_scale := 0.82 if surface == &"character" else 1.05
 	tween.tween_property(root, "scale", Vector3.ONE * target_scale, impact_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tween.tween_property(root, "rotation:y", root.rotation.y + 0.8, impact_seconds)
-	tween.finished.connect(_retire_effect_token.bind(retirement_token, &"tween_finished"))
+	_bind_effect_retirement(retirement_token, tween, &"finished", &"tween_finished")
 
 
 func _build_character_impact(root: Node3D) -> void:
@@ -407,7 +409,8 @@ func _spawn_audio_cue(position: Vector3, stream: AudioStream, role: StringName, 
 		"cleanup_observed": false,
 		"cleanup_usec": 0,
 	})
-	get_tree().create_timer(lifetime).timeout.connect(_retire_effect_token.bind(retirement_token, &"timer_timeout"))
+	var retirement_timer := get_tree().create_timer(lifetime)
+	_bind_effect_retirement(retirement_token, retirement_timer, &"timeout", &"timer_timeout")
 
 
 func _add_effect(effect: Node3D, role: StringName, lifetime: float) -> int:
@@ -431,20 +434,64 @@ func _add_effect(effect: Node3D, role: StringName, lifetime: float) -> int:
 		"receipt_id": String(effect.get_meta(&"audio_receipt_id", "")),
 		"created_usec": Time.get_ticks_usec(),
 		"run_epoch": current_run_epoch,
+		"retirement_generation": 0,
+		"owner_source": null,
+		"owner_signal": &"",
+		"owner_callback": Callable(),
 	}
 	_active_effect_tokens.append(retirement_token)
 	active_effect_count = _active_effect_tokens.size()
 	return retirement_token
 
 
-func _retire_effect_token(retirement_token: int, reason: StringName = &"completion") -> bool:
+func _bind_effect_retirement(retirement_token: int, owner_source: Object, owner_signal: StringName, reason: StringName) -> void:
+	if not _effect_records.has(retirement_token) or owner_source == null:
+		return
+	var record: Dictionary = _effect_records[retirement_token]
+	var generation := int(record.get("retirement_generation", 0)) + 1
+	var owner_callback := _retire_effect_from_owner.bind(retirement_token, generation, reason)
+	record["retirement_generation"] = generation
+	record["owner_source"] = owner_source
+	record["owner_signal"] = owner_signal
+	record["owner_callback"] = owner_callback
+	_effect_records[retirement_token] = record
+	owner_source.connect(owner_signal, owner_callback, CONNECT_ONE_SHOT)
+
+
+func _retire_effect_from_owner(retirement_token: int, generation: int, reason: StringName) -> void:
+	if not _effect_records.has(retirement_token):
+		_invalidated_retirement_callback_count += 1
+		return
+	var record: Dictionary = _effect_records[retirement_token]
+	if int(record.get("retirement_generation", 0)) != generation:
+		_invalidated_retirement_callback_count += 1
+		return
+	_retire_effect_token(retirement_token, reason, true)
+
+
+func _cancel_effect_retirement_owner(record: Dictionary) -> void:
+	var owner_source := record.get("owner_source") as Object
+	var owner_signal := StringName(record.get("owner_signal", &""))
+	var owner_callback: Callable = record.get("owner_callback", Callable())
+	if owner_source != null and not owner_signal.is_empty() and owner_callback.is_valid() and owner_source.is_connected(owner_signal, owner_callback):
+		owner_source.disconnect(owner_signal, owner_callback)
+	if owner_source is Tween:
+		var owner_tween := owner_source as Tween
+		if owner_tween.is_valid():
+			owner_tween.kill()
+
+
+func _retire_effect_token(retirement_token: int, reason: StringName = &"completion", from_owner := false) -> bool:
 	# Completion callbacks bind only an integer identity, never a Node3D that may
 	# have been queue_freed by capacity culling, restore, or lifecycle reset.
-	# A late timer/tween completion therefore becomes a harmless duplicate token.
+	# Capacity, reset, and restore retirement disconnect or kill the registered
+	# owner before freeing the node, so one identity has exactly one callback.
 	if not _effect_records.has(retirement_token):
 		_duplicate_cleanup_callback_count += 1
 		return false
 	var record: Dictionary = _effect_records.get(retirement_token, {})
+	if not from_owner:
+		_cancel_effect_retirement_owner(record)
 	_effect_records.erase(retirement_token)
 	_active_effect_tokens.erase(retirement_token)
 	active_effect_count = _active_effect_tokens.size()
