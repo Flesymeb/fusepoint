@@ -258,6 +258,10 @@ tester_feedback_capacity_prepare={
 "deadzone": 0.5,
 "events": []
 }
+tester_feedback_advance={
+"deadzone": 0.5,
+"events": []
+}
 tester_feedback_reset={
 "deadzone": 0.5,
 "events": []

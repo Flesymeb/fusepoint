@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "title": "Thompson SMG Shot",
+  "creator": "wadaltmon",
+  "source_url": "https://freesound.org/people/wadaltmon/sounds/258198/",
+  "license": "CC0-1.0",
+  "source_pool_path": "maps/boomer-shooter/Assets/Sounds/SFX/258198__wadaltmon__thompson-smg-shot.wav",
+  "runtime_path": "res://assets/audio/combat/player_rifle_single_report.wav",
+  "duration_seconds": 0.231746,
+  "sample_rate_hz": 44100,
+  "channels": 2,
+  "selection": "Dedicated single firearm report with a physical audio-server EOF; no runtime slicing or game-thread timeout is required."
+}

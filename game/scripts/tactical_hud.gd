@@ -3,7 +3,11 @@ extends CanvasLayer
 
 signal combat_row_presented(receipt: Dictionary)
 
-const STORY_COPY := "11:40 — KESTREL RIDGE MILITARY BASE\nThe Rift Front planted a timed bomb in the Sector C rocket maintenance bay.\nCommunications are down. Support is not coming. You are the only operator who can enter.\nRetake Alpha, secure Bravo, then recover both defusal keys.\nIn five minutes, the base disappears with the bomb."
+const DEPLOYMENT_STORY_CUES: Array[String] = [
+	"11:40 — Kestrel Ridge. Rift Front signals are active inside the perimeter.",
+	"A timed device is armed in the Sector C rocket bay. Support is not coming.",
+	"Retake Alpha, secure Bravo, then use both keys to breach Charlie.",
+]
 const SAFE_AREA_RATIO := 0.05
 const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v3_priority_lanes"
 const COMBAT_ROW_LIFETIME_SECONDS := 6.0
@@ -42,6 +46,12 @@ var route_probe: Node
 var arena: Node3D
 var _story_elapsed := 99.0
 var _story_active := false
+var _story_cues: Array[String] = []
+var _story_cue_index := -1
+var _story_event_id := ""
+var _story_advance_count := 0
+var _story_confirmation_source := &""
+var _story_weapon_lock_active := false
 var _event_rows: Array[String] = []
 var _event_row_receipts: Array[Dictionary] = []
 var _event_row_expiries: Array[float] = []
@@ -111,7 +121,7 @@ func set_hud_enabled(enabled: bool) -> void:
 func apply_accessibility_settings(values: Dictionary) -> void:
 	_applied_ui_scale = clampf(float(values.get("ui_scale", 1.0)), 1.0, 2.0)
 	_applied_subtitle_size = clampi(int(values.get("subtitle_size", 18)), 14, 32)
-	narrative.add_theme_font_size_override("font_size", _applied_subtitle_size)
+	narrative.add_theme_font_size_override("font_size", maxi(_applied_subtitle_size, 36))
 	# Accessibility scale is semantic and persistent; layout absorbs the growth
 	# by reflowing priority regions instead of scaling the whole CanvasLayer.
 	var multiplier := 1.0 + (_applied_ui_scale - 1.0) * 0.38
@@ -124,7 +134,7 @@ func apply_accessibility_settings(values: Dictionary) -> void:
 		var base_size := int(control.get_meta(&"fusepoint_hud_base_font_size"))
 		if base_size > 0 and base_size < 34:
 			control.add_theme_font_size_override("font_size", int(round(base_size * multiplier)))
-	narrative.add_theme_font_size_override("font_size", int(round(_applied_subtitle_size * multiplier)))
+	narrative.add_theme_font_size_override("font_size", maxi(36, int(round(_applied_subtitle_size * multiplier))))
 	_apply_responsive_layout.call_deferred()
 
 
@@ -160,8 +170,8 @@ func _apply_responsive_layout() -> void:
 	reticle.position = center - Vector2(14.0, 14.0)
 	reticle.size = Vector2(28.0, 28.0)
 	var narrative_width := minf(920.0, viewport_size.x - safe.x * 2.0 - 8.0)
-	narrative.position = Vector2(center.x - narrative_width * 0.5, safe.y + (202.0 if expanded else 174.0))
-	narrative.size = Vector2(narrative_width, 78.0 if expanded else 106.0)
+	narrative.position = Vector2(center.x - narrative_width * 0.5, viewport_size.y - safe.y - (286.0 if expanded else 250.0))
+	narrative.size = Vector2(narrative_width, 112.0 if expanded else 96.0)
 	var objective_width := minf(500.0 if expanded else 620.0, viewport_size.x - safe.x * 2.0 - 8.0)
 	objective_band.position = Vector2(center.x - objective_width * 0.5, viewport_size.y - safe.y - (122.0 if expanded else 138.0))
 	objective_band.size = Vector2(objective_width, 100.0 if expanded else 86.0)
@@ -239,6 +249,11 @@ func reset_transient_feedback_for_restore(epoch: int) -> void:
 		_update_mission_state()
 	_story_active = false
 	_story_elapsed = 99.0
+	_story_cues.clear()
+	_story_cue_index = -1
+	_story_event_id = ""
+	_story_confirmation_source = &""
+	_set_story_weapon_lock(false)
 	narrative.visible = false
 	narrative.text = ""
 	_event_rows.clear()
@@ -248,11 +263,25 @@ func reset_transient_feedback_for_restore(epoch: int) -> void:
 	_render_combat_rows()
 
 
-func _unhandled_input(event: InputEvent) -> void:
-	if _hud_enabled and event.is_action_pressed(&"skip_presentation") and _story_active:
-		_story_active = false
-		narrative.visible = false
-		get_viewport().set_input_as_handled()
+func _input(event: InputEvent) -> void:
+	if not _hud_enabled or not _story_active or not _is_story_advance_input(event):
+		return
+	_story_confirmation_source = &"left_click" if event is InputEventMouseButton else &"enter"
+	_advance_story_cue()
+	get_viewport().set_input_as_handled()
+
+
+func _is_story_advance_input(event: InputEvent) -> bool:
+	if event is InputEventKey:
+		var key_event := event as InputEventKey
+		return key_event.pressed and not key_event.echo and (
+			key_event.physical_keycode in [KEY_ENTER, KEY_KP_ENTER]
+			or key_event.keycode in [KEY_ENTER, KEY_KP_ENTER]
+		)
+	if event is InputEventMouseButton:
+		var mouse_event := event as InputEventMouseButton
+		return mouse_event.pressed and mouse_event.button_index == MOUSE_BUTTON_LEFT
+	return false
 
 
 func _process(delta: float) -> void:
@@ -287,15 +316,23 @@ func _update_player_state() -> void:
 
 func _update_weapon_state() -> void:
 	var state: Dictionary = weapon.call(&"_mcp_state")
-	weapon_hud.call(&"set_weapon", String(state.get("equipped_id", &"ak74m")).replace("ak74m", "AK-74M").replace("saiga12", "SAIGA-12"), String(state.get("fire_mode", &"AUTO")))
-	var current: Dictionary = state.get("ak74m_state", {}) if state.get("equipped_id", &"ak74m") == &"ak74m" else state.get("saiga12_state", {})
-	weapon_hud.call(&"set_ammo", int(state.get("magazine", 0)), int(state.get("reserve", 0)), int(current.get("capacity", 0)))
+	var equipped_id := StringName(state.get("equipped_id", &"ak74m"))
+	var current: Dictionary = state.get("ak74m_state", {}) if equipped_id == &"ak74m" else state.get("saiga12_state", {})
+	var reload_progress := -1.0
 	if StringName(state.get("action_state", &"hip")) == &"reload":
 		var duration := float(current.get("empty_reload_seconds", 2.8) if state.get("reload_kind", &"tactical") == &"empty" else current.get("tactical_reload_seconds", 2.2))
-		var remaining := maxf(float(weapon.get("_action_until")) - Time.get_ticks_msec() / 1000.0, 0.0)
-		weapon_hud.call(&"set_reload_progress", 1.0 - remaining / maxf(duration, 0.01))
-	else:
-		weapon_hud.call(&"set_reload_progress", -1.0)
+		var remaining := maxf(float(weapon.get("_action_until")) - float(weapon.get("_combat_clock_seconds")), 0.0)
+		reload_progress = 1.0 - remaining / maxf(duration, 0.01)
+	weapon_hud.call(
+		&"set_authoritative_weapon_state",
+		equipped_id,
+		"AK-74M" if equipped_id == &"ak74m" else "SAIGA-12",
+		String(state.get("fire_mode", &"AUTO")),
+		int(state.get("magazine", 0)),
+		int(state.get("reserve", 0)),
+		int(current.get("capacity", 0)),
+		reload_progress,
+	)
 
 
 func _update_mission_state() -> void:
@@ -408,9 +445,14 @@ func _objective_title(point_id: StringName) -> String:
 func _on_mission_event(event: Dictionary) -> void:
 	var kind := StringName(event.get("kind", &""))
 	if kind == &"deployment_started":
-		_story_elapsed = 0.0
-		_story_active = true
-		narrative.visible = true
+		_begin_story_cues(DEPLOYMENT_STORY_CUES, String(event.get("event_id", "deployment")))
+	elif kind == &"capture_completed":
+		var payload: Dictionary = event.get("payload", {})
+		var objective_id := StringName(payload.get("objective_id", &""))
+		if objective_id == &"alpha":
+			_begin_story_cues(["Alpha is secure. Defusal key one is live — move to Bravo."], String(event.get("event_id", "alpha_handoff")))
+		elif objective_id == &"bravo":
+			_begin_story_cues(["Bravo is secure. Both keys are live — breach the Charlie rocket bay."], String(event.get("event_id", "bravo_handoff")))
 	var important := kind in COMBAT_FEED_ALLOWED_KINDS
 	if important:
 		_push_combat_row(_row_receipt(event))
@@ -590,32 +632,68 @@ func _row_receipt(event: Dictionary) -> Dictionary:
 func _update_story(delta: float) -> void:
 	if not _story_active:
 		return
+	if weapon != null and weapon.get("gameplay_input_enabled") == true:
+		weapon.call(&"set_gameplay_input_enabled", false)
 	_story_elapsed += delta
-	if _story_elapsed <= 6.0:
-		var count := int(floor(STORY_COPY.length() * _story_elapsed / 6.0))
-		narrative.text = _story_window(STORY_COPY.left(count))
-		narrative.modulate.a = 1.0
-	elif _story_elapsed <= 10.0:
-		narrative.text = _story_window(STORY_COPY)
-		narrative.modulate.a = 1.0
-	elif _story_elapsed <= 13.0:
-		narrative.text = _story_window(STORY_COPY)
-		narrative.modulate.a = 1.0 - (_story_elapsed - 10.0) / 3.0
-	else:
-		_story_active = false
-		narrative.visible = false
+	narrative.modulate.a = 1.0
 
 
-func _story_window(revealed: String) -> String:
-	var lines := revealed.split("\n", false)
-	var retained := 1 if _applied_ui_scale > 1.5 else 2
-	var start := maxi(lines.size() - retained, 0)
-	return "\n".join(lines.slice(start))
+func _begin_story_cues(cues: Array[String], event_id: String) -> void:
+	if cues.is_empty():
+		return
+	_story_cues = cues.duplicate()
+	_story_cue_index = 0
+	_story_event_id = event_id
+	_story_elapsed = 0.0
+	_story_active = true
+	_story_confirmation_source = &""
+	narrative.text = _story_cues[0]
+	narrative.visible = true
+	narrative.modulate.a = 1.0
+	_set_story_weapon_lock(true)
+
+
+func _advance_story_cue() -> void:
+	if not _story_active:
+		return
+	_story_advance_count += 1
+	_story_cue_index += 1
+	_story_elapsed = 0.0
+	if _story_cue_index < _story_cues.size():
+		narrative.text = _story_cues[_story_cue_index]
+		return
+	_story_active = false
+	narrative.visible = false
+	narrative.text = ""
+	_set_story_weapon_lock(false)
+
+
+func _set_story_weapon_lock(enabled: bool) -> void:
+	if _story_weapon_lock_active == enabled:
+		return
+	_story_weapon_lock_active = enabled
+	if weapon == null:
+		return
+	if enabled:
+		weapon.call(&"set_gameplay_input_enabled", false)
+	elif player != null and player.get("gameplay_input_enabled") == true:
+		weapon.call(&"set_gameplay_input_enabled", true)
 
 
 func _mcp_state() -> Dictionary:
 	return {
 		"hud_enabled": _hud_enabled,
+		"story_active": _story_active,
+		"story_elapsed": _story_elapsed,
+		"story_event_id": _story_event_id,
+		"story_cue_index": _story_cue_index,
+		"story_cue_count": _story_cues.size(),
+		"story_current_text": narrative.text,
+		"story_indefinite_dwell": _story_active,
+		"story_advance_count": _story_advance_count,
+		"story_confirmation_source": _story_confirmation_source,
+		"story_weapon_lock_active": _story_weapon_lock_active,
+		"story_minimum_font_px": 36,
 		"minimap_component": minimap.get_path(),
 		"vitals_component": vitals.get_path(),
 		"weapon_component": weapon_hud.get_path(),
@@ -633,8 +711,6 @@ func _mcp_state() -> Dictionary:
 			"presentation": &"compact_route_line_handoff",
 			"text": route_label.text,
 		},
-		"story_active": _story_active,
-		"story_elapsed": _story_elapsed,
 		"event_rows": _event_rows,
 		"combat_row_receipts": _event_row_receipts,
 		"combat_row_cleanup_receipts": _event_cleanup_receipts,

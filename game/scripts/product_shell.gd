@@ -418,6 +418,10 @@ func _input(event: InputEvent) -> void:
 		_tester_prepare_replay()
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed(&"tester_feedback_advance"):
+		_tester_advance_audio_stem()
+		get_viewport().set_input_as_handled()
+		return
 	var tester_audio_stem := _tester_audio_stem_for_event(event)
 	if not tester_audio_stem.is_empty():
 		_tester_prepare_audio_stem(tester_audio_stem)
@@ -463,7 +467,7 @@ func _is_physical_briefing_skip(event: InputEvent) -> bool:
 func _tester_audio_stem_for_event(event: InputEvent) -> StringName:
 	var actions := {
 		&"tester_feedback_component_report_prepare": &"component_report",
-		&"tester_feedback_adapter_report_prepare": &"bounded_adapter_report",
+		&"tester_feedback_adapter_report_prepare": &"product_adapter_report",
 		&"tester_feedback_enemy_report_prepare": &"enemy_report",
 		&"tester_feedback_miss_prepare": &"near_miss",
 		&"tester_feedback_concrete_prepare": &"concrete_impact",
@@ -492,6 +496,26 @@ func _tester_prepare_audio_stem(stem_id: StringName) -> void:
 	receipt["release_guard"] = prepared.get("release_guard", &"OS.is_debug_build")
 	receipt["reset_isolation"] = prepared.get("reset_isolation", {})
 	receipt["failure_reason"] = prepared.get("failure_reason", &"")
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_advance_audio_stem() -> void:
+	var receipt := _new_tester_setup_receipt(&"feedback_advance")
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var prepared: Dictionary = weapon.get("_last_tester_audio_receipt")
+	var stem_id := StringName(prepared.get("stem_id", &""))
+	var expected_generation := int(prepared.get("setup_generation", -1))
+	var advanced: Dictionary = weapon.call(&"tester_advance_audio_stem", stem_id, expected_generation)
+	receipt["feedback_advance"] = advanced
+	receipt["resolved"] = advanced.get("resolved", false)
+	receipt["accepted"] = advanced.get("accepted", false)
+	receipt["branch_id"] = advanced.get("branch_id", &"")
+	receipt["setup_generation"] = advanced.get("setup_generation", expected_generation)
+	receipt["release_guard"] = advanced.get("release_guard", &"OS.is_debug_build")
+	receipt["reset_isolation"] = advanced.get("reset_isolation", {})
+	receipt["failure_reason"] = advanced.get("failure_reason", &"")
 	_store_tester_setup_receipt(receipt)
 
 

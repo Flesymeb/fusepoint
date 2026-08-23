@@ -60,6 +60,7 @@ var _audio_cleanup_count := 0
 var _tester_feedback_generation := 0
 var _last_tester_feedback_receipt: Dictionary = {}
 var _tester_feedback_history: Array[Dictionary] = []
+var _tester_prepared_audio_spec: Dictionary = {}
 
 
 func _ready() -> void:
@@ -184,6 +185,7 @@ func reset_feedback(epoch := -1) -> void:
 	_culled_effect_count = 0
 	_local_impact_suppression_count = 0
 	_player_report_suppression_count = 0
+	_tester_prepared_audio_spec.clear()
 
 
 func snapshot() -> Dictionary:
@@ -730,8 +732,63 @@ func tester_prepare_audio_stem(stem_id: StringName, requested_generation := -1) 
 		return _store_tester_feedback_receipt(receipt)
 	reset_feedback(current_run_epoch)
 	var spec: Dictionary = stem_map[stem_id]
-	var identity := "run-%06d:tester-stem:%06d" % [current_run_epoch, generation]
-	_spawn_audio_cue(global_position, spec["stream"], spec["role"], spec["volume_db"], spec["pitch"], identity)
+	var stream := spec.get("stream") as AudioStream
+	_tester_prepared_audio_spec = {
+		"stem_id": stem_id,
+		"setup_generation": generation,
+		"stream": stream,
+		"role": spec.get("role", &""),
+		"volume_db": spec.get("volume_db", 0.0),
+		"pitch": spec.get("pitch", 1.0),
+	}
+	receipt.merge({
+		"resolved": stream != null,
+		"accepted": stream != null and _active_audio_voice_count() == 0,
+		"source_path": stream.resource_path if stream != null else "",
+		"owner_path": get_path(),
+		"role": spec.get("role", &""),
+		"branch_id": StringName("audio_stem:%s" % String(stem_id)),
+		"reset_isolation": {
+			"authoritative_shot_committed": false,
+			"presentation_only": true,
+			"active_voice_count": 0,
+			"voice_started": false,
+			"stable_until_advance": true,
+			"duplicate_cleanup_callback_count": _duplicate_cleanup_callback_count,
+		},
+		"failure_reason": &"" if stream != null else &"stream_unavailable",
+	}, true)
+	return _store_tester_feedback_receipt(receipt)
+
+
+func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) -> Dictionary:
+	var receipt := {
+		"fixture_id": "tester-feedback-%s-advance-%06d" % [String(stem_id), expected_generation],
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"stem_id": stem_id,
+		"setup_generation": expected_generation,
+		"release_guard": &"OS.is_debug_build",
+		"non_release": OS.is_debug_build(),
+		"run_epoch": current_run_epoch,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return _store_tester_feedback_receipt(receipt)
+	if StringName(_tester_prepared_audio_spec.get("stem_id", &"")) != stem_id or int(_tester_prepared_audio_spec.get("setup_generation", -1)) != expected_generation:
+		receipt["failure_reason"] = &"prepared_generation_mismatch"
+		return _store_tester_feedback_receipt(receipt)
+	var stream := _tester_prepared_audio_spec.get("stream") as AudioStream
+	var identity := "run-%06d:tester-stem:%06d" % [current_run_epoch, expected_generation]
+	_spawn_audio_cue(
+		global_position,
+		stream,
+		StringName(_tester_prepared_audio_spec.get("role", &"")),
+		float(_tester_prepared_audio_spec.get("volume_db", 0.0)),
+		float(_tester_prepared_audio_spec.get("pitch", 1.0)),
+		identity,
+	)
 	var latest: Dictionary = _audio_receipts.back() if not _audio_receipts.is_empty() else {}
 	receipt.merge({
 		"resolved": not latest.is_empty(),
@@ -740,6 +797,8 @@ func tester_prepare_audio_stem(stem_id: StringName, requested_generation := -1) 
 		"owner_path": latest.get("voice_path", ""),
 		"role": latest.get("role", &""),
 		"branch_id": StringName("audio_stem:%s" % String(stem_id)),
+		"onset_usec": latest.get("onset_usec", 0),
+		"onset_frame": latest.get("onset_frame", -1),
 		"reset_isolation": {
 			"authoritative_shot_committed": false,
 			"presentation_only": true,

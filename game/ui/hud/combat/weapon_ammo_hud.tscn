@@ -18,7 +18,7 @@ corner_radius_top_right = 1
 corner_radius_bottom_right = 1
 corner_radius_bottom_left = 1
 
-[node name="WeaponAmmoHUD" type="Control"]
+[node name="WeaponAmmoHUD" type="Control" groups=["mcp_watch"]]
 custom_minimum_size = Vector2(320, 108)
 layout_mode = 3
 anchors_preset = 8

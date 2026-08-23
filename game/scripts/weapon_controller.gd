@@ -8,9 +8,8 @@ const WEAPON_ORDER: Array[StringName] = [&"ak74m", &"saiga12"]
 const FIRE_MODE_SEMI := &"SEMI"
 const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
-const PRODUCT_SINGLE_REPORT: AudioStream = preload("res://assets/audio/combat/ak74_single_report_product.wav")
-const RETAINED_COMPONENT_SINGLE_REPORT: AudioStream = preload("res://systems/weapons/viewmodels/ak74/audio/sfx_fire_single.wav")
-const SINGLE_REPORT_MAX_SECONDS := 0.46
+const PLAYER_SINGLE_REPORT: AudioStream = preload("res://assets/audio/combat/player_rifle_single_report.wav")
+const SINGLE_REPORT_MAX_SECONDS := 0.232
 const AK74_PRODUCT_FRAME_OFFSET := Vector3(0.0, 0.12, 0.0)
 const AK74_PRODUCT_FRAME_SCALE := Vector3.ONE * 0.88
 
@@ -111,7 +110,6 @@ var _bounded_single_report_bound := false
 var _bounded_single_report_bytes := 0
 var _bounded_single_report_duration := 0.0
 var _tester_audio_generation := 0
-var _tester_audio_player: AudioStreamPlayer
 var _last_tester_audio_receipt: Dictionary = {}
 var _tester_audio_history: Array[Dictionary] = []
 
@@ -710,14 +708,17 @@ func _configure_component_feedback_boundary() -> void:
 
 func _configure_product_single_report_stream() -> void:
 	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
-	if single_player == null or PRODUCT_SINGLE_REPORT == null:
+	if single_player == null or PLAYER_SINGLE_REPORT == null:
 		return
-	_single_report_source_path = PRODUCT_SINGLE_REPORT.resource_path
-	single_player.stream = PRODUCT_SINGLE_REPORT
-	feedback.set("semi_fire_audio_seconds", SINGLE_REPORT_MAX_SECONDS)
+	# Keep the retained component node as the sole player-report voice while the
+	# product boundary supplies a dedicated, physically bounded source. The old
+	# adapter PCM derivative is not loaded or played by this controller.
+	_single_report_source_path = PLAYER_SINGLE_REPORT.resource_path
+	single_player.stream = PLAYER_SINGLE_REPORT
+	feedback.set("semi_fire_audio_seconds", PLAYER_SINGLE_REPORT.get_length())
 	_bounded_single_report_bound = true
 	_bounded_single_report_bytes = 0
-	_bounded_single_report_duration = PRODUCT_SINGLE_REPORT.get_length()
+	_bounded_single_report_duration = PLAYER_SINGLE_REPORT.get_length()
 
 
 func set_run_epoch(epoch: int, reset_transients := true) -> bool:
@@ -1162,27 +1163,21 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 		receipt["failure_reason"] = &"release_build_forbidden"
 		return _store_tester_audio_receipt(receipt)
 	_stop_tester_audio_fixture(&"new_prepare")
-	if stem_id == &"component_report" or stem_id == &"bounded_adapter_report":
-		var stream := RETAINED_COMPONENT_SINGLE_REPORT if stem_id == &"component_report" else PRODUCT_SINGLE_REPORT
-		if _tester_audio_player == null:
-			_tester_audio_player = AudioStreamPlayer.new()
-			_tester_audio_player.name = "TesterIsolatedReport"
-			_tester_audio_player.bus = &"Combat"
-			add_child(_tester_audio_player)
-		_tester_audio_player.stream = stream
-		_tester_audio_player.volume_db = -7.0
-		_tester_audio_player.play()
+	if stem_id == &"component_report" or stem_id == &"product_adapter_report":
+		var component_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
 		receipt.merge({
-			"resolved": true,
-			"accepted": _tester_audio_player.playing,
+			"resolved": component_player != null and component_player.stream != null,
+			"accepted": component_player != null and component_player.stream != null and not component_player.playing,
 			"branch_id": StringName("audio_stem:%s" % String(stem_id)),
-			"source_path": stream.resource_path,
-			"owner_path": _tester_audio_player.get_path(),
-			"duration_seconds": stream.get_length(),
-			"bounded_product_derivative": stem_id == &"bounded_adapter_report",
+			"source_path": component_player.stream.resource_path if component_player != null and component_player.stream != null else "",
+			"owner_path": component_player.get_path() if component_player != null else NodePath(),
+			"duration_seconds": component_player.stream.get_length() if component_player != null and component_player.stream != null else 0.0,
+			"bounded_product_derivative": false,
+			"retained_component_owner": true,
+			"prepared_silent": component_player == null or not component_player.playing,
 			"normal_fire_path_used": false,
-			"reset_isolation": {"authoritative_shot_committed": false, "diagnostic_owner_separate": true},
-			"failure_reason": &"" if _tester_audio_player.playing else &"playback_did_not_start",
+			"reset_isolation": {"authoritative_shot_committed": false, "diagnostic_owner_separate": false, "voice_started": false},
+			"failure_reason": &"" if component_player != null and component_player.stream != null else &"component_player_unavailable",
 		}, true)
 	else:
 		var delegated: Dictionary
@@ -1203,9 +1198,62 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 	return _store_tester_audio_receipt(receipt)
 
 
+func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) -> Dictionary:
+	var prepared := _last_tester_audio_receipt.duplicate(true)
+	var receipt := {
+		"fixture_id": "tester-audio-%s-advance-%06d" % [String(stem_id), expected_generation],
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"stem_id": stem_id,
+		"setup_generation": expected_generation,
+		"release_guard": &"OS.is_debug_build",
+		"non_release": OS.is_debug_build(),
+		"run_epoch": _run_epoch,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return _store_tester_audio_receipt(receipt)
+	if int(prepared.get("setup_generation", -1)) != expected_generation or StringName(prepared.get("stem_id", &"")) != stem_id or prepared.get("accepted", false) != true:
+		receipt["failure_reason"] = &"prepared_generation_mismatch"
+		return _store_tester_audio_receipt(receipt)
+	if stem_id == &"component_report" or stem_id == &"product_adapter_report":
+		var component_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
+		if component_player != null and component_player.stream != null:
+			component_player.play()
+			receipt.merge({
+				"resolved": true,
+				"accepted": component_player.playing,
+				"branch_id": prepared.get("branch_id", &""),
+				"source_path": component_player.stream.resource_path,
+				"owner_path": component_player.get_path(),
+				"onset_usec": Time.get_ticks_usec(),
+				"onset_frame": Engine.get_process_frames(),
+				"physical_eof_seconds": component_player.stream.get_length(),
+				"retained_component_owner": true,
+				"normal_player_report_owner_count": 1,
+				"reset_isolation": {"authoritative_shot_committed": false, "diagnostic_owner_separate": false},
+				"failure_reason": &"" if component_player.playing else &"playback_did_not_start",
+			}, true)
+	else:
+		var delegated: Dictionary = shot_feedback.tester_advance_audio_stem(stem_id, expected_generation)
+		receipt.merge({
+			"resolved": delegated.get("resolved", false),
+			"accepted": delegated.get("accepted", false),
+			"branch_id": delegated.get("branch_id", &""),
+			"source_path": delegated.get("source_path", ""),
+			"owner_path": delegated.get("owner_path", ""),
+			"delegated_feedback_receipt": delegated,
+			"reset_isolation": delegated.get("reset_isolation", {}),
+			"failure_reason": delegated.get("failure_reason", &""),
+		}, true)
+	return _store_tester_audio_receipt(receipt)
+
+
 func _stop_tester_audio_fixture(reason: StringName) -> void:
-	if _tester_audio_player != null:
-		_tester_audio_player.stop()
+	var component_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
+	if component_player != null:
+		component_player.stop()
 	if not _last_tester_audio_receipt.is_empty():
 		_last_tester_audio_receipt["stop_reason"] = reason
 		_last_tester_audio_receipt["stopped"] = true
@@ -1408,7 +1456,7 @@ func _record_report_request(receipt: Dictionary, playback_class: StringName, sus
 		"requested_playback_class": playback_class,
 		"sustained_report_authorized": sustained_authorized,
 		"physical_eof_seconds": _bounded_single_report_duration,
-		"physical_eof_owner": &"dedicated_resource_audio_server",
+			"physical_eof_owner": &"retained_component_fire_audio",
 		"single_player_playing": single_player.playing if single_player != null else false,
 		"auto_player_playing": auto_player.playing if auto_player != null else false,
 		"timestamp_seconds": _now(),
@@ -1484,6 +1532,7 @@ func _mcp_state() -> Dictionary:
 	return {
 		"run_epoch": _run_epoch,
 		"fire_scheduler_state": {
+			"fire_mode": weapon.get("fire_mode", FIRE_MODE_AUTO),
 			"press_generation": _active_fire_press_edge_id,
 			"shot_ordinal": _active_fire_press_shot_count,
 			"trigger_held": _trigger_held,
@@ -1501,6 +1550,26 @@ func _mcp_state() -> Dictionary:
 			"effect_cleanup_count": shot_feedback.snapshot().get("effect_cleanup_count", 0),
 			"duplicate_cleanup_callback_count": shot_feedback.snapshot().get("duplicate_cleanup_callback_count", 0),
 			"player_state": _action_state,
+			"single_report_source_path": _single_report_source_path,
+			"single_report_duration_seconds": _bounded_single_report_duration,
+			"single_report_component_owner": &"retained_component_fire_audio",
+			"product_pcm_prefix_derivative_used": false,
+			"tester_audio_summary": {
+				"stem_id": _last_tester_audio_receipt.get("stem_id", &""),
+				"setup_generation": _last_tester_audio_receipt.get("setup_generation", 0),
+				"resolved": _last_tester_audio_receipt.get("resolved", false),
+				"accepted": _last_tester_audio_receipt.get("accepted", false),
+				"prepared_silent": _last_tester_audio_receipt.get("prepared_silent", false),
+				"source_path": _last_tester_audio_receipt.get("source_path", ""),
+				"owner_path": _last_tester_audio_receipt.get("owner_path", NodePath()),
+				"onset_usec": _last_tester_audio_receipt.get("onset_usec", 0),
+				"physical_eof_seconds": _last_tester_audio_receipt.get("physical_eof_seconds", 0.0),
+				"failure_reason": _last_tester_audio_receipt.get("failure_reason", &""),
+			},
+			"recoil_phase": recoil.get("phase", &"unavailable"),
+			"recoil_recovery_complete": recoil.get("recovery_complete", true),
+			"recoil_position_error": recoil.get("baseline_position_error", 0.0),
+			"recoil_rotation_error_degrees": recoil.get("baseline_rotation_error_degrees", 0.0),
 		},
 		# Keep patrol-critical hold/release fields before large nested audit data so
 		# bounded runtime digests cannot truncate them away.
@@ -1515,12 +1584,13 @@ func _mcp_state() -> Dictionary:
 			"shot_id": _single_report_shot_id,
 			"deadline_seconds": _single_report_deadline,
 			"max_duration_seconds": SINGLE_REPORT_MAX_SECONDS,
-			"owner": &"dedicated_resource_audio_server",
+			"owner": &"retained_component_fire_audio",
 			"audio_server_bounded_stream": _bounded_single_report_bound,
 			"source_stream_path": _single_report_source_path,
 			"bounded_stream_bytes": _bounded_single_report_bytes,
 			"bounded_stream_duration_seconds": _bounded_single_report_duration,
-			"derivative_provenance": "res://assets/audio/combat/README_weapon_reports.md",
+			"source_provenance": "res://assets/audio/combat/player_rifle_single_report.source.json",
+			"product_pcm_prefix_derivative_used": false,
 		},
 		"tester_audio_generation": _tester_audio_generation,
 		"last_tester_audio_receipt": _last_tester_audio_receipt,
