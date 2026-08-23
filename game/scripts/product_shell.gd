@@ -361,6 +361,22 @@ func _input(event: InputEvent) -> void:
 		_tester_prepare_alpha_checkpoint()
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed(&"tester_encounter_alpha_prepare"):
+		_tester_prepare_encounter(&"alpha")
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_encounter_bravo_prepare"):
+		_tester_prepare_encounter(&"bravo")
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_encounter_charlie_prepare"):
+		_tester_prepare_encounter(&"charlie")
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_encounter_commit"):
+		_tester_commit_prepared_encounter()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed(&"tester_shell_death"):
 		_tester_prepare_shell_death()
 		get_viewport().set_input_as_handled()
@@ -432,6 +448,40 @@ func _tester_prepare_alpha_checkpoint() -> void:
 		"roster_restore_count": int(recovery.get("restored_actor_count", 0)),
 	}
 	receipt["failure_reason"] = &"" if receipt["accepted"] else &"recovery_transition_rejected"
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_prepare_encounter(region_id: StringName) -> void:
+	var receipt := _new_tester_setup_receipt(StringName("%s_encounter_prepare" % region_id))
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var mission_setup: Dictionary = mission.call(&"tester_prepare_encounter", region_id)
+	receipt["mission_setup"] = mission_setup
+	receipt["resolved"] = mission_setup.get("resolved", false) == true
+	receipt["accepted"] = mission_setup.get("accepted", false) == true
+	receipt["prepared_region"] = mission_setup.get("prepared_region", &"")
+	receipt["stable_actor_ids"] = mission_setup.get("stable_actor_ids", [])
+	receipt["reset_isolation"] = mission_setup.get("reset_isolation", {})
+	receipt["route_acceptance_claimed"] = false
+	receipt["failure_reason"] = mission_setup.get("failure_reason", &"")
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_commit_prepared_encounter() -> void:
+	var receipt := _new_tester_setup_receipt(&"encounter_commit")
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var mission_commit: Dictionary = mission.call(&"tester_commit_prepared_encounter")
+	receipt["mission_commit"] = mission_commit
+	receipt["resolved"] = mission_commit.get("resolved", false) == true
+	receipt["accepted"] = mission_commit.get("accepted", false) == true
+	receipt["reset_isolation"] = {
+		"timer_not_increased": mission_commit.get("timer_not_increased", false),
+		"route_acceptance_claimed": false,
+	}
+	receipt["failure_reason"] = mission_commit.get("failure_reason", &"")
 	_store_tester_setup_receipt(receipt)
 
 

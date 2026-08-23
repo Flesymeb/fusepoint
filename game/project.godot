@@ -170,6 +170,22 @@ tester_alpha_checkpoint={
 "deadzone": 0.5,
 "events": []
 }
+tester_encounter_alpha_prepare={
+"deadzone": 0.5,
+"events": []
+}
+tester_encounter_bravo_prepare={
+"deadzone": 0.5,
+"events": []
+}
+tester_encounter_charlie_prepare={
+"deadzone": 0.5,
+"events": []
+}
+tester_encounter_commit={
+"deadzone": 0.5,
+"events": []
+}
 tester_shell_death={
 "deadzone": 0.5,
 "events": []

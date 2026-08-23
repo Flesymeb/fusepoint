@@ -8,6 +8,8 @@ const WEAPON_ORDER: Array[StringName] = [&"ak74m", &"saiga12"]
 const FIRE_MODE_SEMI := &"SEMI"
 const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
+const AK74_PRODUCT_FRAME_OFFSET := Vector3(0.0, 0.12, 0.0)
+const AK74_PRODUCT_FRAME_SCALE := Vector3.ONE * 0.88
 
 @export_node_path("Camera3D") var camera_path: NodePath
 @export_node_path("Node3D") var viewmodel_path: NodePath
@@ -88,6 +90,8 @@ var _product_recoil_phase := &"settled"
 var _product_recoil_shot_serial := 0
 var _product_recoil_peak_serial := 0
 var _product_recoil_recovery_complete := true
+var _product_framing_position := Vector3.ZERO
+var _product_framing_scale := Vector3.ONE
 var _run_epoch := 0
 var _last_run_epoch_receipt: Dictionary = {}
 
@@ -110,6 +114,7 @@ func _ready() -> void:
 
 func _finish_ready() -> void:
 	await get_tree().process_frame
+	_apply_product_framing()
 	_capture_product_recoil_baseline(true)
 	_ready_for_combat = true
 	_sync_hud()
@@ -489,6 +494,7 @@ func _commit_reload() -> void:
 	_weapons[_equipped_id] = weapon
 	_reload_kind = &"none"
 	_action_state = &"ads" if _ads_held else &"hip"
+	_apply_product_framing()
 	_request_viewmodel_aim(_ads_held)
 	viewmodel.call(&"play_clip", &"idle")
 	weapon_state_changed.emit(_mcp_state())
@@ -547,8 +553,9 @@ func _equip_weapon(weapon_id: StringName) -> void:
 
 func _on_viewmodel_weapon_changed(weapon_id: StringName, _weapon_index: int) -> void:
 	_cancel_product_recoil()
-	_capture_product_recoil_baseline(true)
 	_equipped_id = weapon_id
+	_apply_product_framing()
+	_capture_product_recoil_baseline(true)
 	_pending_equipped_id = &""
 	_action_state = &"hip"
 	_ads_held = false
@@ -589,6 +596,7 @@ func _cancel_action(next_state: StringName) -> void:
 	_stop_weapon_feedback_only()
 	_cancel_product_recoil()
 	viewmodel.rotation_degrees = Vector3.ZERO
+	_apply_product_framing()
 	_request_viewmodel_aim(false, true)
 	_action_state = next_state
 
@@ -687,6 +695,21 @@ func _capture_product_recoil_baseline(force := false) -> bool:
 		_product_recoil_mount = mount
 		_product_recoil_baseline_position = mount.position
 		_product_recoil_baseline_rotation_degrees = mount.rotation_degrees
+	return true
+
+
+func _apply_product_framing() -> bool:
+	## Product-owned whole-package framing. The materialized profile, imported
+	## gun, hands, skeleton, meshes, animations and authored child transforms stay
+	## untouched; only their common ModelMount receives this additive crop offset.
+	var mount := viewmodel.get("model_mount") as Node3D
+	if mount == null:
+		return false
+	_product_framing_position = AK74_PRODUCT_FRAME_OFFSET if _equipped_id == &"ak74m" else Vector3.ZERO
+	_product_framing_scale = AK74_PRODUCT_FRAME_SCALE if _equipped_id == &"ak74m" else Vector3.ONE
+	mount.position = _product_framing_position
+	mount.rotation_degrees = Vector3.ZERO
+	mount.scale = _product_framing_scale
 	return true
 
 
@@ -824,6 +847,7 @@ func equip_loadout(weapon_id: StringName) -> bool:
 		return false
 	_equipped_id = weapon_id
 	_pending_equipped_id = &""
+	_apply_product_framing()
 	_capture_product_recoil_baseline(true)
 	weapon_state_changed.emit(_mcp_state())
 	return true
@@ -1069,6 +1093,10 @@ func _visible_rig_audit() -> Dictionary:
 	var right_hand := _runtime_bone_receipt(skeleton, ["hand_r", "right_hand"])
 	var rifle_socket := _runtime_bone_receipt(skeleton, ["rif_"])
 	var trigger_socket := _runtime_bone_receipt(skeleton, ["trigger"])
+	var left_hand_position: Vector3 = left_hand.get("skeleton_local_position", Vector3.ZERO)
+	var right_hand_position: Vector3 = right_hand.get("skeleton_local_position", Vector3.ZERO)
+	var rifle_position: Vector3 = rifle_socket.get("skeleton_local_position", Vector3.ZERO)
+	var trigger_position: Vector3 = trigger_socket.get("skeleton_local_position", Vector3.ZERO)
 	return {
 		"mesh_paths": mesh_paths,
 		"skeleton_paths": skeleton_paths,
@@ -1088,6 +1116,12 @@ func _visible_rig_audit() -> Dictionary:
 			"trigger_socket": trigger_socket,
 		},
 		"both_hands_bound": left_hand.get("bound", false) == true and right_hand.get("bound", false) == true,
+		"rig_contact_evidence": {
+			"source": &"runtime_skeleton_pose",
+			"synthetic_marker_used": false,
+			"support_hand_to_rifle_bone_distance": left_hand_position.distance_to(rifle_position) if left_hand.get("bound", false) and rifle_socket.get("bound", false) else -1.0,
+			"firing_hand_to_trigger_bone_distance": right_hand_position.distance_to(trigger_position) if right_hand.get("bound", false) and trigger_socket.get("bound", false) else -1.0,
+		},
 		"semantic_aliases": aliases,
 		"required_aliases_available": profile != null and profile.required_animations_available(animation_player),
 	}
@@ -1291,6 +1325,13 @@ func _mcp_state() -> Dictionary:
 		"recoil_baseline_position_error": recoil.get("baseline_position_error", 0.0),
 		"recoil_baseline_rotation_error_degrees": recoil.get("baseline_rotation_error_degrees", 0.0),
 		"recoil_recovery_complete": recoil.get("recovery_complete", true),
+		"product_framing": {
+			"owner": get_path(),
+			"whole_package_offset": _product_framing_position,
+			"whole_package_scale": _product_framing_scale,
+			"source_axis_untouched": true,
+			"profile_resource_untouched": true,
+		},
 		"fire_mode": weapon["fire_mode"],
 		"rounds_per_minute": weapon["rounds_per_minute"],
 		"magazine": weapon["magazine"],

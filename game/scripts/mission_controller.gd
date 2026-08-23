@@ -64,6 +64,9 @@ var run_epoch := 0
 var last_run_epoch_receipt: Dictionary = {}
 var tester_alpha_checkpoint_request_count := 0
 var last_tester_alpha_checkpoint_receipt: Dictionary = {}
+var tester_encounter_request_count := 0
+var last_tester_encounter_receipt: Dictionary = {}
+var tester_prepared_region := &""
 
 var _active_capture := &""
 var _active_bomb_stage := false
@@ -129,6 +132,7 @@ func _initialize_mission_state() -> void:
 	terminal_duplicate_submit_count = 0
 	terminal_event_id = ""
 	tester_countdown_zero_request_count = 0
+	tester_prepared_region = &""
 	elimination_count = 0
 	player_death_count = 0
 	last_result_snapshot.clear()
@@ -342,6 +346,134 @@ func tester_prepare_alpha_checkpoint() -> Dictionary:
 	return last_tester_alpha_checkpoint_receipt.duplicate(true)
 
 
+func tester_prepare_encounter(region_id: StringName) -> Dictionary:
+	## Non-release combat fixture. Prerequisites are committed through the same
+	## capture/checkpoint transaction as ordinary play; the requested region is
+	## left alive and active so observation and commit remain separate actions.
+	tester_encounter_request_count += 1
+	var setup_id := "tester-encounter-%s-%06d" % [region_id, tester_encounter_request_count]
+	var timer_before := remaining_time
+	var run_epoch_before := run_epoch
+	var frontier_before := _capture_frontier()
+	last_tester_encounter_receipt = {
+		"setup_id": setup_id,
+		"kind": &"encounter_prepare",
+		"requested_region": region_id,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"non_release": OS.is_debug_build(),
+		"run_epoch": run_epoch,
+		"route_acceptance_claimed": false,
+	}
+	if not OS.is_debug_build():
+		last_tester_encounter_receipt["failure_reason"] = &"release_build_forbidden"
+		return last_tester_encounter_receipt.duplicate(true)
+	if region_id not in [&"alpha", &"bravo", &"charlie"]:
+		last_tester_encounter_receipt["failure_reason"] = &"unknown_region"
+		return last_tester_encounter_receipt.duplicate(true)
+	if mission_state != &"active_gameplay" or deployment_snapshot.is_empty() or checkpoint_restore_in_progress or recovery_input_locked:
+		last_tester_encounter_receipt["failure_reason"] = &"authoritative_state_unavailable"
+		return last_tester_encounter_receipt.duplicate(true)
+	var prerequisite_commits: Array[StringName] = []
+	if region_id in [&"bravo", &"charlie"] and StringName((capture_points[&"alpha"] as Dictionary).get("state", &"")) != &"secured_aegis":
+		if not _complete_capture(&"alpha"):
+			_restore_frontier(frontier_before)
+			_sync_roster_after_frontier_restore()
+			last_tester_encounter_receipt["failure_reason"] = &"alpha_prerequisite_failed"
+			return last_tester_encounter_receipt.duplicate(true)
+		prerequisite_commits.append(&"alpha")
+	if region_id == &"charlie" and StringName((capture_points[&"bravo"] as Dictionary).get("state", &"")) != &"secured_aegis":
+		if not _complete_capture(&"bravo"):
+			_restore_frontier(frontier_before)
+			_sync_roster_after_frontier_restore()
+			last_tester_encounter_receipt["failure_reason"] = &"bravo_prerequisite_failed"
+			return last_tester_encounter_receipt.duplicate(true)
+		prerequisite_commits.append(&"bravo")
+	var progression: Dictionary = enemy_roster.call(&"sync_progression_for_checkpoint") if enemy_roster != null and enemy_roster.has_method(&"sync_progression_for_checkpoint") else {}
+	var roster_state: Dictionary = enemy_roster.call(&"_mcp_state") if enemy_roster != null and enemy_roster.has_method(&"_mcp_state") else {}
+	var expected_count := 3 if region_id == &"alpha" else 5 if region_id == &"bravo" else 10
+	var actor_ids: Array[String] = []
+	var distinct_roles := {}
+	var distinct_slots := {}
+	for actor: Dictionary in roster_state.get("actors", []):
+		if StringName(actor.get("region", &"")) != region_id:
+			continue
+		actor_ids.append(String(actor.get("id", "")))
+		distinct_roles[String(actor.get("role", ""))] = true
+		distinct_slots[String(actor.get("slot", actor.get("route_slot", "")))] = true
+	actor_ids.sort()
+	var accepted: bool = progression.get("accepted", false) == true and StringName(progression.get("expected_region", &"")) == region_id and int(progression.get("active_count", 0)) == expected_count and actor_ids.size() == expected_count
+	if not accepted:
+		_restore_frontier(frontier_before)
+		var rollback_progression := _sync_roster_after_frontier_restore()
+		last_tester_encounter_receipt.merge({
+			"resolved": true,
+			"failure_reason": &"encounter_progression_validation_failed",
+			"progression": progression,
+			"rollback_progression": rollback_progression,
+		}, true)
+		return last_tester_encounter_receipt.duplicate(true)
+	tester_prepared_region = region_id
+	last_tester_encounter_receipt.merge({
+		"resolved": true,
+		"accepted": true,
+		"prepared_region": region_id,
+		"prepared_count": expected_count,
+		"stable_actor_ids": actor_ids,
+		"distinct_role_count": distinct_roles.size(),
+		"distinct_slot_count": distinct_slots.size(),
+		"prerequisite_commits": prerequisite_commits,
+		"progression": progression,
+		"checkpoint_version": checkpoint_version,
+		"reset_isolation": {
+			"run_epoch_unchanged": run_epoch == run_epoch_before,
+			"timer_not_increased": remaining_time <= timer_before + 0.001,
+			"terminal_state_unchanged": terminal_commit_count == 0 and terminal_event_id.is_empty(),
+			"stable_identity_count": int(roster_state.get("stable_identity_count", 0)),
+			"route_acceptance_claimed": false,
+			"player_relocated": false,
+		},
+		"failure_reason": &"",
+	}, true)
+	_record_event(&"tester_encounter_prepared", last_tester_encounter_receipt.duplicate(true), false)
+	return last_tester_encounter_receipt.duplicate(true)
+
+
+func tester_commit_prepared_encounter() -> Dictionary:
+	var region_id := tester_prepared_region
+	var receipt := {
+		"setup_id": "tester-encounter-commit-%06d" % tester_encounter_request_count,
+		"kind": &"encounter_commit",
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"prepared_region": region_id,
+		"non_release": OS.is_debug_build(),
+		"route_acceptance_claimed": false,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if mission_state != &"active_gameplay" or region_id not in [&"alpha", &"bravo"]:
+		receipt["failure_reason"] = &"no_committable_prepared_capture"
+		return receipt
+	var checkpoint_before := checkpoint_version
+	var timer_before := remaining_time
+	var committed := _complete_capture(region_id)
+	receipt.merge({
+		"resolved": true,
+		"accepted": committed,
+		"checkpoint_before": checkpoint_before,
+		"checkpoint_after": checkpoint_version,
+		"timer_not_increased": remaining_time <= timer_before + 0.001,
+		"failure_reason": &"" if committed else &"authoritative_capture_commit_failed",
+	}, true)
+	if committed:
+		tester_prepared_region = &""
+	return receipt
+
+
 func _tester_alpha_checkpoint_transform(hostile_positions: Array) -> Dictionary:
 	var alpha_objective := get_node(alpha_path) as Node3D
 	var authored_anchor := alpha_objective.get_parent().get_node_or_null("ProductAnchors/Alpha") as Node3D
@@ -461,28 +593,52 @@ func report_enemy_event(event: Dictionary) -> void:
 	_record_event(StringName("enemy_%s" % kind), event, false)
 
 
-func _complete_capture(point_id: StringName) -> void:
+func _complete_capture(point_id: StringName) -> bool:
 	var point: Dictionary = capture_points[point_id]
 	if StringName(point["state"]) == &"secured_aegis":
-		return
+		return true
+	var frontier_before := _capture_frontier()
+	var key_was_committed := StringName(point["key_id"]) in committed_keys
+	var route_id := &"a_to_b" if point_id == &"alpha" else &"b_to_c"
+	var route_was_locked: bool = route_locks[route_id] == true
 	point["state"] = &"secured_aegis"
 	point["owner"] = &"aegis"
 	point["progress"] = 1.0
 	point["completion_commit_count"] = int(point["completion_commit_count"]) + 1
 	capture_points[point_id] = point
 	_active_capture = &""
-	_record_event(&"capture_completed", {"objective_id": point_id, "commit_count": point["completion_commit_count"]})
 	var key_id := StringName(point["key_id"])
 	if key_id not in committed_keys:
 		committed_keys.append(key_id)
-		_record_event(&"key_committed", {"objective_id": point_id, "key_id": key_id, "key_count": committed_keys.size()})
-	var route_id := &"a_to_b" if point_id == &"alpha" else &"b_to_c"
 	if route_locks[route_id] == true:
 		route_locks[route_id] = false
-		_record_event(&"route_unlocked", {"route_id": route_id, "objective_id": point_id})
 	if point_id == &"bravo":
 		bomb_state = &"accessible"
-	_commit_checkpoint(point_id)
+	var checkpoint_receipt := _commit_checkpoint(point_id)
+	if checkpoint_receipt.get("accepted", false) != true:
+		_restore_frontier(frontier_before)
+		var rollback_progression := _sync_roster_after_frontier_restore()
+		_record_event(&"checkpoint_rejected", {
+			"objective_id": point_id,
+			"reason": checkpoint_receipt.get("failure_reason", &"enemy_progression_not_ready"),
+			"progression": checkpoint_receipt.get("progression", {}),
+			"rollback_progression": rollback_progression,
+			"frontier_rolled_back": true,
+		})
+		return false
+	_record_event(&"capture_completed", {"objective_id": point_id, "commit_count": point["completion_commit_count"]})
+	if not key_was_committed:
+		_record_event(&"key_committed", {"objective_id": point_id, "key_id": key_id, "key_count": committed_keys.size()})
+	if route_was_locked:
+		_record_event(&"route_unlocked", {"route_id": route_id, "objective_id": point_id})
+	_record_event(&"checkpoint_committed", {
+		"objective_id": point_id,
+		"version": checkpoint_version,
+		"commit_count": checkpoint_commit_count,
+		"progression": checkpoint_receipt.get("progression", {}),
+		"timer_monotonic": checkpoint_receipt.get("timer_monotonic", false),
+	})
+	return true
 
 
 func _try_begin_bomb_stage() -> void:
@@ -673,22 +829,65 @@ func _commit_result_record(result: StringName) -> void:
 	last_result_snapshot = record
 
 
-func _commit_checkpoint(point_id: StringName) -> void:
+func _commit_checkpoint(point_id: StringName) -> Dictionary:
 	var next_version := 1 if point_id == &"alpha" else 2
 	if checkpoint_version >= next_version:
-		return
-	checkpoint_version = next_version
-	checkpoint_commit_count += 1
+		return {"accepted": false, "failure_reason": &"checkpoint_version_already_committed"}
+	var timer_before := remaining_time
 	var progression_receipt: Dictionary = enemy_roster.call(&"sync_progression_for_checkpoint") if enemy_roster != null and enemy_roster.has_method(&"sync_progression_for_checkpoint") else {}
 	if progression_receipt.get("accepted", false) != true:
+		return {"accepted": false, "failure_reason": &"enemy_progression_not_ready", "progression": progression_receipt}
+	checkpoint_version = next_version
+	checkpoint_commit_count += 1
+	var candidate_snapshot := _build_snapshot()
+	if not _valid_checkpoint_snapshot(candidate_snapshot):
 		checkpoint_version -= 1
 		checkpoint_commit_count -= 1
-		_record_event(&"checkpoint_rejected", {"objective_id": point_id, "reason": &"enemy_progression_not_ready", "progression": progression_receipt})
-		return
-	checkpoint_snapshot = _build_snapshot()
-	_record_event(&"checkpoint_committed", {
-		"objective_id": point_id, "version": checkpoint_version, "commit_count": checkpoint_commit_count, "progression": progression_receipt,
-	})
+		return {"accepted": false, "failure_reason": &"checkpoint_snapshot_invalid", "progression": progression_receipt}
+	checkpoint_snapshot = candidate_snapshot
+	return {
+		"accepted": true,
+		"progression": progression_receipt,
+		"version": checkpoint_version,
+		"commit_count": checkpoint_commit_count,
+		"timer_monotonic": remaining_time <= timer_before + 0.001,
+	}
+
+
+func _capture_frontier() -> Dictionary:
+	return {
+		"capture_points": capture_points.duplicate(true),
+		"committed_keys": committed_keys.duplicate(),
+		"route_locks": route_locks.duplicate(true),
+		"bomb_state": bomb_state,
+		"checkpoint_version": checkpoint_version,
+		"checkpoint_commit_count": checkpoint_commit_count,
+		"checkpoint_snapshot": checkpoint_snapshot.duplicate(true),
+		"active_capture": _active_capture,
+		"event_sequence": event_sequence,
+		"event_history": event_history.duplicate(true),
+		"last_event": last_event.duplicate(true),
+	}
+
+
+func _restore_frontier(frontier: Dictionary) -> void:
+	capture_points = (frontier.get("capture_points", {}) as Dictionary).duplicate(true)
+	committed_keys.assign(frontier.get("committed_keys", []))
+	route_locks = (frontier.get("route_locks", {}) as Dictionary).duplicate(true)
+	bomb_state = StringName(frontier.get("bomb_state", &"armed"))
+	checkpoint_version = int(frontier.get("checkpoint_version", 0))
+	checkpoint_commit_count = int(frontier.get("checkpoint_commit_count", 0))
+	checkpoint_snapshot = (frontier.get("checkpoint_snapshot", {}) as Dictionary).duplicate(true)
+	_active_capture = StringName(frontier.get("active_capture", &""))
+	event_sequence = int(frontier.get("event_sequence", event_sequence))
+	event_history.assign(frontier.get("event_history", []))
+	last_event = (frontier.get("last_event", {}) as Dictionary).duplicate(true)
+
+
+func _sync_roster_after_frontier_restore() -> Dictionary:
+	if enemy_roster == null or not enemy_roster.has_method(&"sync_progression_for_checkpoint"):
+		return {"accepted": false, "failure_reason": &"enemy_progression_unavailable"}
+	return enemy_roster.call(&"sync_progression_for_checkpoint")
 
 
 func request_recovery() -> bool:
@@ -1099,6 +1298,9 @@ func _mcp_state() -> Dictionary:
 		"tester_countdown_zero_request_count": tester_countdown_zero_request_count,
 		"tester_alpha_checkpoint_request_count": tester_alpha_checkpoint_request_count,
 		"last_tester_alpha_checkpoint_receipt": last_tester_alpha_checkpoint_receipt,
+		"tester_encounter_request_count": tester_encounter_request_count,
+		"tester_prepared_region": tester_prepared_region,
+		"last_tester_encounter_receipt": last_tester_encounter_receipt,
 		"elimination_count": elimination_count,
 		"player_death_count": player_death_count,
 		"last_result_snapshot": last_result_snapshot,
