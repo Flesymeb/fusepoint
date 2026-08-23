@@ -9,10 +9,11 @@ const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v3_priority_lanes"
 const COMBAT_ROW_LIFETIME_SECONDS := 6.0
 const COMBAT_ROW_LIMIT := 5
 const COMBAT_FEED_ALLOWED_KINDS: Array[StringName] = [
-	&"capture_started", &"capture_contested", &"capture_completed",
+	&"capture_started", &"capture_contested", &"capture_interrupted", &"capture_completed",
 	&"key_committed", &"route_unlocked", &"checkpoint_committed",
 	&"deployment_started", &"checkpoint_restored", &"weapon_hit",
-	&"enemy_died", &"terminal_submitted", &"player_death",
+	&"enemy_died", &"defusal_locked", &"defusal_started", &"defusal_interrupted",
+	&"defusal_completed", &"terminal_submitted", &"player_damage", &"player_death",
 ]
 
 @onready var root: Control = $Root
@@ -305,7 +306,8 @@ func _update_mission_state() -> void:
 	var points: Dictionary = mission.get("capture_points")
 	var alpha_marker := "◆" if StringName(points[&"alpha"]["state"]) == &"secured_aegis" else "◇"
 	var bravo_marker := "◆" if StringName(points[&"bravo"]["state"]) == &"secured_aegis" else "◇"
-	stage_label.text = "A %s CAPTURE      B %s CAPTURE      C [BOMB] • %s" % [alpha_marker, bravo_marker, String(mission.get("bomb_state")).replace("_", " ").to_upper()]
+	var completed_stages := clampi(int(mission.get("bomb_stage_index")), 0, 3)
+	stage_label.text = "A %s     B %s     C %d/3  •  %s" % [alpha_marker, bravo_marker, completed_stages, String(mission.get("bomb_state")).replace("_", " ").to_upper()]
 	var point_id := _current_objective_id()
 	var point_state: Dictionary = mission.call(&"objective_state_for", point_id)
 	var objective_node := arena.get_node(String(point_id).capitalize()) as Node3D
@@ -314,10 +316,37 @@ func _update_mission_state() -> void:
 	var contextual := bool(point_state.get("overlap", false)) or distance <= 12.0 or active_capture or bool(mission.get("_active_bomb_stage"))
 	objective_band.visible = contextual
 	if contextual:
-		objective_label.text = _objective_title(point_id)
-		objective_progress.value = float(point_state.get("progress", 0.0)) * 100.0
-		var threat_count := int(point_state.get("contest_enemy_count", 0))
-		objective_detail.text = "%s   •   %dm   •   THREATS %d" % [String(point_state.get("state", &"unknown")).replace("_", " ").to_upper(), int(distance), threat_count]
+		if point_id == &"charlie":
+			_update_bomb_interaction_band(point_state, distance)
+		else:
+			objective_label.text = _objective_title(point_id)
+			objective_progress.value = float(point_state.get("progress", 0.0)) * 100.0
+			var threat_count := int(point_state.get("contest_enemy_count", 0))
+			objective_detail.text = "%s   •   %dm   •   THREATS %d" % [String(point_state.get("state", &"unknown")).replace("_", " ").to_upper(), int(distance), threat_count]
+
+
+func _update_bomb_interaction_band(state: Dictionary, distance: float) -> void:
+	var completed := clampi(int(state.get("stage_index", 0)), 0, 3)
+	var bomb_state := StringName(state.get("state", &"armed"))
+	var legal: bool = state.get("legal", false) == true
+	var overlap: bool = state.get("overlap", false) == true
+	var active: bool = state.get("active", false) == true
+	var progress := clampf(float(state.get("progress", 0.0)), 0.0, 1.0)
+	var stage_name := String(state.get("stage_id", &"complete")).replace("_", " ").to_upper()
+	objective_label.text = "CHARLIE • DEFUSAL %d/3" % completed
+	objective_progress.value = 100.0 if bomb_state == &"defused" else progress * 100.0
+	if bomb_state == &"defused":
+		objective_detail.text = "DEVICE SAFE   •   ALL THREE STAGES LATCHED"
+	elif bomb_state == &"detonated":
+		objective_detail.text = "DETONATED   •   COMBAT LOCKED"
+	elif not legal:
+		objective_detail.text = "LOCKED   •   RECOVER TWO DEFUSAL KEYS"
+	elif active:
+		objective_detail.text = "%s   •   HOLD E   •   %d%%   •   %.1fs" % [stage_name, int(round(progress * 100.0)), float(state.get("eta_seconds", 0.0))]
+	elif overlap:
+		objective_detail.text = "%s   •   HOLD E TO BEGIN   •   %d/3 COMPLETE" % [stage_name, completed]
+	else:
+		objective_detail.text = "%s   •   APPROACH DEVICE   •   %dm" % [stage_name, int(distance)]
 
 
 func _update_navigation_state() -> void:
@@ -347,6 +376,19 @@ func _bravo_locked_handoff_active() -> bool:
 
 
 func _current_objective_id() -> StringName:
+	if arena != null and player != null:
+		var nearest_id := &""
+		var nearest_distance := INF
+		for candidate_id: StringName in [&"alpha", &"bravo", &"charlie"]:
+			var candidate := arena.get_node_or_null(String(candidate_id).capitalize()) as Node3D
+			if candidate == null:
+				continue
+			var candidate_distance := player.global_position.distance_to(candidate.global_position)
+			if candidate_distance <= 12.0 and candidate_distance < nearest_distance:
+				nearest_id = candidate_id
+				nearest_distance = candidate_distance
+		if not nearest_id.is_empty():
+			return nearest_id
 	var points: Dictionary = mission.get("capture_points")
 	if StringName(points[&"alpha"]["state"]) != &"secured_aegis":
 		return &"alpha"
@@ -369,7 +411,7 @@ func _on_mission_event(event: Dictionary) -> void:
 		_story_elapsed = 0.0
 		_story_active = true
 		narrative.visible = true
-	var important := kind in [&"deployment_started", &"capture_started", &"capture_contested", &"capture_completed", &"key_committed", &"route_unlocked", &"checkpoint_committed", &"checkpoint_restored", &"enemy_died", &"terminal_submitted"]
+	var important := kind in COMBAT_FEED_ALLOWED_KINDS
 	if important:
 		_push_combat_row(_row_receipt(event))
 

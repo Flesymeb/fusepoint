@@ -898,6 +898,36 @@ func restore_checkpoint_state(checkpoint_transform: Transform3D, checkpoint_heal
 	return _last_restore_receipt.duplicate(true)
 
 
+func tester_relocate_for_fixture(target_transform: Transform3D, fixture_id: StringName) -> Dictionary:
+	var receipt := {
+		"fixture_id": fixture_id,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	var validation := validate_recovery_destination(target_transform, [])
+	receipt["validation"] = validation
+	if validation.get("accepted", false) != true:
+		receipt["failure_reason"] = validation.get("failure_reason", &"destination_rejected")
+		return receipt
+	_restore_movement_state(target_transform, health)
+	receipt.merge({
+		"resolved": true,
+		"accepted": true,
+		"position": global_position,
+		"basis": global_basis,
+		"input_enabled": gameplay_input_enabled,
+		"mouse_captured": _mouse_captured,
+		"failure_reason": &"",
+	}, true)
+	return receipt
+
+
 func reset_transient_state_for_restore() -> void:
 	_damage_commits.clear()
 	_last_damage_event.clear()

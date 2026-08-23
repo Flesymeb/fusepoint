@@ -9,7 +9,7 @@ signal trace_spawned(event: Dictionary, effect: Node3D)
 signal impact_spawned(event: Dictionary, effect: Node3D)
 
 const AUDIO_RECEIPT_LIMIT := 64
-const SHOT_AUDIO: AudioStream = preload("res://systems/weapons/viewmodels/ak74/audio/sfx_fire_single.wav")
+const ENEMY_REPORT_AUDIO: AudioStream = preload("res://assets/audio/combat/enemy_rifle_single_report.wav")
 const CHARACTER_IMPACT_AUDIO: AudioStream = preload("res://assets/audio/combat/deathpunch.wav")
 const METAL_IMPACT_AUDIO: AudioStream = preload("res://assets/audio/combat/metal_twang.wav")
 const CONCRETE_IMPACT_AUDIO: AudioStream = preload("res://assets/audio/combat/hammer_fall.wav")
@@ -45,7 +45,7 @@ var _effect_cleanup_count := 0
 var _duplicate_cleanup_callback_count := 0
 var _invalidated_retirement_callback_count := 0
 var _effect_cleanup_history: Array[Dictionary] = []
-var _shot_audio: AudioStream = SHOT_AUDIO
+var _shot_audio: AudioStream = ENEMY_REPORT_AUDIO
 var _character_impact_audio: AudioStream = CHARACTER_IMPACT_AUDIO
 var _metal_impact_audio: AudioStream = METAL_IMPACT_AUDIO
 var _concrete_impact_audio: AudioStream = CONCRETE_IMPACT_AUDIO

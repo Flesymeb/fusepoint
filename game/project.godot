@@ -206,6 +206,14 @@ tester_terminal_failure_advance={
 "deadzone": 0.5,
 "events": []
 }
+tester_defusal_stage_prepare={
+"deadzone": 0.5,
+"events": []
+}
+tester_defusal_stage_advance={
+"deadzone": 0.5,
+"events": []
+}
 tester_shell_death={
 "deadzone": 0.5,
 "events": []

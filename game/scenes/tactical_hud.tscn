@@ -23,10 +23,10 @@ corner_radius_bottom_right = 2
 corner_radius_bottom_left = 2
 
 [sub_resource type="StyleBoxFlat" id="BandStyle"]
-bg_color = Color(0.012, 0.026, 0.032, 0.66)
+bg_color = Color(0.012, 0.026, 0.032, 0.22)
 border_width_top = 1
 border_width_bottom = 1
-border_color = Color(0.95, 0.68, 0.16, 0.55)
+border_color = Color(0.95, 0.68, 0.16, 0.66)
 
 [node name="TacticalHUD" type="CanvasLayer" groups=["mcp_watch", "tactical_hud"]]
 layer = 20

@@ -1,4 +1,4 @@
-[gd_scene load_steps=26 format=3]
+[gd_scene load_steps=29 format=3]
 
 [ext_resource type="PackedScene" path="res://systems/world/3d_fps_map/standoff_2/chicken_gun_standoff_2_arena.glb" id="1_map"]
 [ext_resource type="Script" path="res://scripts/arena_foundation.gd" id="2_foundation"]
@@ -7,6 +7,9 @@
 [ext_resource type="Script" path="res://scripts/bomb_objective.gd" id="5_bomb"]
 [ext_resource type="Shader" path="res://shaders/clouds.gdshader" id="6_cloud_shader"]
 [ext_resource type="Script" path="res://scripts/source_sun_flare.gd" id="7_sun_flare"]
+[ext_resource type="PackedScene" path="res://scenes/capture_device_alpha.tscn" id="8_alpha_device"]
+[ext_resource type="PackedScene" path="res://scenes/capture_device_bravo.tscn" id="9_bravo_device"]
+[ext_resource type="PackedScene" path="res://scenes/rocket_bomb_device.tscn" id="10_rocket_device"]
 
 [sub_resource type="ProceduralSkyMaterial" id="SkyMaterial_daylight"]
 sky_top_color = Color(0.184314, 0.454902, 0.776471, 1)
@@ -232,8 +235,13 @@ mission_controller_path = NodePath("../../MissionController")
 shape = SubResource("Shape_alpha")
 
 [node name="SurfaceMarker" type="MeshInstance3D" parent="Alpha"]
+visible = false
 position = Vector3(0, -1.16, 0)
 mesh = SubResource("Mesh_alpha_marker")
+
+[node name="DeviceRoot" parent="Alpha" instance=ExtResource("8_alpha_device")]
+position = Vector3(0, -1.2, 0)
+rotation_degrees = Vector3(0, 18, 0)
 
 [node name="ObjectiveLabel" type="Label3D" parent="Alpha"]
 position = Vector3(0, 1.65, 0)
@@ -260,8 +268,13 @@ mission_controller_path = NodePath("../../MissionController")
 shape = SubResource("Shape_bravo")
 
 [node name="SurfaceMarker" type="MeshInstance3D" parent="Bravo"]
+visible = false
 position = Vector3(0, -1.16, 0)
 mesh = SubResource("Mesh_bravo_marker")
+
+[node name="DeviceRoot" parent="Bravo" instance=ExtResource("9_bravo_device")]
+position = Vector3(0, -0.9153, 0)
+rotation_degrees = Vector3(0, -28, 0)
 
 [node name="ObjectiveLabel" type="Label3D" parent="Bravo"]
 position = Vector3(0, 1.65, 0)
@@ -287,12 +300,18 @@ mission_controller_path = NodePath("../../MissionController")
 shape = SubResource("Shape_charlie")
 
 [node name="InteractionRing" type="MeshInstance3D" parent="Charlie"]
+visible = false
 position = Vector3(0, -1.16, 0)
 mesh = SubResource("Mesh_charlie_ring")
 
 [node name="BombCore" type="MeshInstance3D" parent="Charlie"]
+visible = false
 position = Vector3(0, -0.82, 0)
 mesh = SubResource("Mesh_bomb")
+
+[node name="RocketBombAssembly" parent="Charlie" instance=ExtResource("10_rocket_device")]
+position = Vector3(0, -0.9153, 0)
+rotation_degrees = Vector3(0, 24, 0)
 
 [node name="ObjectiveLabel" type="Label3D" parent="Charlie"]
 position = Vector3(0, 1.65, 0)

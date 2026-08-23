@@ -1,0 +1,94 @@
+[gd_scene load_steps=15 format=3]
+
+[ext_resource type="PackedScene" path="res://assets/objectives/charlie_rocket.glb" id="1_source"]
+
+[sub_resource type="StandardMaterial3D" id="Material_cradle"]
+albedo_color = Color(0.075, 0.085, 0.082, 1)
+metallic = 0.82
+roughness = 0.3
+
+[sub_resource type="BoxMesh" id="Mesh_cradle_rail"]
+material = SubResource("Material_cradle")
+size = Vector3(0.16, 0.18, 3.4)
+
+[sub_resource type="BoxMesh" id="Mesh_cradle_cross"]
+material = SubResource("Material_cradle")
+size = Vector3(1.65, 0.18, 0.16)
+
+[sub_resource type="StandardMaterial3D" id="Material_module"]
+albedo_color = Color(0.12, 0.12, 0.105, 1)
+metallic = 0.66
+roughness = 0.27
+emission_enabled = true
+emission = Color(0.85, 0.055, 0.008, 1)
+emission_energy_multiplier = 2.2
+
+[sub_resource type="BoxMesh" id="Mesh_module"]
+material = SubResource("Material_module")
+size = Vector3(0.34, 0.22, 0.48)
+
+[sub_resource type="BoxMesh" id="Mesh_power_bus"]
+material = SubResource("Material_module")
+size = Vector3(0.78, 0.12, 0.22)
+
+[sub_resource type="BoxMesh" id="Mesh_detonator"]
+material = SubResource("Material_module")
+size = Vector3(0.26, 0.42, 0.26)
+
+[sub_resource type="BoxShape3D" id="Shape_device"]
+size = Vector3(1.8, 2.4, 3.6)
+
+[node name="RocketBombAssembly" type="Node3D" groups=["production_objective_device", "c_rocket_bomb_device"]]
+metadata/production_source = "sketchfab:a6b881c9b1674c6bb77240ae8b2b8696"
+metadata/license = "CC-BY-4.0"
+metadata/mechanism = "rocket_maintenance_explosive"
+
+[node name="SourceModel" parent="." instance=ExtResource("1_source")]
+position = Vector3(0, 0.65, 0)
+rotation_degrees = Vector3(90, 0, 0)
+scale = Vector3(10, 10, 10)
+
+[node name="MaintenanceCradle" type="Node3D" parent="."]
+
+[node name="LeftRail" type="MeshInstance3D" parent="MaintenanceCradle"]
+position = Vector3(-0.72, 0.12, 0)
+mesh = SubResource("Mesh_cradle_rail")
+
+[node name="RightRail" type="MeshInstance3D" parent="MaintenanceCradle"]
+position = Vector3(0.72, 0.12, 0)
+mesh = SubResource("Mesh_cradle_rail")
+
+[node name="FrontCross" type="MeshInstance3D" parent="MaintenanceCradle"]
+position = Vector3(0, 0.12, -1.55)
+mesh = SubResource("Mesh_cradle_cross")
+
+[node name="RearCross" type="MeshInstance3D" parent="MaintenanceCradle"]
+position = Vector3(0, 0.12, 1.55)
+mesh = SubResource("Mesh_cradle_cross")
+
+[node name="DiagnosisModule" type="MeshInstance3D" parent="."]
+position = Vector3(-0.72, 0.52, -0.78)
+mesh = SubResource("Mesh_module")
+
+[node name="PowerIsolationBus" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.48, 0.1)
+mesh = SubResource("Mesh_power_bus")
+
+[node name="DetonatorLock" type="MeshInstance3D" parent="."]
+position = Vector3(0.72, 0.58, 0.9)
+mesh = SubResource("Mesh_detonator")
+
+[node name="ArmedLight" type="OmniLight3D" parent="."]
+position = Vector3(0, 1.3, 0)
+light_color = Color(1, 0.08, 0.012, 1)
+light_energy = 2.1
+omni_range = 5.5
+shadow_enabled = false
+
+[node name="DeviceCollision" type="StaticBody3D" parent="."]
+collision_layer = 1
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="DeviceCollision"]
+position = Vector3(0, 1.2, 0)
+shape = SubResource("Shape_device")

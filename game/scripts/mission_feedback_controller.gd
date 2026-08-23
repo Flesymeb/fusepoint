@@ -133,45 +133,26 @@ func present_event(event: Dictionary) -> bool:
 		_stop_spatial_voices(&"terminal_submitted")
 		_archive_voice_receipts(&"terminal_submitted")
 	_remember_event(event_id)
-	if kind in HUD_EVENT_ROW_KINDS:
-		# TacticalHUD owns the one bounded right-side event lane. Retain this
-		# observer for mission lifecycle/audio ownership, but never create a second
-		# broad visual notice for the same authoritative event.
-		presented_event_count += 1
-		last_event = event.duplicate(true)
-		last_cue = {
-			"event_id": event_id,
-			"event_kind": kind,
-			"family": StringName(cue.get("family", &"route")),
-			"roles": [&"delegated_tactical_hud_event_row"],
-			"visual_owner": &"TacticalHUD/CombatFeed",
-			"visual_suppressed_here": true,
-			"concurrency": {"active": 0, "limit": 1, "culled_total": concurrency_cull_count},
-			"duplicate_count": duplicate_event_count,
-			"presentation_only": true,
-		}
-		mission_cue_presented.emit(last_cue.duplicate(true))
-		return true
-	if active_cue_count > 0:
-		concurrency_cull_count += 1
-		_clear_active_cue()
+	# TacticalHUD is the sole visible mission-event authority. This observer owns
+	# idempotency and any approved mission audio only; it never draws a competing
+	# center-screen notice for capture, route, defusal, warning, or terminal state.
+	_clear_active_cue()
 	presented_event_count += 1
 	var family := StringName(cue.get("family", &"route"))
 	_variant_use_counts[family] = int(_variant_use_counts.get(family, 0)) + 1
 	cue["event_id"] = event_id
-	_show_cue(cue)
+	_play_audio(family, int(cue.get("priority", 1)), event_id)
 	last_event = event.duplicate(true)
 	last_cue = {
 		"event_id": event_id,
 		"event_kind": kind,
 		"family": family,
-		"roles": cue.get("roles", []),
-		"badge": cue.get("badge", ""),
-		"title": cue.get("title", ""),
-		"detail": cue.get("detail", ""),
+		"roles": [&"delegated_tactical_hud_event_lane"],
+		"visual_owner": &"TacticalHUD",
+		"visual_suppressed_here": true,
 		"priority": cue.get("priority", 0),
 		"lifetime_seconds": cue.get("lifetime", default_cue_seconds),
-		"concurrency": {"active": active_cue_count, "limit": 1, "culled_total": concurrency_cull_count},
+		"concurrency": {"active": 0, "limit": 0, "culled_total": concurrency_cull_count},
 		"duplicate_count": duplicate_event_count,
 		"presentation_only": true,
 	}

@@ -1,0 +1,65 @@
+[gd_scene load_steps=10 format=3]
+
+[ext_resource type="PackedScene" path="res://assets/objectives/alpha_utility_box/scene.gltf" id="1_source"]
+
+[sub_resource type="StandardMaterial3D" id="Material_beacon"]
+albedo_color = Color(0.08, 0.16, 0.18, 1)
+metallic = 0.55
+roughness = 0.28
+emission_enabled = true
+emission = Color(0.9, 0.08, 0.02, 1)
+emission_energy_multiplier = 2.4
+
+[sub_resource type="BoxMesh" id="Mesh_beacon"]
+material = SubResource("Material_beacon")
+size = Vector3(0.62, 0.12, 0.16)
+
+[sub_resource type="BoxMesh" id="Mesh_lens"]
+material = SubResource("Material_beacon")
+size = Vector3(0.9, 0.08, 0.08)
+
+[sub_resource type="StandardMaterial3D" id="Material_frame"]
+albedo_color = Color(0.055, 0.07, 0.072, 1)
+metallic = 0.72
+roughness = 0.34
+
+[sub_resource type="BoxMesh" id="Mesh_guard"]
+material = SubResource("Material_frame")
+size = Vector3(1.4, 0.12, 0.72)
+
+[sub_resource type="BoxShape3D" id="Shape_device"]
+size = Vector3(1.35, 1.7, 0.8)
+
+[node name="DeviceRoot" type="Node3D" groups=["production_objective_device", "ab_capture_devices"]]
+metadata/production_source = "polyhaven:utility_box_01"
+metadata/license = "CC0-1.0"
+metadata/mechanism = "wiring_topology_uplink"
+
+[node name="SourceModel" parent="." instance=ExtResource("1_source")]
+
+[node name="GroundGuard" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.05, 0)
+mesh = SubResource("Mesh_guard")
+
+[node name="StateBeacon" type="MeshInstance3D" parent="."]
+position = Vector3(0, 1.72, 0)
+mesh = SubResource("Mesh_beacon")
+
+[node name="ProgressLens" type="MeshInstance3D" parent="."]
+position = Vector3(0, 1.18, -0.43)
+mesh = SubResource("Mesh_lens")
+
+[node name="DeviceLight" type="OmniLight3D" parent="."]
+position = Vector3(0, 1.55, -0.35)
+light_color = Color(1, 0.12, 0.025, 1)
+light_energy = 1.2
+omni_range = 3.2
+shadow_enabled = false
+
+[node name="DeviceCollision" type="StaticBody3D" parent="."]
+collision_layer = 1
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="DeviceCollision"]
+position = Vector3(0, 0.85, 0)
+shape = SubResource("Shape_device")

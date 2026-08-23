@@ -13,7 +13,13 @@ const NOTICE_RETICLE_CLEARANCE := Vector2(120.0, 96.0)
 @onready var mission_controller: Node = get_node(mission_controller_path)
 @onready var label: Label3D = get_node_or_null("ObjectiveLabel") as Label3D
 @onready var marker: MeshInstance3D = get_node_or_null("SurfaceMarker") as MeshInstance3D
+@onready var device_root: Node3D = get_node_or_null("DeviceRoot") as Node3D
+@onready var state_beacon: MeshInstance3D = get_node_or_null("DeviceRoot/StateBeacon") as MeshInstance3D
+@onready var progress_lens: MeshInstance3D = get_node_or_null("DeviceRoot/ProgressLens") as MeshInstance3D
+@onready var device_light: OmniLight3D = get_node_or_null("DeviceRoot/DeviceLight") as OmniLight3D
 var _marker_material: StandardMaterial3D
+var _beacon_material: StandardMaterial3D
+var _progress_material: StandardMaterial3D
 var _notice_budget: Dictionary = {}
 var _hud_handoff_visible := false
 
@@ -24,6 +30,10 @@ func _ready() -> void:
 	if marker != null and marker.get_active_material(0) is StandardMaterial3D:
 		_marker_material = marker.get_active_material(0).duplicate() as StandardMaterial3D
 		marker.material_override = _marker_material
+	if marker != null:
+		marker.visible = false
+	_beacon_material = _unique_material(state_beacon)
+	_progress_material = _unique_material(progress_lens)
 
 
 func _process(_delta: float) -> void:
@@ -35,6 +45,39 @@ func _process(_delta: float) -> void:
 	if _marker_material != null:
 		_marker_material.albedo_color = Color(0.04, 0.72, 0.86, 0.26) if state.get("legal", false) == true else Color(0.92, 0.12, 0.04, 0.24)
 		_marker_material.emission = Color(0.01, 0.36, 0.5) if state.get("legal", false) == true else Color(0.5, 0.025, 0.005)
+	_update_device_presentation(state)
+
+
+func _unique_material(mesh: MeshInstance3D) -> StandardMaterial3D:
+	if mesh == null or not mesh.get_active_material(0) is StandardMaterial3D:
+		return null
+	var material := mesh.get_active_material(0).duplicate() as StandardMaterial3D
+	mesh.material_override = material
+	return material
+
+
+func _update_device_presentation(state: Dictionary) -> void:
+	var point_state := StringName(state.get("state", &"held_rift"))
+	var progress := clampf(float(state.get("progress", 0.0)), 0.0, 1.0)
+	var color := Color(0.92, 0.055, 0.012)
+	match point_state:
+		&"capturing_aegis": color = Color(0.02, 0.72, 0.92)
+		&"contested": color = Color(1.0, 0.52, 0.035)
+		&"recapturing_rift": color = Color(0.95, 0.19, 0.02)
+		&"secured_aegis": color = Color(0.04, 0.92, 0.68)
+	var pulse := 0.82 + sin(Time.get_ticks_msec() * 0.012) * 0.18 if point_state == &"contested" else 1.0
+	for material in [_beacon_material, _progress_material]:
+		if material == null:
+			continue
+		var state_material := material as StandardMaterial3D
+		state_material.albedo_color = Color(color.r * 0.32, color.g * 0.32, color.b * 0.32, 1.0)
+		state_material.emission = color
+		state_material.emission_energy_multiplier = 1.65 * pulse
+	if progress_lens != null:
+		progress_lens.scale.x = maxf(progress, 0.08) if point_state in [&"capturing_aegis", &"contested", &"recapturing_rift"] else 1.0
+	if device_light != null:
+		device_light.light_color = color
+		device_light.light_energy = (1.2 if point_state in [&"capturing_aegis", &"contested"] else 0.42) * pulse
 
 
 func _on_body_entered(body: Node3D) -> void:
@@ -123,4 +166,14 @@ func _mcp_state() -> Dictionary:
 	state["authority_path"] = mission_controller.get_path()
 	state["player_position"] = player.global_position
 	state["notice_budget"] = notice_budget_state()
+	state["authored_device"] = {
+		"device_path": String(device_root.get_path()) if device_root != null else "",
+		"production_source": String(device_root.get_meta(&"production_source", "")) if device_root != null else "",
+		"mechanism": StringName(device_root.get_meta(&"mechanism", &"")) if device_root != null else &"",
+		"state_beacon_path": String(state_beacon.get_path()) if state_beacon != null else "",
+		"collision_footprint_path": String(get_node("DeviceRoot/DeviceCollision/CollisionShape3D").get_path()) if has_node("DeviceRoot/DeviceCollision/CollisionShape3D") else "",
+		"primitive_surface_ring_visible": marker.visible if marker != null else false,
+		"presentation_state": StringName(state.get("state", &"held_rift")),
+		"presentation_progress": float(state.get("progress", 0.0)),
+	}
 	return state

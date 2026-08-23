@@ -161,7 +161,7 @@ theme_override_colors/font_color = Color(0.9, 0.75, 0.38, 0.96)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 0.82)
 theme_override_constants/outline_size = 4
 theme_override_font_sizes/font_size = 18
-text = "KESTREL RIDGE  /  DETONATION WINDOW 05:00"
+text = "KESTREL RIDGE  •  DETONATION WINDOW 05:00"
 
 [node name="Menu" type="VBoxContainer" parent="Root/Pages/TitlePage"]
 offset_left = 78.0
@@ -313,7 +313,7 @@ theme_override_colors/font_color = Color(0.72, 0.88, 0.88, 0.94)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 0.78)
 theme_override_constants/outline_size = 3
 theme_override_font_sizes/font_size = 17
-text = "MISSION ROUTE  /  NORTH UP\n\nA   FOUNDRY GATE\n     TOPOLOGY KEY\n     ↓\nB   CRANE YARD\n     ISOLATION KEY\n     ↓\nC   ROCKET MAINTENANCE\n\nC IS DEFUSAL — NOT CAPTURE\nCOUNTDOWN NEVER GRANTS TIME"
+text = "MISSION ROUTE  •  NORTH UP\n\nA   FOUNDRY GATE\n     TOPOLOGY KEY\n     ↓\nB   CRANE YARD\n     ISOLATION KEY\n     ↓\nC   ROCKET MAINTENANCE\n\nC IS DEFUSAL — NOT CAPTURE\nCOUNTDOWN NEVER GRANTS TIME"
 horizontal_alignment = 0
 vertical_alignment = 1
 
@@ -353,7 +353,7 @@ theme_override_fonts/font = ExtResource("5_semibold")
 theme_override_colors/font_outline_color = Color(0, 0, 0, 0.9)
 theme_override_constants/outline_size = 6
 theme_override_font_sizes/font_size = 38
-text = "INSERTION  /  KESTREL RIDGE"
+text = "INSERTION  •  KESTREL RIDGE"
 [node name="Detail" type="Label" parent="Root/Pages/LoadingPage"]
 offset_left = 74.0
 offset_top = 512.0
@@ -419,7 +419,7 @@ theme_override_fonts/font = ExtResource("5_semibold")
 theme_override_colors/font_outline_color = Color(0, 0, 0, 0.86)
 theme_override_constants/outline_size = 6
 theme_override_font_sizes/font_size = 42
-text = "FIELD BRIEFING  /  11:40 LOCAL"
+text = "FIELD BRIEFING  •  11:40 LOCAL"
 [node name="Copy" type="Label" parent="Root/Pages/BriefingPage"]
 offset_left = 72.0
 offset_top = 454.0
@@ -599,7 +599,7 @@ max_value = 95.0
 value = 76.0
 [node name="SubtitleLabel" type="Label" parent="Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings"]
 layout_mode = 2
-text = "SUBTITLE SIZE / OUTLINE"
+text = "SUBTITLE SIZE  •  OUTLINE"
 [node name="SubtitleSize" type="HSlider" parent="Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings"]
 custom_minimum_size = Vector2(280, 34)
 layout_mode = 2
@@ -626,7 +626,7 @@ text = "ADS INPUT"
 [node name="HoldADS" type="CheckButton" parent="Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings"]
 layout_mode = 2
 button_pressed = true
-text = "HOLD / TOGGLE"
+text = "HOLD  •  TOGGLE"
 [node name="Actions" type="HBoxContainer" parent="Root/Pages/SettingsPage/SafeArea/Layout"]
 z_index = 2
 custom_minimum_size = Vector2(0, 60)

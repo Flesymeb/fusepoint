@@ -73,6 +73,9 @@ var tester_terminal_setup_generation := 0
 var tester_prepared_terminal_branch := &""
 var last_tester_terminal_receipt: Dictionary = {}
 var tester_terminal_history: Array[Dictionary] = []
+var tester_defusal_setup_generation := 0
+var tester_prepared_defusal_stage := -1
+var last_tester_defusal_receipt: Dictionary = {}
 
 var _active_capture := &""
 var _active_bomb_stage := false
@@ -143,6 +146,9 @@ func _initialize_mission_state() -> void:
 	tester_prepared_terminal_branch = &""
 	last_tester_terminal_receipt.clear()
 	tester_terminal_history.clear()
+	tester_defusal_setup_generation = 0
+	tester_prepared_defusal_stage = -1
+	last_tester_defusal_receipt.clear()
 	elimination_count = 0
 	player_death_count = 0
 	last_result_snapshot.clear()
@@ -242,7 +248,7 @@ func _physics_process(delta: float) -> void:
 	if mission_state != &"active_gameplay":
 		_sync_presentation()
 		return
-	if OS.is_debug_build() and not tester_prepared_terminal_branch.is_empty():
+	if OS.is_debug_build() and (not tester_prepared_terminal_branch.is_empty() or tester_prepared_defusal_stage >= 0):
 		# Terminal preparation is intentionally stable: ordinary mission time and
 		# capture/defusal progression resume only through the matching advance action.
 		_sync_presentation()
@@ -309,6 +315,7 @@ func tester_prepare_terminal_branch(requested_branch: StringName) -> Dictionary:
 	var run_epoch_before := run_epoch
 	var terminal_count_before := terminal_commit_count
 	var timer_before := remaining_time
+	var frontier_before := _fixture_progression_frontier()
 	var preparation_calls: Array[Dictionary] = []
 	tester_prepared_terminal_branch = requested_branch
 	if requested_branch == &"success":
@@ -338,11 +345,20 @@ func tester_prepare_terminal_branch(requested_branch: StringName) -> Dictionary:
 	else:
 		remaining_time = minf(remaining_time, 1.0)
 		preparation_calls.append({"api": &"authoritative_countdown_owner", "remaining_time": remaining_time, "held_for_advance": true})
+	var presentation_relocation := _tester_terminal_presentation_relocation(requested_branch)
+	if presentation_relocation.get("accepted", false) != true:
+		_restore_frontier(frontier_before)
+		tester_prepared_terminal_branch = &""
+		receipt["preparation_calls"] = preparation_calls
+		receipt["presentation_relocation"] = presentation_relocation
+		receipt["failure_reason"] = &"terminal_presentation_destination_rejected"
+		return _store_terminal_tester_receipt(receipt)
 	receipt.merge({
 		"resolved": true,
 		"accepted": mission_state == &"active_gameplay" and terminal_commit_count == terminal_count_before and tester_prepared_terminal_branch == requested_branch,
 		"prepared_branch": tester_prepared_terminal_branch,
 		"preparation_calls": preparation_calls,
+		"presentation_relocation": presentation_relocation,
 		"mission_snapshot": {
 			"remaining_time": remaining_time,
 			"capture_points": capture_points.duplicate(true),
@@ -364,6 +380,149 @@ func tester_prepare_terminal_branch(requested_branch: StringName) -> Dictionary:
 	}, true)
 	_record_event(&"tester_terminal_prepared", receipt.duplicate(true), false)
 	return _store_terminal_tester_receipt(receipt)
+
+
+func _tester_terminal_presentation_relocation(branch_id: StringName) -> Dictionary:
+	var charlie_objective := get_node(charlie_path) as Node3D
+	var authored_anchor := charlie_objective.get_parent().get_node_or_null("ProductAnchors/Charlie") as Node3D
+	if authored_anchor == null:
+		return {"accepted": false, "failure_reason": &"authored_charlie_anchor_missing"}
+	var candidates: Array[Vector3] = [
+		Vector3(-9.0, 0.615, -2.0),
+		Vector3(9.0, 0.615, -3.0),
+		Vector3(5.0, 0.615, 2.0),
+		Vector3(-4.0, 0.615, -8.0),
+	]
+	var attempts: Array[Dictionary] = []
+	for offset: Vector3 in candidates:
+		var destination := authored_anchor.global_position + offset
+		var direction := authored_anchor.global_position - destination
+		var yaw := atan2(-direction.x, -direction.z)
+		var target := Transform3D(Basis(Vector3.UP, yaw), destination)
+		var relocation: Dictionary = player.call(&"tester_relocate_for_fixture", target, StringName("terminal:%s" % String(branch_id)))
+		attempts.append({"offset": offset, "relocation": relocation})
+		if relocation.get("accepted", false) == true:
+			return {
+				"accepted": true,
+				"anchor_path": authored_anchor.get_path(),
+				"offset": offset,
+				"relocation": relocation,
+				"attempt_count": attempts.size(),
+				"camera_subject": charlie_objective.get_path(),
+			}
+	return {"accepted": false, "failure_reason": &"no_clear_charlie_presentation_offset", "attempts": attempts}
+
+
+func tester_prepare_defusal_stage() -> Dictionary:
+	tester_defusal_setup_generation += 1
+	var generation := tester_defusal_setup_generation
+	var receipt := {
+		"setup_id": "tester-defusal-%06d" % generation,
+		"branch_id": StringName("defusal:%d" % bomb_stage_index),
+		"setup_generation": generation,
+		"kind": &"defusal_stage_prepare",
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
+		"route_acceptance_claimed": false,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		last_tester_defusal_receipt = receipt
+		return receipt.duplicate(true)
+	if mission_state != &"active_gameplay" or terminal_commit_count > 0 or tester_prepared_defusal_stage >= 0 or not tester_prepared_terminal_branch.is_empty():
+		receipt["failure_reason"] = &"authoritative_state_unavailable"
+		last_tester_defusal_receipt = receipt
+		return receipt.duplicate(true)
+	var frontier_before := _fixture_progression_frontier()
+	for point_id: StringName in POINT_IDS:
+		if StringName((capture_points[point_id] as Dictionary).get("state", &"")) != &"secured_aegis":
+			_complete_capture(point_id)
+	if bomb_stage_index >= BOMB_STAGE_IDS.size():
+		_restore_frontier(frontier_before)
+		receipt["failure_reason"] = &"all_stages_complete"
+		last_tester_defusal_receipt = receipt
+		return receipt.duplicate(true)
+	var roster_hold: Dictionary = enemy_roster.call(&"tester_prepare_region_presence", &"charlie", generation) if enemy_roster != null and enemy_roster.has_method(&"tester_prepare_region_presence") else {}
+	if roster_hold.get("accepted", false) != true:
+		_restore_frontier(frontier_before)
+		receipt["roster_hold"] = roster_hold
+		receipt["failure_reason"] = &"charlie_stable_roster_unavailable"
+		last_tester_defusal_receipt = receipt
+		return receipt.duplicate(true)
+	var relocation := _tester_terminal_presentation_relocation(&"defusal")
+	if relocation.get("accepted", false) != true:
+		_restore_frontier(frontier_before)
+		receipt["relocation"] = relocation
+		receipt["failure_reason"] = &"defusal_presentation_destination_rejected"
+		last_tester_defusal_receipt = receipt
+		return receipt.duplicate(true)
+	tester_prepared_defusal_stage = bomb_stage_index
+	_active_bomb_stage = true
+	bomb_stage_progress = 0.0
+	bomb_state = [&"diagnosing", &"isolating_power", &"removing_detonator"][bomb_stage_index]
+	receipt.merge({
+		"resolved": true,
+		"accepted": true,
+		"stage_id": BOMB_STAGE_IDS[bomb_stage_index],
+		"stage_index": bomb_stage_index,
+		"completed_stage_count": bomb_stage_index,
+		"relocation": relocation,
+		"roster_hold": roster_hold,
+		"reset_isolation": {
+			"terminal_uncommitted": terminal_commit_count == 0,
+			"stable_until_matching_advance": true,
+			"route_acceptance_claimed": false,
+		},
+		"failure_reason": &"",
+	}, true)
+	last_tester_defusal_receipt = receipt.duplicate(true)
+	_record_event(&"tester_defusal_stage_prepared", receipt.duplicate(true), false)
+	return receipt.duplicate(true)
+
+
+func tester_advance_defusal_stage(expected_generation: int) -> Dictionary:
+	var receipt := {
+		"setup_id": "tester-defusal-advance-%06d" % tester_defusal_setup_generation,
+		"branch_id": StringName("defusal:%d" % tester_prepared_defusal_stage),
+		"setup_generation": tester_defusal_setup_generation,
+		"kind": &"defusal_stage_advance",
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
+		"route_acceptance_claimed": false,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+	elif expected_generation != tester_defusal_setup_generation:
+		receipt["failure_reason"] = &"stale_setup_generation"
+	elif tester_prepared_defusal_stage != bomb_stage_index or not _active_bomb_stage:
+		receipt["failure_reason"] = &"mismatched_prepared_stage"
+	else:
+		var completed_stage := BOMB_STAGE_IDS[bomb_stage_index]
+		bomb_stage_progress = 1.0
+		tester_prepared_defusal_stage = -1
+		_complete_bomb_stage()
+		receipt.merge({
+			"resolved": true,
+			"accepted": true,
+			"stage_id": completed_stage,
+			"completed_stage_count": bomb_stage_index,
+			"terminal_commit_count": terminal_commit_count,
+			"reset_isolation": {
+				"prepared_fixture_cleared": tester_prepared_defusal_stage < 0,
+				"completed_stage_latched": completed_stage in BOMB_STAGE_IDS and bomb_completed[BOMB_STAGE_IDS.find(completed_stage)],
+				"route_acceptance_claimed": false,
+			},
+			"failure_reason": &"",
+		}, true)
+	last_tester_defusal_receipt = receipt.duplicate(true)
+	_record_event(&"tester_defusal_stage_advanced", receipt.duplicate(true), false)
+	return receipt.duplicate(true)
 
 
 func tester_advance_terminal_branch(expected_branch: StringName, expected_generation: int) -> Dictionary:
@@ -502,6 +661,7 @@ func tester_prepare_alpha_checkpoint() -> Dictionary:
 		"accepted": true,
 		"checkpoint_version": checkpoint_version,
 		"checkpoint_commit_count": checkpoint_commit_count,
+		"checkpoint_snapshot": checkpoint_snapshot.duplicate(true),
 		"key_commit_count": committed_keys.size(),
 		"enemy_presence": presence_receipt,
 		"destination": target_receipt,
@@ -1131,8 +1291,11 @@ func _fixture_progression_frontier() -> Dictionary:
 		"bomb_stage_index": bomb_stage_index,
 		"bomb_stage_progress": bomb_stage_progress,
 		"bomb_completed": bomb_completed.duplicate(),
+		"active_bomb_stage": _active_bomb_stage,
+		"remaining_time": remaining_time,
 		"checkpoint_version": checkpoint_version,
 		"checkpoint_commit_count": checkpoint_commit_count,
+		"checkpoint_snapshot": checkpoint_snapshot.duplicate(true),
 		"active_capture": _active_capture,
 	}
 
@@ -1142,6 +1305,11 @@ func _restore_frontier(frontier: Dictionary) -> void:
 	committed_keys.assign(frontier.get("committed_keys", []))
 	route_locks = (frontier.get("route_locks", {}) as Dictionary).duplicate(true)
 	bomb_state = StringName(frontier.get("bomb_state", &"armed"))
+	bomb_stage_index = int(frontier.get("bomb_stage_index", bomb_stage_index))
+	bomb_stage_progress = float(frontier.get("bomb_stage_progress", bomb_stage_progress))
+	bomb_completed.assign(frontier.get("bomb_completed", bomb_completed))
+	_active_bomb_stage = frontier.get("active_bomb_stage", _active_bomb_stage) == true
+	remaining_time = float(frontier.get("remaining_time", remaining_time))
 	checkpoint_version = int(frontier.get("checkpoint_version", 0))
 	checkpoint_commit_count = int(frontier.get("checkpoint_commit_count", 0))
 	checkpoint_snapshot = (frontier.get("checkpoint_snapshot", {}) as Dictionary).duplicate(true)
@@ -1441,6 +1609,11 @@ func objective_state_for(objective_id: StringName) -> Dictionary:
 		"objective_id": &"charlie",
 		"state": bomb_state,
 		"stage_id": BOMB_STAGE_IDS[bomb_stage_index] if bomb_stage_index < BOMB_STAGE_IDS.size() else &"complete",
+		"stage_index": bomb_stage_index,
+		"stage_count": BOMB_STAGE_IDS.size(),
+		"completed": bomb_completed.duplicate(),
+		"active": _active_bomb_stage,
+		"eta_seconds": maxf(_bomb_stage_duration(bomb_stage_index) * (1.0 - bomb_stage_progress), 0.0) if bomb_stage_index < BOMB_STAGE_IDS.size() else 0.0,
 		"progress": bomb_stage_progress,
 		"legal": route_locks[&"b_to_c"] != true,
 		"overlap": overlaps[&"charlie"],
