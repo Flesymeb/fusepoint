@@ -554,7 +554,7 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 	var actor_ids: Array[String] = []
 	var distinct_roles := {}
 	var distinct_slots := {}
-	for actor: Dictionary in roster_state.get("actors", []):
+	for actor: Dictionary in roster_state.get("actor_index", []):
 		if StringName(actor.get("region", &"")) != region_id:
 			continue
 		actor_ids.append(String(actor.get("id", "")))
@@ -652,6 +652,12 @@ func tester_commit_prepared_encounter(expected_region: StringName = &"", expecte
 		"failure_reason": &"" if committed else &"authoritative_capture_commit_failed",
 	}, true)
 	if committed:
+		var roster_release: Dictionary = enemy_roster.call(
+			&"tester_release_prepared_region",
+			region_id,
+			tester_prepared_region_generation,
+		) if enemy_roster != null and enemy_roster.has_method(&"tester_release_prepared_region") else {}
+		receipt["roster_preparation_release"] = roster_release
 		tester_prepared_region = &""
 		tester_prepared_region_generation = 0
 	return receipt

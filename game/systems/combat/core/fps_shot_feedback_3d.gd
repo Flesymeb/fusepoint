@@ -36,7 +36,14 @@ var lifetime_duplicate_event_count := 0
 var _hitscan: FPSHitscanWeapon
 var _observed_ids: Dictionary = {}
 var _observed_order: Array[String] = []
-var _active_effects: Array[Node3D] = []
+var _active_effect_tokens: Array[int] = []
+var _effect_records: Dictionary = {}
+var _retired_effect_tokens: Dictionary = {}
+var _retired_effect_order: Array[int] = []
+var _effect_serial := 0
+var _effect_cleanup_count := 0
+var _duplicate_cleanup_callback_count := 0
+var _effect_cleanup_history: Array[Dictionary] = []
 var _shot_audio: AudioStream = SHOT_AUDIO
 var _character_impact_audio: AudioStream = CHARACTER_IMPACT_AUDIO
 var _metal_impact_audio: AudioStream = METAL_IMPACT_AUDIO
@@ -147,10 +154,10 @@ func begin_run_epoch(epoch: int) -> void:
 func reset_feedback(epoch := -1) -> void:
 	if epoch >= 0:
 		current_run_epoch = epoch
-	for effect: Node3D in _active_effects.duplicate():
-		if is_instance_valid(effect):
-			effect.queue_free()
-	_active_effects.clear()
+	for token: int in _active_effect_tokens.duplicate():
+		_retire_effect_token(token, &"reset")
+	_active_effect_tokens.clear()
+	_effect_records.clear()
 	active_effect_count = 0
 	_observed_ids.clear()
 	_observed_order.clear()
@@ -188,6 +195,10 @@ func snapshot() -> Dictionary:
 		"active_audio_voice_count": _active_audio_voice_count(),
 		"decoded_audio_voice_count": _decoded_audio_voice_count(),
 		"audio_cleanup_count": _audio_cleanup_count,
+		"effect_cleanup_count": _effect_cleanup_count,
+		"duplicate_cleanup_callback_count": _duplicate_cleanup_callback_count,
+		"effect_cleanup_history": _effect_cleanup_history.duplicate(true),
+		"retirement_authority": &"monotonic_effect_token",
 		"variant_roles": [&"compact_muzzle", &"bounded_tracer", &"near_miss", &"character_hit", &"metal_sparks", &"concrete_dust"],
 	}
 
@@ -227,12 +238,12 @@ func _spawn_muzzle(position: Vector3, direction: Vector3, color: Color, event: D
 	flame.basis = _basis_from_up(direction)
 	flame.position = direction.normalized() * 0.07
 	root.add_child(flame)
-	_add_effect(root, &"compact_muzzle", muzzle_seconds)
+	var retirement_token := _add_effect(root, &"compact_muzzle", muzzle_seconds)
 	root.global_position = position + direction.normalized() * 0.035
 	root.scale = Vector3.ONE * 0.7
 	var tween := root.create_tween().set_parallel(true)
 	tween.tween_property(root, "scale", Vector3.ONE, muzzle_seconds)
-	tween.finished.connect(_retire_effect.bind(root))
+	tween.finished.connect(_retire_effect_token.bind(retirement_token, &"tween_finished"))
 
 
 func _spawn_tracer(from: Vector3, to: Vector3, color: Color, event: Dictionary, result: StringName, variant_index: int) -> void:
@@ -254,14 +265,14 @@ func _spawn_tracer(from: Vector3, to: Vector3, color: Color, event: Dictionary, 
 	mesh.radial_segments = 6
 	mesh.material = _energy_material(color, 2.4 if result == &"miss" else 3.2)
 	tracer.mesh = mesh
-	_add_effect(tracer, role, tracer_seconds)
+	var retirement_token := _add_effect(tracer, role, tracer_seconds)
 	tracer.global_position = segment_from.lerp(segment_to, 0.5)
 	tracer.global_basis = _basis_from_up(direction)
 	trace_spawned.emit(event, tracer)
 	var tween := tracer.create_tween().set_parallel(true)
 	tween.tween_property(tracer, "transparency", 1.0, tracer_seconds)
 	tween.tween_property(tracer, "scale", Vector3(0.25, 0.35, 0.25), tracer_seconds)
-	tween.finished.connect(_retire_effect.bind(tracer))
+	tween.finished.connect(_retire_effect_token.bind(retirement_token, &"tween_finished"))
 
 
 func _spawn_impact(position: Vector3, event: Dictionary) -> void:
@@ -276,7 +287,7 @@ func _spawn_impact(position: Vector3, event: Dictionary) -> void:
 		_:
 			_build_concrete_impact(root)
 	var impact_role := &"character_hit" if surface == &"character" else &"metal_sparks" if surface == &"metal" else &"concrete_dust"
-	_add_effect(root, impact_role, impact_seconds)
+	var retirement_token := _add_effect(root, impact_role, impact_seconds)
 	root.global_position = position
 	var normal: Vector3 = event.get("hit_normal", Vector3.UP)
 	if not normal.is_zero_approx():
@@ -288,7 +299,7 @@ func _spawn_impact(position: Vector3, event: Dictionary) -> void:
 	var target_scale := 0.82 if surface == &"character" else 1.05
 	tween.tween_property(root, "scale", Vector3.ONE * target_scale, impact_seconds).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tween.tween_property(root, "rotation:y", root.rotation.y + 0.8, impact_seconds)
-	tween.finished.connect(_retire_effect.bind(root))
+	tween.finished.connect(_retire_effect_token.bind(retirement_token, &"tween_finished"))
 
 
 func _build_character_impact(root: Node3D) -> void:
@@ -369,9 +380,9 @@ func _spawn_audio_cue(position: Vector3, stream: AudioStream, role: StringName, 
 	player.pitch_scale = pitch
 	audio_root.add_child(player)
 	var lifetime := clampf(stream.get_length(), 0.3, 2.2)
-	_add_effect(audio_root, role, lifetime)
-	audio_root.global_position = position
 	audio_root.set_meta(&"audio_receipt_id", receipt_id)
+	var retirement_token := _add_effect(audio_root, role, lifetime)
+	audio_root.global_position = position
 	player.play()
 	_append_audio_receipt({
 		"receipt_id": receipt_id,
@@ -396,13 +407,13 @@ func _spawn_audio_cue(position: Vector3, stream: AudioStream, role: StringName, 
 		"cleanup_observed": false,
 		"cleanup_usec": 0,
 	})
-	get_tree().create_timer(lifetime).timeout.connect(_retire_effect.bind(audio_root))
+	get_tree().create_timer(lifetime).timeout.connect(_retire_effect_token.bind(retirement_token, &"timer_timeout"))
 
 
-func _add_effect(effect: Node3D, role: StringName, lifetime: float) -> void:
-	while _active_effects.size() >= max_active_effects:
+func _add_effect(effect: Node3D, role: StringName, lifetime: float) -> int:
+	while _active_effect_tokens.size() >= max_active_effects:
 		_culled_effect_count += 1
-		_retire_effect(_active_effects.front())
+		_retire_effect_token(_active_effect_tokens.front(), &"capacity_cull")
 	var target := get_tree().current_scene
 	if target == null:
 		target = get_tree().root
@@ -411,18 +422,56 @@ func _add_effect(effect: Node3D, role: StringName, lifetime: float) -> void:
 	effect.set_meta(&"presenter_id", get_instance_id())
 	effect.set_meta(&"effect_role", role)
 	effect.set_meta(&"effect_lifetime_seconds", lifetime)
-	_active_effects.append(effect)
-	active_effect_count = _active_effects.size()
+	_effect_serial += 1
+	var retirement_token := _effect_serial
+	effect.set_meta(&"retirement_token", retirement_token)
+	_effect_records[retirement_token] = {
+		"instance_id": effect.get_instance_id(),
+		"role": role,
+		"receipt_id": String(effect.get_meta(&"audio_receipt_id", "")),
+		"created_usec": Time.get_ticks_usec(),
+		"run_epoch": current_run_epoch,
+	}
+	_active_effect_tokens.append(retirement_token)
+	active_effect_count = _active_effect_tokens.size()
+	return retirement_token
 
 
-func _retire_effect(effect: Node3D) -> void:
-	_active_effects.erase(effect)
-	active_effect_count = _active_effects.size()
-	if is_instance_valid(effect):
-		var receipt_id := String(effect.get_meta(&"audio_receipt_id", ""))
-		if not receipt_id.is_empty():
-			_mark_audio_cleanup(receipt_id)
-		effect.queue_free()
+func _retire_effect_token(retirement_token: int, reason: StringName = &"completion") -> bool:
+	# Completion callbacks bind only an integer identity, never a Node3D that may
+	# have been queue_freed by capacity culling, restore, or lifecycle reset.
+	# A late timer/tween completion therefore becomes a harmless duplicate token.
+	if not _effect_records.has(retirement_token):
+		_duplicate_cleanup_callback_count += 1
+		return false
+	var record: Dictionary = _effect_records.get(retirement_token, {})
+	_effect_records.erase(retirement_token)
+	_active_effect_tokens.erase(retirement_token)
+	active_effect_count = _active_effect_tokens.size()
+	var receipt_id := String(record.get("receipt_id", ""))
+	if not receipt_id.is_empty():
+		_mark_audio_cleanup(receipt_id)
+	var instance_id := int(record.get("instance_id", 0))
+	if instance_id > 0 and is_instance_id_valid(instance_id):
+		var instance := instance_from_id(instance_id)
+		if instance is Node:
+			(instance as Node).queue_free()
+	_effect_cleanup_count += 1
+	_retired_effect_tokens[retirement_token] = true
+	_retired_effect_order.append(retirement_token)
+	while _retired_effect_order.size() > event_cache_limit * 2:
+		_retired_effect_tokens.erase(_retired_effect_order.pop_front())
+	_effect_cleanup_history.append({
+		"retirement_token": retirement_token,
+		"role": record.get("role", &"unknown"),
+		"run_epoch": record.get("run_epoch", current_run_epoch),
+		"reason": reason,
+		"cleanup_usec": Time.get_ticks_usec(),
+		"cleanup_count_for_identity": 1,
+	})
+	while _effect_cleanup_history.size() > event_cache_limit:
+		_effect_cleanup_history.pop_front()
+	return true
 
 
 func _append_audio_receipt(receipt: Dictionary) -> void:
@@ -435,6 +484,8 @@ func _mark_audio_cleanup(receipt_id: String) -> void:
 	for index in range(_audio_receipts.size() - 1, -1, -1):
 		if String(_audio_receipts[index].get("receipt_id", "")) != receipt_id:
 			continue
+		if _audio_receipts[index].get("cleanup_observed", false) == true:
+			return
 		_audio_receipts[index]["cleanup_observed"] = true
 		_audio_receipts[index]["cleanup_usec"] = Time.get_ticks_usec()
 		_audio_receipts[index]["voice_lifetime_usec"] = maxi(int(_audio_receipts[index]["cleanup_usec"]) - int(_audio_receipts[index]["onset_usec"]), 0)
@@ -444,8 +495,9 @@ func _mark_audio_cleanup(receipt_id: String) -> void:
 
 func _active_audio_voice_count() -> int:
 	var count := 0
-	for effect: Node3D in _active_effects:
-		if is_instance_valid(effect) and not String(effect.get_meta(&"audio_receipt_id", "")).is_empty():
+	for retirement_token: int in _active_effect_tokens:
+		var record: Dictionary = _effect_records.get(retirement_token, {})
+		if not String(record.get("receipt_id", "")).is_empty():
 			count += 1
 	return count
 
@@ -464,10 +516,16 @@ func _safe_receipt_id(receipt_id: String) -> String:
 
 func _active_effect_snapshot() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	for effect: Node3D in _active_effects:
-		if not is_instance_valid(effect):
+	for retirement_token: int in _active_effect_tokens:
+		var record: Dictionary = _effect_records.get(retirement_token, {})
+		var instance_id := int(record.get("instance_id", 0))
+		if instance_id <= 0 or not is_instance_id_valid(instance_id):
+			continue
+		var effect := instance_from_id(instance_id) as Node3D
+		if effect == null:
 			continue
 		result.append({
+			"retirement_token": retirement_token,
 			"name": effect.name,
 			"role": StringName(effect.get_meta(&"effect_role", &"unknown")),
 			"lifetime_seconds": float(effect.get_meta(&"effect_lifetime_seconds", 0.0)),

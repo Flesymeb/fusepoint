@@ -289,6 +289,14 @@ func reload() -> void:
 	set_motion_state(MotionState.RELOAD)
 
 
+func reload_for(authoritative_seconds: float) -> void:
+	# Magazine authority owns the presentation lifetime. Imported pose/clip data
+	# remains untouched; the product adapter keeps the reload semantic active
+	# until the combat controller's bounded reload window completes.
+	set_motion_state(MotionState.RELOAD, false, true)
+	_rifle_action_duration = maxf(authoritative_seconds, 0.05)
+
+
 func set_locomotion_state(state: StringName) -> void:
 	match state:
 		&"idle": idle()
@@ -571,6 +579,9 @@ func get_component_state() -> Dictionary:
 		),
 		"rifle_semantic_procedural": current_state in [MotionState.AIM, MotionState.FIRE, MotionState.RELOAD],
 		"rifle_action_progress": clampf(_rifle_action_elapsed / maxf(_rifle_action_duration, 0.001), 0.0, 1.0) if _rifle_action_duration > 0.0 else 0.0,
+		"rifle_action_duration_seconds": _rifle_action_duration,
+		"rifle_action_elapsed_seconds": _rifle_action_elapsed,
+		"reload_lifetime_authority": &"combat_magazine_window",
 		"animation_position_seconds": animation_position,
 		"animation_length_seconds": animation_length,
 		"animation_normalized_time": clampf(animation_position / animation_length, 0.0, 1.0) if animation_length > 0.0 else 0.0,

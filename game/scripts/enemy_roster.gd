@@ -11,6 +11,8 @@ const RESERVATION_CLEARANCE := 0.6
 const MIN_RESERVATION_SEPARATION := ACTOR_CAPSULE_RADIUS * 2.0 + RESERVATION_CLEARANCE
 const RESERVATION_RING_RADII := [1.5, 2.25, 3.0, 4.0, 5.5, 7.0, 9.0]
 const RESERVATION_ANGLE_STEPS := 16
+const ACTOR_PAGE_LIMIT := 10
+const QUALIFICATION_PAGE_LIMIT := 6
 const ROSTER := [
 	{"id":"rift-a-01","region":"alpha","role":"defender","slot":"alpha_core","route_pressure":false,"offset":Vector3(-1,0,-1)},
 	{"id":"rift-a-02","region":"alpha","role":"approach","slot":"alpha_west_lane","route_pressure":true,"offset":Vector3(-8,0,5)},
@@ -70,6 +72,8 @@ var last_run_epoch_receipt: Dictionary = {}
 var tester_setup_request_count := 0
 var last_tester_setup_receipt: Dictionary = {}
 var tester_setup_history: Array[Dictionary] = []
+var _tester_prepared_region: StringName = &""
+var _tester_prepared_generation := 0
 
 @onready var player: Node3D = get_node(player_path) as Node3D
 @onready var mission_controller: Node = get_node(mission_controller_path)
@@ -101,7 +105,7 @@ func _ready() -> void:
 
 
 func _process(_delta: float) -> void:
-	if roster_initialized and not restore_in_progress:
+	if roster_initialized and not restore_in_progress and _tester_prepared_region.is_empty():
 		_update_region_activation()
 
 
@@ -122,6 +126,8 @@ func set_run_epoch(epoch: int, reset_transients := true) -> bool:
 	var previous_epoch := run_epoch
 	run_epoch = epoch
 	if run_epoch > previous_epoch:
+		_tester_prepared_region = &""
+		_tester_prepared_generation = 0
 		_roster_event_sequence = 0
 		qualification_event_sequence = 0
 		qualification_run_id = "encounter-run-%06d" % run_epoch
@@ -515,6 +521,9 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 		"reset_isolation": reset_isolation,
 		"failure_reason": &"" if accepted else &"region_presence_validation_failed",
 	}, true)
+	if accepted:
+		_tester_prepared_region = region_id
+		_tester_prepared_generation = setup_generation
 	_store_tester_setup_receipt()
 	_commit_roster_event(&"tester_region_presence_resolved", last_tester_setup_receipt.duplicate(true))
 	return last_tester_setup_receipt.duplicate(true)
@@ -545,6 +554,8 @@ func begin_restore_epoch() -> int:
 	if restore_in_progress or not roster_initialized:
 		return -1
 	restore_epoch += 1
+	_tester_prepared_region = &""
+	_tester_prepared_generation = 0
 	restore_in_progress = true
 	restore_applied_actor_count = 0
 	last_restore_receipt.clear()
@@ -780,14 +791,23 @@ func _summary() -> Dictionary:
 	var route_pressure_counts := {&"alpha": 0, &"bravo": 0, &"charlie": 0}
 	var active_count := 0
 	var alive_count := 0
-	var actor_states: Array[Dictionary] = []
+	var actor_index: Array[Dictionary] = []
 	for enemy: FusepointEnemyAgent in enemies.values():
 		region_counts[enemy.region_id] += 1
 		if enemy.route_pressure:
 			route_pressure_counts[enemy.region_id] += 1
 		active_count += 1 if enemy.mission_active else 0
 		alive_count += 1 if enemy.is_alive() else 0
-		actor_states.append(enemy.authoritative_snapshot())
+		actor_index.append({
+			"id": enemy.stable_id,
+			"region": enemy.region_id,
+			"role": enemy.tactical_role,
+			"route_slot": enemy.route_slot,
+			"active": enemy.mission_active,
+			"alive": enemy.is_alive(),
+		})
+	actor_index.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return String(a.get("id", "")) < String(b.get("id", "")))
+	var active_actor_page := combat_actor_page(_active_region(), 0, ACTOR_PAGE_LIMIT)
 	return {
 		"run_epoch": run_epoch,
 		"last_run_epoch_receipt": last_run_epoch_receipt,
@@ -805,6 +825,8 @@ func _summary() -> Dictionary:
 			"stable_actor_ids": last_tester_setup_receipt.get("stable_actor_ids", []),
 			"reset_isolation": last_tester_setup_receipt.get("reset_isolation", {}),
 			"route_acceptance_claimed": false,
+			"pinned_region": _tester_prepared_region,
+			"pinned_generation": _tester_prepared_generation,
 		},
 		"last_tester_setup_receipt": last_tester_setup_receipt,
 		"tester_setup_history": tester_setup_history,
@@ -831,7 +853,14 @@ func _summary() -> Dictionary:
 		"reservation_required_separation": MIN_RESERVATION_SEPARATION,
 		"reservation_minimum_distance": reservation_minimum_distance,
 		"unique_slot_count": _unique_slot_count(),
-		"actors": actor_states,
+		"actor_index": actor_index,
+		"actors": active_actor_page.get("items", []),
+		"actor_page": active_actor_page,
+		"actor_page_contract": {
+			"method": &"combat_actor_page",
+			"default_limit": ACTOR_PAGE_LIMIT,
+			"stable_identity_count": enemies.size(),
+		},
 		"progression_receipt_count": progression_receipts.size(),
 		"progression_receipts": progression_receipts,
 		"qualification_run_id": qualification.get("run_id", ""),
@@ -840,8 +869,112 @@ func _summary() -> Dictionary:
 		"qualification_complete_actor_count": qualification.get("complete_actor_count", 0),
 		"qualification_region_milestone_count": qualification_region_milestones.size(),
 		"qualification_ledger": qualification,
+		"qualification_page_contract": {
+			"method": &"qualification_actor_page",
+			"default_limit": QUALIFICATION_PAGE_LIMIT,
+			"total": qualification_actors.size(),
+		},
 		"last_event": roster_events.back() if not roster_events.is_empty() else {},
 		"diagnostic_mode": diagnostic_mode,
+}
+
+
+func tester_release_prepared_region(expected_region: StringName, expected_generation: int) -> Dictionary:
+	var receipt := {
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"expected_region": expected_region,
+		"expected_generation": expected_generation,
+		"prepared_region": _tester_prepared_region,
+		"prepared_generation": _tester_prepared_generation,
+		"release_guard": &"OS.is_debug_build",
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if expected_region != _tester_prepared_region or expected_generation != _tester_prepared_generation:
+		receipt["failure_reason"] = &"prepared_generation_mismatch"
+		return receipt
+	_tester_prepared_region = &""
+	_tester_prepared_generation = 0
+	receipt.merge({"resolved": true, "accepted": true, "failure_reason": &""}, true)
+	return receipt
+
+
+func combat_actor_page(region_id: StringName = &"", offset := 0, limit := ACTOR_PAGE_LIMIT) -> Dictionary:
+	var ids: Array[StringName] = []
+	for actor_id: StringName in enemies:
+		var enemy := enemies.get(actor_id) as FusepointEnemyAgent
+		if enemy != null and (region_id.is_empty() or enemy.region_id == region_id):
+			ids.append(actor_id)
+	ids.sort_custom(func(a: StringName, b: StringName) -> bool: return String(a) < String(b))
+	var bounded_offset := clampi(offset, 0, ids.size())
+	var bounded_limit := clampi(limit, 1, ACTOR_PAGE_LIMIT)
+	var end := mini(bounded_offset + bounded_limit, ids.size())
+	var items: Array[Dictionary] = []
+	for index in range(bounded_offset, end):
+		var enemy := enemies.get(ids[index]) as FusepointEnemyAgent
+		if enemy != null:
+			items.append(_compact_actor_state(enemy))
+	return {
+		"requested_region": region_id,
+		"requested_offset": offset,
+		"requested_limit": limit,
+		"resolved_offset": bounded_offset,
+		"resolved_limit": bounded_limit,
+		"total": ids.size(),
+		"returned": items.size(),
+		"truncated": end < ids.size(),
+		"next_offset": end if end < ids.size() else -1,
+		"items": items,
+	}
+
+
+func _compact_actor_state(enemy: FusepointEnemyAgent) -> Dictionary:
+	var snapshot := enemy.authoritative_snapshot()
+	var inspection: Dictionary = snapshot.get("inspection_state", {})
+	var health: Dictionary = snapshot.get("health", {})
+	var feedback: Dictionary = snapshot.get("shot_feedback", {})
+	return {
+		"id": snapshot.get("id", enemy.stable_id),
+		"region": snapshot.get("region", enemy.region_id),
+		"role": snapshot.get("role", enemy.tactical_role),
+		"route_slot": snapshot.get("route_slot", enemy.route_slot),
+		"active": snapshot.get("active", false),
+		"alive": snapshot.get("alive", false),
+		"health": health.get("current", 0.0),
+		"ammo": snapshot.get("ammo", 0),
+		"position": inspection.get("position", enemy.global_position),
+		"velocity": snapshot.get("velocity", Vector3.ZERO),
+		"grounded_occupancy": snapshot.get("grounded_occupancy", false),
+		"capsule_clear": inspection.get("capsule_clear", false),
+		"nearest_neighbor_distance": snapshot.get("nearest_neighbor_distance", -1.0),
+		"target_visible": snapshot.get("target_visible", false),
+		"fire_block_reason": snapshot.get("fire_block_reason", &"unknown"),
+		"shot_event_id": snapshot.get("shot_event_id", ""),
+		"action": snapshot.get("action", &"idle"),
+		"animation_semantic": snapshot.get("animation_semantic", &""),
+		"animation_name": snapshot.get("animation_name", ""),
+		"animation_normalized_time": snapshot.get("animation_normalized_time", 0.0),
+		"animation_playing": snapshot.get("animation_playing", false),
+		"animation_state_change_count": snapshot.get("animation_state_change_count", 0),
+		"rifle_action_progress": snapshot.get("rifle_action_progress", 0.0),
+		"weapon_family": snapshot.get("weapon_family", &"unbound"),
+		"weapon_family_compatible": snapshot.get("weapon_family_compatible", false),
+		"weapon_socket_bound": snapshot.get("weapon_socket_bound", false),
+		"weapon_attached": snapshot.get("weapon_attached", false),
+		"root_pitch_degrees": snapshot.get("root_pitch_degrees", 0.0),
+		"root_roll_degrees": snapshot.get("root_roll_degrees", 0.0),
+		"root_upright": snapshot.get("root_upright", false),
+		"aim_pitch_degrees": snapshot.get("aim_pitch_degrees", 0.0),
+		"restore_epoch": snapshot.get("restore_epoch", 0),
+		"shot_feedback": {
+			"active_effect_count": feedback.get("active_effect_count", 0),
+			"presented_event_count": feedback.get("presented_event_count", 0),
+			"duplicate_event_count": feedback.get("duplicate_event_count", 0),
+		},
+		"last_event": snapshot.get("last_event", {}),
 	}
 
 
@@ -1026,8 +1159,43 @@ func _qualification_summary() -> Dictionary:
 		"complete_actor_count": complete_actor_count,
 		"regions": qualification_regions,
 		"region_milestones": qualification_region_milestones,
-		"actors": qualification_actors,
+		"actor_page": qualification_actor_page(0, QUALIFICATION_PAGE_LIMIT),
 		"checkpoint_preserves_coverage": true,
+	}
+
+
+func qualification_actor_page(offset := 0, limit := QUALIFICATION_PAGE_LIMIT) -> Dictionary:
+	var ids: Array[StringName] = []
+	for actor_id: StringName in qualification_actors:
+		ids.append(actor_id)
+	ids.sort_custom(func(a: StringName, b: StringName) -> bool: return String(a) < String(b))
+	var bounded_offset := clampi(offset, 0, ids.size())
+	var bounded_limit := clampi(limit, 1, QUALIFICATION_PAGE_LIMIT)
+	var end := mini(bounded_offset + bounded_limit, ids.size())
+	var items: Array[Dictionary] = []
+	for index in range(bounded_offset, end):
+		var actor: Dictionary = qualification_actors.get(ids[index], {})
+		items.append({
+			"actor_id": actor.get("actor_id", ids[index]),
+			"region": actor.get("region", &""),
+			"role": actor.get("role", &""),
+			"route_slot": actor.get("route_slot", &""),
+			"state_coverage": actor.get("state_coverage", {}),
+			"coverage_complete": actor.get("coverage_complete", false),
+			"first_event_sequence": actor.get("first_event_sequence", 0),
+			"last_event_sequence": actor.get("last_event_sequence", 0),
+			"latest": actor.get("latest", {}),
+		})
+	return {
+		"requested_offset": offset,
+		"requested_limit": limit,
+		"resolved_offset": bounded_offset,
+		"resolved_limit": bounded_limit,
+		"total": ids.size(),
+		"returned": items.size(),
+		"truncated": end < ids.size(),
+		"next_offset": end if end < ids.size() else -1,
+		"items": items,
 	}
 
 

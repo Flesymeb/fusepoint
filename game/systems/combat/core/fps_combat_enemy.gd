@@ -104,7 +104,7 @@ var _eye: Node3D
 var _muzzle: Node3D
 var _presentation: Node
 var _death_audio: AudioStreamPlayer3D
-var _target_health: Node
+var _target_health: FPSHealth
 var _home_position := Vector3.ZERO
 var _has_home_position := false
 var _last_seen_target_position := Vector3.ZERO
@@ -242,7 +242,7 @@ func _physics_process(delta: float) -> void:
 		return
 	if target == null or not is_instance_valid(target):
 		_acquire_target()
-	if _target_health != null and _target_health.get("is_dead") == true:
+	if _target_health != null and _target_health.is_dead:
 		set_target(null)
 	if target == null:
 		_search_or_return_home(delta)
@@ -764,7 +764,7 @@ func _nearest_enemy_distance() -> float:
 			continue
 		var actor := node as Node3D
 		var actor_health := _find_damage_receiver(actor)
-		if actor_health != null and actor_health.get("is_dead") == true:
+		if actor_health != null and actor_health.is_dead:
 			continue
 		nearest = minf(nearest, global_position.distance_to(actor.global_position))
 	return nearest
@@ -1310,14 +1310,18 @@ func _target_aim_position(candidate: Node3D) -> Vector3:
 	return head.global_position if head != null else candidate.global_position + Vector3.UP * target_height
 
 
-func _find_damage_receiver(root: Node) -> Node:
-	if root == null:
+func _find_damage_receiver(root: Variant) -> FPSHealth:
+	# Snapshot callers may carry data dictionaries alongside scene actors. Keep
+	# the receiver boundary typed: Dictionaries are state and Nodes are objects;
+	# neither is ever accessed using the other's property mechanism.
+	if root == null or root is not Node or not is_instance_valid(root):
 		return null
-	if root.has_method("apply_damage"):
-		return root
-	for child: Node in root.get_children():
-		if child.has_method("apply_damage"):
-			return child
+	var root_node := root as Node
+	if root_node is FPSHealth:
+		return root_node as FPSHealth
+	for child: Node in root_node.get_children():
+		if child is FPSHealth:
+			return child as FPSHealth
 	return null
 
 
@@ -1379,6 +1383,9 @@ func _set_ai_state(next_state: AIState) -> void:
 
 func _drive_action_presentation(state: StringName) -> void:
 	if _presentation == null:
+		return
+	if state == &"reload" and _presentation.has_method(&"reload_for"):
+		_presentation.call(&"reload_for", maxf(_reload_remaining, 0.05))
 		return
 	if _presentation.has_method(state):
 		_presentation.call(state)

@@ -1351,6 +1351,23 @@ func _mcp_state() -> Dictionary:
 		target_scale = profile.aim_scale if _ads_held else profile.hip_scale
 	return {
 		"run_epoch": _run_epoch,
+		"fire_scheduler_state": {
+			"press_generation": _active_fire_press_edge_id,
+			"shot_ordinal": _active_fire_press_shot_count,
+			"trigger_held": _trigger_held,
+			"queued_release_precedence": true,
+			"shot_count": _shot_serial,
+			"magazine": weapon.get("magazine", 0),
+			"last_shot_id": _last_shot.get("shot_id", ""),
+			"playback_class": _last_report_receipt.get("requested_playback_class", &"stopped"),
+			"sustained_authorized": _last_report_receipt.get("sustained_report_authorized", false),
+			"single_player_playing": (_fire_audio_player_state().get("single", {}) as Dictionary).get("playing", false),
+			"auto_player_playing": (_fire_audio_player_state().get("sustained", {}) as Dictionary).get("playing", false),
+			"active_effect_count": shot_feedback.active_effect_count,
+			"effect_cleanup_count": shot_feedback.snapshot().get("effect_cleanup_count", 0),
+			"duplicate_cleanup_callback_count": shot_feedback.snapshot().get("duplicate_cleanup_callback_count", 0),
+			"player_state": _action_state,
+		},
 		# Keep patrol-critical hold/release fields before large nested audit data so
 		# bounded runtime digests cannot truncate them away.
 		"trigger_held": _trigger_held,
@@ -1397,6 +1414,10 @@ func _mcp_state() -> Dictionary:
 		"viewmodel_target_position": target_position,
 		"viewmodel_target_scale": target_scale,
 		"viewmodel_position_error": viewmodel.position.distance_to(target_position),
+		# Compatibility alias for bounded Tester report expressions retained from
+		# earlier loops. Rotation recovery is measured against the authored product
+		# recoil baseline, never by indexing a missing Dictionary field.
+		"viewmodel_rotation_error": float(recoil.get("baseline_rotation_error_degrees", 0.0)),
 		"recoil_phase": recoil.get("phase", &"unavailable"),
 		"recoil_shot_serial": recoil.get("shot_serial", 0),
 		"recoil_peak_serial": recoil.get("peak_serial", 0),
