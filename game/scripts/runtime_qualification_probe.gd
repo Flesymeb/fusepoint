@@ -57,6 +57,8 @@ var _cleanup_counters: Dictionary = {}
 var _combat_sample_remaining := 0.0
 var _combat_sample_serial := 0
 var _combat_animation_history: Array[Dictionary] = []
+var _last_mission_state := &"unknown"
+var _last_mission_event_sequence := -1
 
 
 func _ready() -> void:
@@ -77,7 +79,7 @@ func _process(delta: float) -> void:
 	var restore_count := int(mission_state.get("checkpoint_restore_count", 0))
 	var marker := "run-%06d" % observed_epoch
 	if observed_epoch != _run_epoch or marker != _cycle_marker:
-		_begin_cycle(observed_epoch, marker, restore_count)
+		_begin_cycle(observed_epoch, marker, restore_count, mission_state)
 	_update_lifecycle_boundaries(mission_state, restore_count)
 	var frame_ms := delta * 1000.0
 	_record_sample(frame_ms, _phase_id(mission_state), _is_explosion_window(mission_state))
@@ -92,7 +94,7 @@ func _process(delta: float) -> void:
 		_sample_combat_presentation()
 
 
-func _begin_cycle(epoch: int, marker: String, restore_count: int) -> void:
+func _begin_cycle(epoch: int, marker: String, restore_count: int, mission_state: Dictionary) -> void:
 	if _sample_count > 0:
 		_cycle_history.append(_cycle_record(true))
 		while _cycle_history.size() > CYCLE_HISTORY_LIMIT:
@@ -118,7 +120,12 @@ func _begin_cycle(epoch: int, marker: String, restore_count: int) -> void:
 	_cycle_viewport_start = _observed_viewport
 	_last_checkpoint_restore_count = restore_count
 	_terminal_boundary_latched = false
+	_last_mission_state = StringName(mission_state.get("mission_state", &"unknown"))
+	_last_mission_event_sequence = int(mission_state.get("event_sequence", -1))
 	_cycle_cleanup_settled = false
+	var shell_state: Dictionary = shell.call(&"_mcp_state")
+	var lifecycle_action: Dictionary = shell_state.get("last_lifecycle_action_receipt", {})
+	var run_epoch_receipt: Dictionary = mission_state.get("last_run_epoch_receipt", {})
 	_cycle_boundaries = [{
 		"kind": &"cycle_started",
 		"cycle_serial": _cycle_serial,
@@ -127,6 +134,9 @@ func _begin_cycle(epoch: int, marker: String, restore_count: int) -> void:
 		"process_frame": Engine.get_process_frames(),
 		"physics_frame": Engine.get_physics_frames(),
 		"observed_viewport": _observed_viewport,
+		"cycle_origin": run_epoch_receipt.get("reason", &"unknown"),
+		"shell_lifecycle_action": lifecycle_action.get("action", &"none"),
+		"shell_lifecycle_action_id": lifecycle_action.get("action_id", ""),
 		"at_usec": Time.get_ticks_usec(),
 	}]
 	_refresh_cleanup_counters()
@@ -157,6 +167,24 @@ func _update_lifecycle_boundaries(mission_state: Dictionary, restore_count: int)
 		})
 		_last_checkpoint_restore_count = restore_count
 	var mission_state_id := StringName(mission_state.get("mission_state", &"unknown"))
+	if mission_state_id != _last_mission_state:
+		_append_cycle_boundary(&"mission_phase_changed", {
+			"previous_mission_state": _last_mission_state,
+			"mission_state": mission_state_id,
+		})
+		if _last_mission_state == &"predeployment" and mission_state_id == &"active_gameplay":
+			_append_cycle_boundary(&"deployment", {"mission_state": mission_state_id})
+		_last_mission_state = mission_state_id
+	var mission_event_sequence := int(mission_state.get("event_sequence", -1))
+	if mission_event_sequence != _last_mission_event_sequence:
+		var last_event: Dictionary = mission_state.get("last_event", {})
+		var event_kind := StringName(last_event.get("kind", &"unknown"))
+		if event_kind in [&"deployment_started", &"checkpoint_restored", &"recovery_handoff_completed", &"terminal_submitted"]:
+			_append_cycle_boundary(event_kind, {
+				"mission_event_id": last_event.get("event_id", ""),
+				"mission_event_sequence": mission_event_sequence,
+			})
+		_last_mission_event_sequence = mission_event_sequence
 	var bomb_state_id := StringName(mission_state.get("bomb_state", &"unknown"))
 	var terminal := mission_state_id in [&"bomb_defused", &"bomb_detonated"] or bomb_state_id in [&"defused", &"detonated"]
 	if terminal and not _terminal_boundary_latched:
@@ -394,6 +422,36 @@ func _cleanup_delta(start: Dictionary, finish: Dictionary) -> Dictionary:
 	return delta
 
 
+func _renderer_context() -> Dictionary:
+	return {
+		"rendering_method": String(ProjectSettings.get_setting("rendering/renderer/rendering_method", "unknown")),
+		"mobile_rendering_method": String(ProjectSettings.get_setting("rendering/renderer/rendering_method.mobile", "unknown")),
+		"adapter_driver_info": OS.get_video_adapter_driver_info(),
+		"platform": OS.get_name(),
+		"engine_version": Engine.get_version_info(),
+		"hardware_verdict_asserted": false,
+	}
+
+
+func _cycle_incomplete_reasons(record: Dictionary) -> Array[StringName]:
+	var reasons: Array[StringName] = []
+	if record.get("complete", false) != true:
+		reasons.append(&"terminal_boundary_missing")
+	if record.get("target_resolution_match", false) != true:
+		reasons.append(&"target_resolution_missing")
+	if int(record.get("explosion_sample_count", 0)) < 3:
+		reasons.append(&"insufficient_explosion_samples")
+	var cleanup_end: Dictionary = record.get("cleanup_end", {})
+	var cleanup_delta: Dictionary = record.get("cleanup_delta", {})
+	if int(cleanup_end.get("stable_actor_count", 0)) != 18:
+		reasons.append(&"stable_actor_cleanup_drift")
+	if int(cleanup_delta.get("duplicate_event_count", 0)) > 0 or int(cleanup_end.get("terminal_duplicate_submit_count", 0)) > 0:
+		reasons.append(&"duplicate_cleanup_drift")
+	if int(cleanup_delta.get("signal_connection_count", 0)) != 0:
+		reasons.append(&"signal_connection_cleanup_drift")
+	return reasons
+
+
 func _cycle_record(include_raw: bool) -> Dictionary:
 	var record := {
 		"cycle_serial": _cycle_serial,
@@ -403,6 +461,7 @@ func _cycle_record(include_raw: bool) -> Dictionary:
 		"observed_viewport_start": _cycle_viewport_start,
 		"observed_viewport_end": _observed_viewport,
 		"target_resolution_match": _observed_viewport == TARGET_RESOLUTION,
+		"renderer_context": _renderer_context(),
 		"sample_count": _sample_count,
 		"retained_sample_count": _raw_frame_times_ms.size(),
 		"average_frame_ms": _sample_sum_ms / float(_sample_count) if _sample_count > 0 else 0.0,
@@ -419,6 +478,10 @@ func _cycle_record(include_raw: bool) -> Dictionary:
 		"raw_page_size": RAW_PAGE_SIZE,
 		"raw_page_count": ceili(float(_raw_frame_times_ms.size()) / float(RAW_PAGE_SIZE)),
 	}
+	var incomplete_reasons := _cycle_incomplete_reasons(record)
+	record["evidence_state"] = &"complete" if incomplete_reasons.is_empty() else &"incomplete"
+	record["incomplete_reasons"] = incomplete_reasons
+	record["hardware_verdict_asserted"] = false
 	if include_raw:
 		record["raw_frame_times_ms"] = _raw_frame_times_ms.duplicate()
 		record["raw_phase_ids"] = _raw_phase_ids.duplicate()
@@ -481,6 +544,14 @@ func qualification_sample_page(cycle_serial: int, offset := 0, limit := RAW_PAGE
 	return {
 		"accepted": true,
 		"cycle_serial": cycle_serial,
+		"run_epoch": source.get("run_epoch", 0),
+		"observed_viewport_start": source.get("observed_viewport_start", Vector2i.ZERO),
+		"observed_viewport_end": source.get("observed_viewport_end", Vector2i.ZERO),
+		"target_resolution": TARGET_RESOLUTION,
+		"target_resolution_match": source.get("target_resolution_match", false),
+		"renderer_context": source.get("renderer_context", {}),
+		"evidence_state": source.get("evidence_state", &"incomplete"),
+		"incomplete_reasons": source.get("incomplete_reasons", []),
 		"offset": safe_offset,
 		"limit": safe_limit,
 		"returned_count": samples.size(),
@@ -490,15 +561,52 @@ func qualification_sample_page(cycle_serial: int, offset := 0, limit := RAW_PAGE
 	}
 
 
+func _qualification_evidence_state() -> Dictionary:
+	var records := _retained_cycle_records()
+	var complete_cycle_count := 0
+	var cycle_receipts: Array[Dictionary] = []
+	var incomplete_reasons: Array[StringName] = []
+	for record: Dictionary in records:
+		var reasons: Array = record.get("incomplete_reasons", _cycle_incomplete_reasons(record))
+		if reasons.is_empty():
+			complete_cycle_count += 1
+		else:
+			for reason: Variant in reasons:
+				var reason_id := StringName(reason)
+				if reason_id not in incomplete_reasons:
+					incomplete_reasons.append(reason_id)
+		cycle_receipts.append({
+			"cycle_serial": record.get("cycle_serial", 0),
+			"run_epoch": record.get("run_epoch", 0),
+			"evidence_state": record.get("evidence_state", &"incomplete"),
+			"incomplete_reasons": reasons,
+			"target_resolution_match": record.get("target_resolution_match", false),
+			"raw_page_count": record.get("raw_page_count", 0),
+		})
+	if records.size() < CYCLE_HISTORY_LIMIT:
+		incomplete_reasons.append(&"three_cycles_not_retained")
+	return {
+		"state": &"complete" if complete_cycle_count >= CYCLE_HISTORY_LIMIT and incomplete_reasons.is_empty() else &"incomplete",
+		"required_complete_cycles": CYCLE_HISTORY_LIMIT,
+		"retained_cycle_count": records.size(),
+		"complete_cycle_count": complete_cycle_count,
+		"incomplete_reasons": incomplete_reasons,
+		"cycle_receipts": cycle_receipts,
+		"hardware_verdict_asserted": false,
+	}
+
+
 func qualification_snapshot() -> Dictionary:
 	_observed_viewport = Vector2i(get_viewport().get_visible_rect().size)
 	return {
-		"schema_version": 3,
+		"schema_version": 4,
 		"presentation_neutral": true,
+		"mutates_gameplay_authority": false,
 		"target_resolution": TARGET_RESOLUTION,
 		"target_resolution_source": &"configured_qualification_target",
 		"observed_viewport": _observed_viewport,
 		"target_resolution_match": _observed_viewport == TARGET_RESOLUTION,
+		"renderer_context": _renderer_context(),
 		"target_fps": 60,
 		"explosion_min_fps": 45,
 		"run_epoch": _run_epoch,
@@ -521,6 +629,7 @@ func qualification_snapshot() -> Dictionary:
 		"retained_cycle_count": _retained_cycle_index().size(),
 		"retained_cycle_index": _retained_cycle_index(),
 		"cycle_history": _retained_cycle_index(),
+		"qualification_evidence": _qualification_evidence_state(),
 		"raw_sample_access": {
 			"method": &"qualification_sample_page",
 			"page_size": RAW_PAGE_SIZE,

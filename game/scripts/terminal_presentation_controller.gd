@@ -387,6 +387,29 @@ func _complete_presentation(reason: StringName = &"presentation_completed") -> v
 	call_deferred(&"_retain_active_receipt", &"presentation_completed")
 
 
+func tester_complete_active_presentation() -> Dictionary:
+	var receipt := {
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"non_release": OS.is_debug_build(),
+		"event_id": current_event_id,
+		"branch": branch,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if not active or _completed_current or current_event_id.is_empty():
+		receipt["failure_reason"] = &"terminal_presentation_not_active"
+		return receipt
+	_complete_presentation(&"tester_branch_inspection")
+	receipt["resolved"] = true
+	receipt["accepted"] = _completed_current
+	receipt["completion_reason"] = &"tester_branch_inspection"
+	receipt["failure_reason"] = &"" if _completed_current else &"completion_rejected"
+	return receipt
+
+
 func reset_presentation(clear_event_cache := true, restore_camera := true) -> void:
 	if not _active_branch_receipt.is_empty() and _active_branch_receipt.get("completed", false) != true:
 		_refresh_active_receipt()

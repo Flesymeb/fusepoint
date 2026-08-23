@@ -555,7 +555,7 @@ text = "UI SCALE  75–200%"
 custom_minimum_size = Vector2(280, 34)
 layout_mode = 2
 size_flags_horizontal = 3
-min_value = 75.0
+min_value = 100.0
 max_value = 200.0
 value = 100.0
 [node name="FOVLabel" type="Label" parent="Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings"]

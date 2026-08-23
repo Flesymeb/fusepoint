@@ -45,7 +45,7 @@ const LIFECYCLE_TABLE := {
 	&"pause": {"predecessors":[&"gameplay",&"settings"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/PausePage/Menu/ResumeButton"},
 	&"settings": {"predecessors":[&"title",&"pause"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume"},
 	&"death_recovery": {"predecessors":[&"gameplay"], "authority":&"player_death", "blocking":true, "focus":"Root/Pages/DeathPage/Menu/RestartButton"},
-	&"recovery_transition": {"predecessors":[&"death_recovery",&"pause",&"failure_result"], "authority":&"mission_recovery", "blocking":true, "focus":"Root/Pages/DeathPage/Menu/RestartButton"},
+	&"recovery_transition": {"predecessors":[&"gameplay",&"death_recovery",&"pause",&"failure_result"], "authority":&"mission_recovery", "blocking":true, "focus":"Root/Pages/DeathPage/Menu/RestartButton"},
 	&"victory": {"predecessors":[&"gameplay"], "authority":&"terminal", "blocking":true, "focus":""},
 	&"detonation": {"predecessors":[&"gameplay"], "authority":&"terminal", "blocking":true, "focus":""},
 	&"success_result": {"predecessors":[&"victory"], "authority":&"terminal", "blocking":true, "focus":"Root/Pages/ResultPage/Menu/ReplayButton"},
@@ -53,7 +53,7 @@ const LIFECYCLE_TABLE := {
 }
 const LIFECYCLE_ACTIONS := {
 	&"replay": {"legal_from":[&"success_result",&"failure_result"], "target":&"loadout"},
-	&"checkpoint_restart": {"legal_from":[&"pause",&"death_recovery",&"failure_result"], "target":&"recovery_transition"},
+	&"checkpoint_restart": {"legal_from":[&"gameplay",&"pause",&"death_recovery",&"failure_result"], "target":&"recovery_transition"},
 	&"home": {"legal_from":[&"pause",&"death_recovery",&"success_result",&"failure_result"], "target":&"title"},
 }
 
@@ -109,6 +109,9 @@ var _curated_menu_instance: Control
 var _settings_component_row_height := SETTINGS_COMPONENT_ROW_HEIGHT
 var _curated_menu_start_count := 0
 var _last_curated_menu_lifecycle_receipt: Dictionary = {}
+var _tester_setup_serial := 0
+var _last_tester_setup_receipt: Dictionary = {}
+var _tester_setup_history: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -354,9 +357,31 @@ func _finalize_settings_focus_receipt(control: Control) -> void:
 
 func _input(event: InputEvent) -> void:
 	_observe_input_family(event)
-	if app_state == STATE_BRIEFING and not _briefing_complete and event.is_action_pressed(&"skip_presentation"):
+	if event.is_action_pressed(&"tester_alpha_checkpoint"):
+		_tester_prepare_alpha_checkpoint()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_shell_death"):
+		_tester_prepare_shell_death()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_shell_failure_result"):
+		_tester_prepare_failure_result()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_shell_replay"):
+		_tester_prepare_replay()
+		get_viewport().set_input_as_handled()
+		return
+	if app_state == STATE_BRIEFING and not _briefing_complete and (
+		event.is_action_pressed(&"skip_presentation") or _is_physical_briefing_skip(event)
+	):
 		_complete_briefing(true)
 		_deploy()
+		get_viewport().set_input_as_handled()
+		return
+	if app_state == STATE_GAMEPLAY and event.is_action_pressed(&"restart"):
+		_restart_checkpoint()
 		get_viewport().set_input_as_handled()
 		return
 	if pages.visible and app_state != STATE_GAMEPLAY and event.is_action_pressed(&"menu_accept"):
@@ -375,6 +400,145 @@ func _input(event: InputEvent) -> void:
 		STATE_GAMEPLAY:
 			_pause_gameplay()
 	get_viewport().set_input_as_handled()
+
+
+func _is_physical_briefing_skip(event: InputEvent) -> bool:
+	return event is InputEventKey and event.pressed and not event.echo and (
+		event.physical_keycode == KEY_G or event.keycode == KEY_G
+	)
+
+
+func _tester_prepare_alpha_checkpoint() -> void:
+	var receipt := _new_tester_setup_receipt(&"alpha_checkpoint_entry")
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var mission_setup: Dictionary = mission.call(&"tester_prepare_alpha_checkpoint")
+	receipt["mission_setup"] = mission_setup
+	if mission_setup.get("accepted", false) != true:
+		receipt["failure_reason"] = mission_setup.get("failure_reason", &"mission_setup_rejected")
+		_store_tester_setup_receipt(receipt)
+		return
+	_restart_checkpoint()
+	var recovery: Dictionary = mission.get("last_checkpoint_restore_receipt")
+	receipt["resolved"] = true
+	receipt["accepted"] = app_state == STATE_RECOVERING and recovery.get("committed", false) == true
+	receipt["recovery"] = recovery.duplicate(true)
+	receipt["reset_isolation"] = {
+		"authoritative_checkpoint_api": true,
+		"route_acceptance_claimed": false,
+		"single_recovery_command": not recovery.get("command_id", "").is_empty(),
+		"input_locked_until_feedback_handoff": recovery.get("input_locked", false) == true,
+		"roster_restore_count": int(recovery.get("restored_actor_count", 0)),
+	}
+	receipt["failure_reason"] = &"" if receipt["accepted"] else &"recovery_transition_rejected"
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_prepare_shell_death() -> void:
+	var receipt := _new_tester_setup_receipt(&"ordinary_death")
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var run_epoch_before := int(mission.get("run_epoch"))
+	var checkpoint_before := int(mission.get("checkpoint_version"))
+	var timer_before := float(mission.get("remaining_time"))
+	var damage_event_id := "%s:ordinary-death" % receipt["setup_id"]
+	var applied: bool = player.call(&"apply_authoritative_damage", float(player.get("max_health")) + 1.0, damage_event_id, {
+		"damage_class": &"tester_authoritative_damage",
+		"source_path": get_path(),
+		"source_position": player.global_position,
+	})
+	receipt["resolved"] = true
+	receipt["accepted"] = applied and app_state == STATE_DEATH and player.get("health") <= 0.0
+	receipt["authoritative_damage_event_id"] = damage_event_id
+	receipt["reset_isolation"] = {
+		"run_epoch_unchanged": int(mission.get("run_epoch")) == run_epoch_before,
+		"checkpoint_version_unchanged": int(mission.get("checkpoint_version")) == checkpoint_before,
+		"countdown_not_advanced": float(mission.get("remaining_time")) <= timer_before + 0.001,
+		"death_lock_authoritative": app_state == STATE_DEATH and get_tree().paused,
+	}
+	receipt["failure_reason"] = &"" if receipt["accepted"] else &"authoritative_death_rejected"
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_prepare_failure_result() -> void:
+	var receipt := _new_tester_setup_receipt(&"failure_result")
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var run_epoch_before := int(mission.get("run_epoch"))
+	var terminal_count_before := int(mission.get("terminal_commit_count"))
+	var countdown_receipt: Dictionary = mission.call(&"tester_request_countdown_zero")
+	var presentation_receipt: Dictionary = terminal.call(&"tester_complete_active_presentation") if countdown_receipt.get("accepted", false) == true else {}
+	receipt["resolved"] = true
+	receipt["accepted"] = countdown_receipt.get("accepted", false) == true and presentation_receipt.get("accepted", false) == true and app_state == STATE_FAILURE_RESULT
+	receipt["countdown"] = countdown_receipt
+	receipt["presentation"] = presentation_receipt
+	receipt["reset_isolation"] = {
+		"run_epoch_unchanged": int(mission.get("run_epoch")) == run_epoch_before,
+		"single_terminal_commit": int(mission.get("terminal_commit_count")) == terminal_count_before + 1,
+		"duplicate_terminal_submit_count": int(mission.get("terminal_duplicate_submit_count")),
+		"authoritative_result_state": app_state == STATE_FAILURE_RESULT,
+	}
+	receipt["failure_reason"] = &"" if receipt["accepted"] else &"authoritative_failure_result_rejected"
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_prepare_replay() -> void:
+	var receipt := _new_tester_setup_receipt(&"replay")
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		_store_tester_setup_receipt(receipt)
+		return
+	if app_state not in [STATE_SUCCESS_RESULT, STATE_FAILURE_RESULT]:
+		receipt["failure_reason"] = &"required_result_state_unavailable"
+		_store_tester_setup_receipt(receipt)
+		return
+	var run_epoch_before := int(mission.get("run_epoch"))
+	_replay()
+	receipt["resolved"] = true
+	receipt["accepted"] = app_state == STATE_LOADOUT and int(mission.get("run_epoch")) == run_epoch_before + 1
+	receipt["reset_isolation"] = {
+		"new_run_epoch": int(mission.get("run_epoch")),
+		"previous_run_epoch": run_epoch_before,
+		"mission_predeployment": StringName(mission.get("mission_state")) == &"predeployment",
+		"gameplay_input_disabled": player.get("gameplay_input_enabled") == false,
+		"terminal_cache_cleared": _observed_terminal_results.is_empty(),
+	}
+	receipt["failure_reason"] = &"" if receipt["accepted"] else &"authoritative_replay_rejected"
+	_store_tester_setup_receipt(receipt)
+
+
+func _new_tester_setup_receipt(kind: StringName) -> Dictionary:
+	_tester_setup_serial += 1
+	return {
+		"setup_id": "tester-shell-%06d" % _tester_setup_serial,
+		"kind": kind,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"non_release": OS.is_debug_build(),
+		"source_state": app_state,
+		"run_epoch": int(mission.get("run_epoch")),
+	}
+
+
+func _tester_setup_available(required_state: StringName, receipt: Dictionary) -> bool:
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return false
+	if app_state != required_state or StringName(mission.get("mission_state")) != &"active_gameplay":
+		receipt["failure_reason"] = &"authoritative_gameplay_state_unavailable"
+		return false
+	return true
+
+
+func _store_tester_setup_receipt(receipt: Dictionary) -> void:
+	_last_tester_setup_receipt = receipt.duplicate(true)
+	_tester_setup_history.append(_last_tester_setup_receipt.duplicate(true))
+	while _tester_setup_history.size() > TRANSITION_HISTORY_LIMIT:
+		_tester_setup_history.pop_front()
 
 
 func _activate_focused_control_once() -> bool:
@@ -864,6 +1028,13 @@ func _on_restore_feedback_completed(epoch: int) -> void:
 	get_tree().paused = false
 	_set_gameplay_enabled(true)
 	_show_page(STATE_GAMEPLAY, &"recovery_handoff", &"mission")
+	if StringName(_last_tester_setup_receipt.get("kind", &"")) == &"alpha_checkpoint_entry":
+		_last_tester_setup_receipt["handoff_resolved"] = true
+		_last_tester_setup_receipt["handoff_epoch"] = epoch
+		_last_tester_setup_receipt["result_state"] = app_state
+		_last_tester_setup_receipt["accepted"] = app_state == STATE_GAMEPLAY and player.get("gameplay_input_enabled") == true
+		if not _tester_setup_history.is_empty():
+			_tester_setup_history[-1] = _last_tester_setup_receipt.duplicate(true)
 
 
 func _commit_lifecycle_action(action: StringName) -> bool:
@@ -1172,6 +1343,9 @@ func _mcp_state() -> Dictionary:
 		"activation_serial": _activation_serial,
 		"last_activation_receipt": _last_activation_receipt,
 		"settings_focus_history": _settings_focus_history,
+		"tester_setup_serial": _tester_setup_serial,
+		"last_tester_setup_receipt": _last_tester_setup_receipt,
+		"tester_setup_history": _tester_setup_history,
 		"settings_component_binding": {
 			"asset_id": SETTINGS_COMPONENT_ASSET_ID,
 			"receipt_path": SETTINGS_COMPONENT_RECEIPT,

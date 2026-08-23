@@ -29,12 +29,14 @@ func load_settings() -> void:
 		return
 	for key in values:
 		values[key] = config.get_value(SECTION, key, values[key])
+	values["ui_scale"] = clampf(float(values["ui_scale"]), 1.0, 2.0)
 
 
 func save_settings(next_values: Dictionary) -> void:
 	for key in values:
 		if next_values.has(key):
 			values[key] = next_values[key]
+	values["ui_scale"] = clampf(float(values["ui_scale"]), 1.0, 2.0)
 	var config := ConfigFile.new()
 	for key in values:
 		config.set_value(SECTION, key, values[key])

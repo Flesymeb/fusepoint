@@ -62,6 +62,8 @@ var last_recovery_rejection: Dictionary = {}
 var last_replay_reset_receipt: Dictionary = {}
 var run_epoch := 0
 var last_run_epoch_receipt: Dictionary = {}
+var tester_alpha_checkpoint_request_count := 0
+var last_tester_alpha_checkpoint_receipt: Dictionary = {}
 
 var _active_capture := &""
 var _active_bomb_stage := false
@@ -247,13 +249,124 @@ func tester_request_countdown_zero() -> Dictionary:
 		}
 	tester_countdown_zero_request_count += 1
 	remaining_time = 0.0
+	_commit_timer(0.0)
 	return {
 		"accepted": true,
 		"request_count": tester_countdown_zero_request_count,
 		"remaining_time": remaining_time,
 		"run_epoch": run_epoch,
-		"next_path": &"physics_commit_timer",
+		"next_path": &"authoritative_timer_committed",
+		"terminal_commit_count": terminal_commit_count,
+		"terminal_event_id": terminal_event_id,
 	}
+
+
+func tester_prepare_alpha_checkpoint() -> Dictionary:
+	tester_alpha_checkpoint_request_count += 1
+	var setup_id := "tester-alpha-checkpoint-%06d" % tester_alpha_checkpoint_request_count
+	var timer_before := remaining_time
+	var event_sequence_before := event_sequence
+	var run_epoch_before := run_epoch
+	last_tester_alpha_checkpoint_receipt = {
+		"setup_id": setup_id,
+		"kind": &"alpha_checkpoint_entry",
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"non_release": OS.is_debug_build(),
+		"run_epoch": run_epoch,
+	}
+	if not OS.is_debug_build():
+		last_tester_alpha_checkpoint_receipt["failure_reason"] = &"release_build_forbidden"
+		return last_tester_alpha_checkpoint_receipt.duplicate(true)
+	if mission_state != &"active_gameplay" or deployment_snapshot.is_empty() or checkpoint_restore_in_progress or recovery_input_locked:
+		last_tester_alpha_checkpoint_receipt["failure_reason"] = &"authoritative_state_unavailable"
+		return last_tester_alpha_checkpoint_receipt.duplicate(true)
+	if checkpoint_version > 0 or StringName((capture_points[&"alpha"] as Dictionary).get("state", &"")) == &"secured_aegis":
+		last_tester_alpha_checkpoint_receipt["failure_reason"] = &"alpha_checkpoint_already_committed"
+		return last_tester_alpha_checkpoint_receipt.duplicate(true)
+	var presence_receipt: Dictionary = enemy_roster.call(&"tester_request_alpha_presence") if enemy_roster != null and enemy_roster.has_method(&"tester_request_alpha_presence") else {}
+	if presence_receipt.get("accepted", false) != true:
+		last_tester_alpha_checkpoint_receipt["failure_reason"] = &"alpha_presence_unavailable"
+		last_tester_alpha_checkpoint_receipt["enemy_presence"] = presence_receipt
+		return last_tester_alpha_checkpoint_receipt.duplicate(true)
+	var hostile_positions := _enemy_positions_from_snapshot(enemy_roster.call(&"snapshot_all"))
+	var target_receipt := _tester_alpha_checkpoint_transform(hostile_positions)
+	if target_receipt.get("accepted", false) != true:
+		last_tester_alpha_checkpoint_receipt["failure_reason"] = &"alpha_checkpoint_destination_rejected"
+		last_tester_alpha_checkpoint_receipt["destination"] = target_receipt
+		return last_tester_alpha_checkpoint_receipt.duplicate(true)
+	var point_before: Dictionary = (capture_points[&"alpha"] as Dictionary).duplicate(true)
+	var keys_before := committed_keys.duplicate()
+	var locks_before := route_locks.duplicate(true)
+	var checkpoint_snapshot_before := checkpoint_snapshot.duplicate(true)
+	var checkpoint_version_before := checkpoint_version
+	var checkpoint_commit_before := checkpoint_commit_count
+	_complete_capture(&"alpha")
+	if checkpoint_version != 1 or checkpoint_commit_count != checkpoint_commit_before + 1 or checkpoint_snapshot.is_empty():
+		capture_points[&"alpha"] = point_before
+		committed_keys.assign(keys_before)
+		route_locks = locks_before
+		checkpoint_snapshot = checkpoint_snapshot_before
+		checkpoint_version = checkpoint_version_before
+		checkpoint_commit_count = checkpoint_commit_before
+		last_tester_alpha_checkpoint_receipt["failure_reason"] = &"authoritative_checkpoint_commit_failed"
+		return last_tester_alpha_checkpoint_receipt.duplicate(true)
+	checkpoint_snapshot["player_transform"] = target_receipt["transform"]
+	checkpoint_snapshot["tester_setup"] = {
+		"setup_id": setup_id,
+		"checkpoint_relocation": &"authored_alpha_anchor",
+		"route_acceptance_claimed": false,
+	}
+	var reset_isolation := {
+		"run_epoch_unchanged": run_epoch == run_epoch_before,
+		"terminal_state_unchanged": terminal_commit_count == 0 and terminal_event_id.is_empty(),
+		"timer_not_increased": remaining_time <= timer_before + 0.001,
+		"restore_not_started": not checkpoint_restore_in_progress and not recovery_input_locked,
+		"single_checkpoint_commit": checkpoint_commit_count == checkpoint_commit_before + 1,
+	}
+	last_tester_alpha_checkpoint_receipt.merge({
+		"resolved": true,
+		"accepted": true,
+		"checkpoint_version": checkpoint_version,
+		"checkpoint_commit_count": checkpoint_commit_count,
+		"key_commit_count": committed_keys.size(),
+		"enemy_presence": presence_receipt,
+		"destination": target_receipt,
+		"event_sequence_before": event_sequence_before,
+		"event_sequence_after": event_sequence,
+		"reset_isolation": reset_isolation,
+		"failure_reason": &"",
+	}, true)
+	_record_event(&"tester_alpha_checkpoint_resolved", last_tester_alpha_checkpoint_receipt.duplicate(true), false)
+	return last_tester_alpha_checkpoint_receipt.duplicate(true)
+
+
+func _tester_alpha_checkpoint_transform(hostile_positions: Array) -> Dictionary:
+	var alpha_objective := get_node(alpha_path) as Node3D
+	var authored_anchor := alpha_objective.get_parent().get_node_or_null("ProductAnchors/Alpha") as Node3D
+	if authored_anchor == null:
+		return {"accepted": false, "failure_reason": &"authored_alpha_anchor_missing"}
+	var offsets: Array[Vector3] = [
+		Vector3(3.0, 0.0, 0.0), Vector3(-3.0, 0.0, 0.0),
+		Vector3(0.0, 0.0, 3.0), Vector3(0.0, 0.0, -3.0),
+		Vector3(4.0, 0.0, 2.0), Vector3(-4.0, 0.0, 2.0),
+	]
+	var attempts: Array[Dictionary] = []
+	for offset: Vector3 in offsets:
+		var candidate := Transform3D(player.global_basis, authored_anchor.global_position + Vector3.UP * 0.9 + offset)
+		var validation: Dictionary = player.call(&"validate_recovery_destination", candidate, hostile_positions)
+		attempts.append({"offset": offset, "validation": validation})
+		if validation.get("accepted", false) == true:
+			return {
+				"accepted": true,
+				"anchor_path": authored_anchor.get_path(),
+				"offset": offset,
+				"transform": candidate,
+				"validation": validation,
+				"attempt_count": attempts.size(),
+			}
+	return {"accepted": false, "failure_reason": &"no_clear_authored_alpha_offset", "attempts": attempts}
 
 
 func _commit_timer(delta: float) -> void:
@@ -984,6 +1097,8 @@ func _mcp_state() -> Dictionary:
 		"terminal_duplicate_submit_count": terminal_duplicate_submit_count,
 		"terminal_event_id": terminal_event_id,
 		"tester_countdown_zero_request_count": tester_countdown_zero_request_count,
+		"tester_alpha_checkpoint_request_count": tester_alpha_checkpoint_request_count,
+		"last_tester_alpha_checkpoint_receipt": last_tester_alpha_checkpoint_receipt,
 		"elimination_count": elimination_count,
 		"player_death_count": player_death_count,
 		"last_result_snapshot": last_result_snapshot,

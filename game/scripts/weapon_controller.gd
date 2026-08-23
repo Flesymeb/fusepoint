@@ -819,7 +819,13 @@ func set_gameplay_input_enabled(enabled: bool) -> void:
 func equip_loadout(weapon_id: StringName) -> bool:
 	if not _weapons.has(weapon_id):
 		return false
-	_equip_weapon(weapon_id)
+	_cancel_action(&"hip")
+	if viewmodel.call(&"equip_weapon_id", weapon_id, true) != true:
+		return false
+	_equipped_id = weapon_id
+	_pending_equipped_id = &""
+	_capture_product_recoil_baseline(true)
+	weapon_state_changed.emit(_mcp_state())
 	return true
 
 

@@ -67,6 +67,8 @@ var reservation_failure: Dictionary = {}
 var reservation_minimum_distance := INF
 var run_epoch := 0
 var last_run_epoch_receipt: Dictionary = {}
+var tester_setup_request_count := 0
+var last_tester_setup_receipt: Dictionary = {}
 
 @onready var player: Node3D = get_node(player_path) as Node3D
 @onready var mission_controller: Node = get_node(mission_controller_path)
@@ -429,6 +431,63 @@ func sync_progression_for_checkpoint() -> Dictionary:
 	}
 
 
+func tester_request_alpha_presence() -> Dictionary:
+	tester_setup_request_count += 1
+	var actor_ids_before: Array[String] = []
+	for actor_id: StringName in enemies:
+		actor_ids_before.append(String(actor_id))
+	actor_ids_before.sort()
+	var mission_state_before := StringName(mission_controller.get("mission_state"))
+	var checkpoint_before := int(mission_controller.get("checkpoint_version"))
+	var timer_before := float(mission_controller.get("remaining_time"))
+	last_tester_setup_receipt = {
+		"setup_id": "tester-alpha-presence-%06d" % tester_setup_request_count,
+		"kind": &"alpha_enemy_presence",
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"non_release": OS.is_debug_build(),
+		"run_epoch": run_epoch,
+	}
+	if not OS.is_debug_build():
+		last_tester_setup_receipt["failure_reason"] = &"release_build_forbidden"
+		return last_tester_setup_receipt.duplicate(true)
+	if not roster_initialized or mission_state_before != &"active_gameplay" or restore_in_progress:
+		last_tester_setup_receipt["failure_reason"] = &"authoritative_state_unavailable"
+		return last_tester_setup_receipt.duplicate(true)
+	for enemy: FusepointEnemyAgent in enemies.values():
+		enemy.set_mission_active(enemy.region_id == &"alpha", activation_sequence)
+	var occupancy := validate_restore_occupancy(player.global_position)
+	var actor_ids_after: Array[String] = []
+	var active_alpha_ids: Array[StringName] = []
+	for actor_id: StringName in enemies:
+		actor_ids_after.append(String(actor_id))
+		var enemy := enemies[actor_id] as FusepointEnemyAgent
+		if enemy.mission_active and enemy.region_id == &"alpha":
+			active_alpha_ids.append(actor_id)
+	actor_ids_after.sort()
+	var reset_isolation := {
+		"mission_state_unchanged": StringName(mission_controller.get("mission_state")) == mission_state_before,
+		"checkpoint_version_unchanged": int(mission_controller.get("checkpoint_version")) == checkpoint_before,
+		"timer_not_increased": float(mission_controller.get("remaining_time")) <= timer_before + 0.001,
+		"restore_transaction_idle": not restore_in_progress,
+		"stable_actor_ids_unchanged": actor_ids_after == actor_ids_before,
+	}
+	var accepted: bool = occupancy.get("accepted", false) == true and active_alpha_ids.size() == 3
+	last_tester_setup_receipt.merge({
+		"resolved": true,
+		"accepted": accepted,
+		"active_region": &"alpha",
+		"active_count": active_alpha_ids.size(),
+		"active_ids": active_alpha_ids,
+		"occupancy": occupancy,
+		"reset_isolation": reset_isolation,
+		"failure_reason": &"" if accepted else &"alpha_presence_validation_failed",
+	}, true)
+	_commit_roster_event(&"tester_alpha_presence_resolved", last_tester_setup_receipt.duplicate(true))
+	return last_tester_setup_receipt.duplicate(true)
+
+
 func contest_count(point_id: StringName, objective_position: Vector3, radius := 4.5) -> int:
 	var count := 0
 	for enemy: FusepointEnemyAgent in enemies.values():
@@ -694,6 +753,8 @@ func _summary() -> Dictionary:
 	return {
 		"run_epoch": run_epoch,
 		"last_run_epoch_receipt": last_run_epoch_receipt,
+		"tester_setup_request_count": tester_setup_request_count,
+		"last_tester_setup_receipt": last_tester_setup_receipt,
 		"allocation_state": reservation_transaction_state,
 		"allocation_minimum_distance": reservation_minimum_distance,
 		"allocation_required_separation": MIN_RESERVATION_SEPARATION,

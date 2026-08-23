@@ -191,9 +191,6 @@ func _physics_process(delta: float) -> void:
 		_sync_grounded_foley(&"gameplay_disabled")
 		return
 	_apply_gamepad_look(delta)
-	if Input.is_action_just_pressed("restart"):
-		_reset_to_spawn(&"restart_input")
-		return
 
 	var was_on_floor := is_on_floor()
 	var position_before := global_position
