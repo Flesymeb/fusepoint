@@ -377,6 +377,22 @@ func _input(event: InputEvent) -> void:
 		_tester_commit_prepared_encounter()
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed(&"tester_terminal_success_prepare"):
+		_tester_prepare_terminal_branch(&"success")
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_terminal_success_advance"):
+		_tester_advance_terminal_branch(&"success")
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_terminal_failure_prepare"):
+		_tester_prepare_terminal_branch(&"failure")
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_terminal_failure_advance"):
+		_tester_advance_terminal_branch(&"failure")
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed(&"tester_shell_death"):
 		_tester_prepare_shell_death()
 		get_viewport().set_input_as_handled()
@@ -461,6 +477,8 @@ func _tester_prepare_encounter(region_id: StringName) -> void:
 	receipt["resolved"] = mission_setup.get("resolved", false) == true
 	receipt["accepted"] = mission_setup.get("accepted", false) == true
 	receipt["prepared_region"] = mission_setup.get("prepared_region", &"")
+	receipt["branch_id"] = mission_setup.get("branch_id", &"")
+	receipt["setup_generation"] = mission_setup.get("setup_generation", 0)
 	receipt["stable_actor_ids"] = mission_setup.get("stable_actor_ids", [])
 	receipt["reset_isolation"] = mission_setup.get("reset_isolation", {})
 	receipt["route_acceptance_claimed"] = false
@@ -473,7 +491,12 @@ func _tester_commit_prepared_encounter() -> void:
 	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
 		_store_tester_setup_receipt(receipt)
 		return
-	var mission_commit: Dictionary = mission.call(&"tester_commit_prepared_encounter")
+	var prepared: Dictionary = mission.get("last_tester_encounter_receipt")
+	var mission_commit: Dictionary = mission.call(
+		&"tester_commit_prepared_encounter",
+		StringName(prepared.get("prepared_region", &"")),
+		int(prepared.get("setup_generation", -1)),
+	)
 	receipt["mission_commit"] = mission_commit
 	receipt["resolved"] = mission_commit.get("resolved", false) == true
 	receipt["accepted"] = mission_commit.get("accepted", false) == true
@@ -482,6 +505,46 @@ func _tester_commit_prepared_encounter() -> void:
 		"route_acceptance_claimed": false,
 	}
 	receipt["failure_reason"] = mission_commit.get("failure_reason", &"")
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_prepare_terminal_branch(branch_id: StringName) -> void:
+	var receipt := _new_tester_setup_receipt(StringName("terminal_%s_prepare" % String(branch_id)))
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var mission_setup: Dictionary = mission.call(&"tester_prepare_terminal_branch", branch_id)
+	receipt["mission_setup"] = mission_setup
+	receipt["branch_id"] = mission_setup.get("branch_id", StringName("terminal:%s" % String(branch_id)))
+	receipt["setup_generation"] = mission_setup.get("setup_generation", 0)
+	receipt["resolved"] = mission_setup.get("resolved", false) == true
+	receipt["accepted"] = mission_setup.get("accepted", false) == true and app_state == STATE_GAMEPLAY
+	receipt["prepared_branch"] = mission_setup.get("prepared_branch", &"")
+	receipt["reset_isolation"] = mission_setup.get("reset_isolation", {})
+	receipt["route_acceptance_claimed"] = false
+	receipt["failure_reason"] = mission_setup.get("failure_reason", &"")
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_advance_terminal_branch(branch_id: StringName) -> void:
+	var receipt := _new_tester_setup_receipt(StringName("terminal_%s_advance" % String(branch_id)))
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var prepared: Dictionary = mission.get("last_tester_terminal_receipt")
+	var expected_generation := int(prepared.get("setup_generation", -1))
+	var mission_advance: Dictionary = mission.call(&"tester_advance_terminal_branch", branch_id, expected_generation)
+	var expected_shell_state := STATE_VICTORY if branch_id == &"success" else STATE_DETONATION
+	receipt["mission_advance"] = mission_advance
+	receipt["branch_id"] = mission_advance.get("branch_id", StringName("terminal:%s" % String(branch_id)))
+	receipt["setup_generation"] = mission_advance.get("setup_generation", expected_generation)
+	receipt["resolved"] = mission_advance.get("resolved", false) == true
+	receipt["accepted"] = mission_advance.get("accepted", false) == true and app_state == expected_shell_state
+	receipt["result_state"] = app_state
+	receipt["terminal_event_id"] = mission_advance.get("terminal_event_id", "")
+	receipt["reset_isolation"] = mission_advance.get("reset_isolation", {})
+	receipt["route_acceptance_claimed"] = false
+	receipt["failure_reason"] = mission_advance.get("failure_reason", &"") if receipt["accepted"] else &"terminal_presentation_handoff_rejected"
 	_store_tester_setup_receipt(receipt)
 
 
@@ -513,26 +576,9 @@ func _tester_prepare_shell_death() -> void:
 
 
 func _tester_prepare_failure_result() -> void:
-	var receipt := _new_tester_setup_receipt(&"failure_result")
-	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
-		_store_tester_setup_receipt(receipt)
-		return
-	var run_epoch_before := int(mission.get("run_epoch"))
-	var terminal_count_before := int(mission.get("terminal_commit_count"))
-	var countdown_receipt: Dictionary = mission.call(&"tester_request_countdown_zero")
-	var presentation_receipt: Dictionary = terminal.call(&"tester_complete_active_presentation") if countdown_receipt.get("accepted", false) == true else {}
-	receipt["resolved"] = true
-	receipt["accepted"] = countdown_receipt.get("accepted", false) == true and presentation_receipt.get("accepted", false) == true and app_state == STATE_FAILURE_RESULT
-	receipt["countdown"] = countdown_receipt
-	receipt["presentation"] = presentation_receipt
-	receipt["reset_isolation"] = {
-		"run_epoch_unchanged": int(mission.get("run_epoch")) == run_epoch_before,
-		"single_terminal_commit": int(mission.get("terminal_commit_count")) == terminal_count_before + 1,
-		"duplicate_terminal_submit_count": int(mission.get("terminal_duplicate_submit_count")),
-		"authoritative_result_state": app_state == STATE_FAILURE_RESULT,
-	}
-	receipt["failure_reason"] = &"" if receipt["accepted"] else &"authoritative_failure_result_rejected"
-	_store_tester_setup_receipt(receipt)
+	# Legacy action is retained as a preparation alias only. It no longer fabricates
+	# countdown, presentation completion, and result entry in one input edge.
+	_tester_prepare_terminal_branch(&"failure")
 
 
 func _tester_prepare_replay() -> void:
@@ -569,6 +615,7 @@ func _new_tester_setup_receipt(kind: StringName) -> Dictionary:
 		"resolved": false,
 		"accepted": false,
 		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
 		"source_state": app_state,
 		"run_epoch": int(mission.get("run_epoch")),
 	}

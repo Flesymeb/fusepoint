@@ -69,6 +69,7 @@ var run_epoch := 0
 var last_run_epoch_receipt: Dictionary = {}
 var tester_setup_request_count := 0
 var last_tester_setup_receipt: Dictionary = {}
+var tester_setup_history: Array[Dictionary] = []
 
 @onready var player: Node3D = get_node(player_path) as Node3D
 @onready var mission_controller: Node = get_node(mission_controller_path)
@@ -432,6 +433,10 @@ func sync_progression_for_checkpoint() -> Dictionary:
 
 
 func tester_request_alpha_presence() -> Dictionary:
+	return tester_prepare_region_presence(&"alpha", tester_setup_request_count + 1)
+
+
+func tester_prepare_region_presence(region_id: StringName, setup_generation: int) -> Dictionary:
 	tester_setup_request_count += 1
 	var actor_ids_before: Array[String] = []
 	for actor_id: StringName in enemies:
@@ -440,52 +445,85 @@ func tester_request_alpha_presence() -> Dictionary:
 	var mission_state_before := StringName(mission_controller.get("mission_state"))
 	var checkpoint_before := int(mission_controller.get("checkpoint_version"))
 	var timer_before := float(mission_controller.get("remaining_time"))
+	var terminal_before := int(mission_controller.get("terminal_commit_count"))
+	var mission_snapshot_before: Dictionary = mission_controller.call(&"_mcp_state")
+	var points_before: Dictionary = (mission_snapshot_before.get("capture_points", {}) as Dictionary).duplicate(true)
+	var expected_count := 3 if region_id == &"alpha" else 5 if region_id == &"bravo" else 10 if region_id == &"charlie" else 0
 	last_tester_setup_receipt = {
-		"setup_id": "tester-alpha-presence-%06d" % tester_setup_request_count,
-		"kind": &"alpha_enemy_presence",
+		"setup_id": "tester-%s-presence-%06d" % [String(region_id), tester_setup_request_count],
+		"branch_id": StringName("combat:%s" % String(region_id)),
+		"setup_generation": setup_generation,
+		"kind": &"encounter_presence_prepare",
+		"requested_region": region_id,
 		"requested": true,
 		"resolved": false,
 		"accepted": false,
 		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
+		"route_acceptance_claimed": false,
 		"run_epoch": run_epoch,
 	}
 	if not OS.is_debug_build():
 		last_tester_setup_receipt["failure_reason"] = &"release_build_forbidden"
+		_store_tester_setup_receipt()
 		return last_tester_setup_receipt.duplicate(true)
-	if not roster_initialized or mission_state_before != &"active_gameplay" or restore_in_progress:
+	if expected_count == 0:
+		last_tester_setup_receipt["failure_reason"] = &"unknown_region"
+		_store_tester_setup_receipt()
+		return last_tester_setup_receipt.duplicate(true)
+	if setup_generation <= 0 or not roster_initialized or mission_state_before != &"active_gameplay" or restore_in_progress:
 		last_tester_setup_receipt["failure_reason"] = &"authoritative_state_unavailable"
+		_store_tester_setup_receipt()
 		return last_tester_setup_receipt.duplicate(true)
+	activation_sequence += 1
 	for enemy: FusepointEnemyAgent in enemies.values():
-		enemy.set_mission_active(enemy.region_id == &"alpha", activation_sequence)
-	var occupancy := validate_restore_occupancy(player.global_position)
+		enemy.set_mission_active(enemy.region_id == region_id, activation_sequence)
+	_record_region_milestone(region_id)
+	var occupancy := validate_restore_occupancy(player.global_position, false)
 	var actor_ids_after: Array[String] = []
-	var active_alpha_ids: Array[StringName] = []
+	var active_region_ids: Array[String] = []
+	var active_alive_count := 0
 	for actor_id: StringName in enemies:
 		actor_ids_after.append(String(actor_id))
 		var enemy := enemies[actor_id] as FusepointEnemyAgent
-		if enemy.mission_active and enemy.region_id == &"alpha":
-			active_alpha_ids.append(actor_id)
+		if enemy.mission_active and enemy.region_id == region_id:
+			active_region_ids.append(String(actor_id))
+			active_alive_count += 1 if enemy.is_alive() else 0
 	actor_ids_after.sort()
+	active_region_ids.sort()
+	var mission_snapshot_after: Dictionary = mission_controller.call(&"_mcp_state")
 	var reset_isolation := {
 		"mission_state_unchanged": StringName(mission_controller.get("mission_state")) == mission_state_before,
 		"checkpoint_version_unchanged": int(mission_controller.get("checkpoint_version")) == checkpoint_before,
 		"timer_not_increased": float(mission_controller.get("remaining_time")) <= timer_before + 0.001,
+		"terminal_state_unchanged": int(mission_controller.get("terminal_commit_count")) == terminal_before,
+		"capture_points_unchanged": (mission_snapshot_after.get("capture_points", {}) as Dictionary) == points_before,
 		"restore_transaction_idle": not restore_in_progress,
 		"stable_actor_ids_unchanged": actor_ids_after == actor_ids_before,
+		"no_actor_killed": active_alive_count == expected_count,
+		"route_acceptance_claimed": false,
 	}
-	var accepted: bool = occupancy.get("accepted", false) == true and active_alpha_ids.size() == 3
+	var accepted: bool = occupancy.get("accepted", false) == true and active_region_ids.size() == expected_count and active_alive_count == expected_count and reset_isolation["capture_points_unchanged"] == true
 	last_tester_setup_receipt.merge({
 		"resolved": true,
 		"accepted": accepted,
-		"active_region": &"alpha",
-		"active_count": active_alpha_ids.size(),
-		"active_ids": active_alpha_ids,
+		"active_region": region_id,
+		"active_count": active_region_ids.size(),
+		"active_alive_count": active_alive_count,
+		"stable_actor_ids": active_region_ids,
 		"occupancy": occupancy,
 		"reset_isolation": reset_isolation,
-		"failure_reason": &"" if accepted else &"alpha_presence_validation_failed",
+		"failure_reason": &"" if accepted else &"region_presence_validation_failed",
 	}, true)
-	_commit_roster_event(&"tester_alpha_presence_resolved", last_tester_setup_receipt.duplicate(true))
+	_store_tester_setup_receipt()
+	_commit_roster_event(&"tester_region_presence_resolved", last_tester_setup_receipt.duplicate(true))
 	return last_tester_setup_receipt.duplicate(true)
+
+
+func _store_tester_setup_receipt() -> void:
+	tester_setup_history.append(last_tester_setup_receipt.duplicate(true))
+	while tester_setup_history.size() > 8:
+		tester_setup_history.pop_front()
 
 
 func contest_count(point_id: StringName, objective_position: Vector3, radius := 4.5) -> int:
@@ -754,7 +792,22 @@ func _summary() -> Dictionary:
 		"run_epoch": run_epoch,
 		"last_run_epoch_receipt": last_run_epoch_receipt,
 		"tester_setup_request_count": tester_setup_request_count,
+		"tester_fixture_state": {
+			"branch_id": last_tester_setup_receipt.get("branch_id", &""),
+			"setup_generation": last_tester_setup_receipt.get("setup_generation", 0),
+			"requested_region": last_tester_setup_receipt.get("requested_region", &""),
+			"requested": last_tester_setup_receipt.get("requested", false),
+			"resolved": last_tester_setup_receipt.get("resolved", false),
+			"accepted": last_tester_setup_receipt.get("accepted", false),
+			"release_guard": last_tester_setup_receipt.get("release_guard", &""),
+			"active_count": last_tester_setup_receipt.get("active_count", 0),
+			"active_alive_count": last_tester_setup_receipt.get("active_alive_count", 0),
+			"stable_actor_ids": last_tester_setup_receipt.get("stable_actor_ids", []),
+			"reset_isolation": last_tester_setup_receipt.get("reset_isolation", {}),
+			"route_acceptance_claimed": false,
+		},
 		"last_tester_setup_receipt": last_tester_setup_receipt,
+		"tester_setup_history": tester_setup_history,
 		"allocation_state": reservation_transaction_state,
 		"allocation_minimum_distance": reservation_minimum_distance,
 		"allocation_required_separation": MIN_RESERVATION_SEPARATION,
@@ -913,10 +966,17 @@ func _refresh_qualification_live_state() -> void:
 func _qualification_live_fields(snapshot: Dictionary, source_event: Dictionary) -> Dictionary:
 	var health_state: Dictionary = snapshot.get("health", {})
 	return {
+		"actor_id": snapshot.get("id", &""),
+		"role": snapshot.get("role", &""),
+		"region": snapshot.get("region", &""),
+		"route_slot": snapshot.get("route_slot", &""),
 		"active": snapshot.get("active", false),
 		"alive": snapshot.get("alive", false),
+		"transform": snapshot.get("transform", Transform3D.IDENTITY),
+		"velocity": snapshot.get("velocity", Vector3.ZERO),
 		"action": snapshot.get("action", &"idle"),
 		"target_visible": snapshot.get("target_visible", false),
+		"perception_memory": snapshot.get("perception_memory", {}),
 		"navigation_velocity": snapshot.get("navigation_velocity", Vector3.ZERO),
 		"desired_navigation_velocity": snapshot.get("desired_navigation_velocity", Vector3.ZERO),
 		"safe_navigation_velocity": snapshot.get("safe_navigation_velocity", Vector3.ZERO),
@@ -924,12 +984,24 @@ func _qualification_live_fields(snapshot: Dictionary, source_event: Dictionary) 
 		"reservation": snapshot.get("reservation", {}),
 		"nearest_neighbor_distance": snapshot.get("nearest_neighbor_distance", -1.0),
 		"grounded_occupancy": snapshot.get("grounded_occupancy", false),
+		"full_capsule_occupancy": snapshot.get("full_capsule_occupancy", {}),
 		"avoidance_enabled": snapshot.get("avoidance_enabled", false),
 		"fire_block_reason": snapshot.get("fire_block_reason", &"unknown"),
 		"ammo": snapshot.get("ammo", 0),
+		"muzzle_state": snapshot.get("muzzle_state", {}),
 		"health": health_state.get("current", 0.0),
 		"shot_event_id": snapshot.get("shot_event_id", ""),
+		"shot_causality": snapshot.get("shot_causality", {}),
 		"pre_shot_authorization": snapshot.get("pre_shot_authorization", {}),
+		"animation": {
+			"state": snapshot.get("presentation_state", &"inactive"),
+			"semantic": snapshot.get("animation_semantic", &""),
+			"clip": snapshot.get("animation_name", ""),
+			"time_seconds": snapshot.get("animation_position_seconds", 0.0),
+			"normalized_time": snapshot.get("animation_normalized_time", 0.0),
+			"playing": snapshot.get("animation_playing", false),
+			"weapon_family": snapshot.get("weapon_family", &"unbound"),
+		},
 		"stalled_seconds": snapshot.get("stalled_seconds", 0.0),
 		"progress_watchdog_count": snapshot.get("progress_watchdog_count", 0),
 		"activation_sequence": snapshot.get("activation_sequence", 0),

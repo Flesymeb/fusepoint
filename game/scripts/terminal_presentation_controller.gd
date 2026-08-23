@@ -9,7 +9,7 @@ signal presentation_completed(event_id: String, result: StringName)
 signal branch_receipt_updated(receipt: Dictionary)
 
 const FAMILY_ID := &"bomb_terminal_sequence"
-const SUCCESS_DURATION := 6.2
+const SUCCESS_FALLBACK_DURATION := 6.2
 const FAILURE_MEDIA_START := 1.5
 const FAILURE_FALLBACK_DURATION := 6.8
 const BRANCH_RECEIPT_LIMIT := 4
@@ -20,6 +20,10 @@ const DEATH_VIDEO_PATH := "res://assets/cinematics/fusepoint_bomb_death.ogv"
 const DEATH_VIDEO_SHA256 := "4769ef6fa5bd45a78f5ca1d8a9d6fcf1b5381ee7fbc180a2aef8b3a8b5b84c4a"
 const DEATH_VIDEO_SOURCE_SHA256 := "5572ff028041ee3d805bb9d9a6d870b9b8dbaeae11aadc9bd8bb413e811c289f"
 const DEATH_VIDEO_RECEIPT_PATH := "res://assets/cinematics/fusepoint_bomb_death.receipt.json"
+const VICTORY_VIDEO_PATH := "res://assets/cinematics/fusepoint_victory.ogv"
+const VICTORY_VIDEO_SHA256 := "db5aae5c36688db39b4a3eadfc1a3813d1d18ae7a06647759222f89d93b60a64"
+const VICTORY_VIDEO_SOURCE_SHA256 := "1cd1d7e41414653e969a69112031b675e9ca42c7a836805b8bee3461b656c2ab"
+const VICTORY_VIDEO_RECEIPT_PATH := "res://assets/cinematics/fusepoint_victory.receipt.json"
 
 @export var mission_path: NodePath
 @export var player_path: NodePath
@@ -43,6 +47,8 @@ const DEATH_VIDEO_RECEIPT_PATH := "res://assets/cinematics/fusepoint_bomb_death.
 @onready var victory_sequence: VictorySequence = $VictorySequence
 @onready var flash_overlay: ColorRect = $TerminalOverlay/Flash
 @onready var red_edge: Panel = $TerminalOverlay/RedEdge
+@onready var victory_video: VideoStreamPlayer = $TerminalOverlay/VictoryVideo
+@onready var victory_fallback: TextureRect = $TerminalOverlay/VictoryFallback
 @onready var death_video: VideoStreamPlayer = $TerminalOverlay/DeathVideo
 @onready var media_layer: Control = $TerminalOverlay/MediaFallback
 @onready var media_treatment: ColorRect = $TerminalOverlay/MediaFallback/Treatment
@@ -93,6 +99,12 @@ var _video_started := false
 var _video_failed := false
 var _video_finished := false
 var _video_completion_reason := &"none"
+var _victory_video_play_requested := false
+var _victory_video_started := false
+var _victory_video_failed := false
+var _victory_video_finished := false
+var _victory_video_completion_reason := &"none"
+var _victory_fallback_started_at := 0.0
 
 
 func _ready() -> void:
@@ -101,6 +113,7 @@ func _ready() -> void:
 	_tactical_hud = get_tree().get_first_node_in_group(&"tactical_hud")
 	victory_avatar.visible = false
 	death_video.finished.connect(_on_death_video_finished)
+	victory_video.finished.connect(_on_victory_video_finished)
 	_clear_overlay()
 
 
@@ -204,8 +217,51 @@ func _begin_success() -> void:
 	media_title.text = "ALL CLEAR — ROCKET BAY PRESERVED"
 	media_copy.text = "AEGIS EOD SIGNAL RESTORED\nBASE ALARM CLEARING  •  DEVICE SAFE"
 	media_skip.text = "[ENTER / E]  SKIP PRESENTATION"
+	_begin_victory_video()
 	if not victory_sequence.begin(camera, victory_avatar, "DEVICE SAFE  •  %02d:%02d REMAINING" % [int(mission.remaining_time) / 60, int(mission.remaining_time) % 60]):
 		phase = &"victory_fallback"
+
+
+func _begin_victory_video() -> void:
+	if victory_video.stream == null:
+		_begin_victory_fallback(&"stream_missing")
+		return
+	_set_phase(&"victory_pullback_media")
+	_victory_video_play_requested = true
+	victory_fallback.visible = false
+	victory_video.visible = true
+	victory_video.modulate.a = 0.0
+	victory_video.paused = false
+	victory_video.play()
+	media_layer.visible = true
+	media_layer.modulate.a = 1.0
+	media_treatment.visible = false
+	media_top_rail.visible = false
+	media_title.visible = false
+	media_copy.visible = false
+	media_skip.visible = true
+	media_skip.text = "[ENTER / E]  SKIP ALL-CLEAR CINEMATIC"
+	skip_available = true
+	create_tween().tween_property(victory_video, "modulate:a", 1.0, 0.32)
+
+
+func _begin_victory_fallback(reason: StringName) -> void:
+	_victory_video_failed = true
+	_victory_video_completion_reason = reason
+	_victory_fallback_started_at = elapsed_seconds
+	victory_video.stop()
+	victory_video.visible = false
+	victory_fallback.visible = true
+	_set_phase(&"victory_media_fallback")
+	media_layer.visible = true
+	media_layer.modulate.a = 1.0
+	media_treatment.visible = false
+	media_top_rail.visible = false
+	media_title.visible = false
+	media_copy.visible = false
+	media_skip.visible = true
+	media_skip.text = "[ENTER / E]  CONTINUE"
+	skip_available = true
 
 
 func _victory_ground_position() -> Vector3:
@@ -339,6 +395,14 @@ func _on_death_video_finished() -> void:
 	_complete_presentation(&"video_finished")
 
 
+func _on_victory_video_finished() -> void:
+	if not active or branch != &"success" or not _victory_video_play_requested:
+		return
+	_victory_video_finished = true
+	_victory_video_completion_reason = &"video_finished"
+	_complete_presentation(&"victory_video_finished")
+
+
 func _tick_failure() -> void:
 	if not _expansion_started and elapsed_seconds >= 0.18:
 		_expansion_started = true
@@ -363,22 +427,25 @@ func _tick_failure() -> void:
 
 
 func _tick_success() -> void:
-	if elapsed_seconds >= 2.8 and not _media_started:
-		_media_started = true
-		_set_phase(&"victory_media_fallback")
-		media_layer.visible = true
-		media_layer.modulate.a = 0.0
-		create_tween().tween_property(media_layer, "modulate:a", 0.72, 0.55)
-		skip_available = true
-	if elapsed_seconds >= SUCCESS_DURATION:
-		_complete_presentation(&"success_duration_completed")
+	if _victory_video_play_requested and not _victory_video_started and not _victory_video_failed:
+		if victory_video.is_playing():
+			_victory_video_started = true
+			_media_started = true
+			_refresh_active_receipt()
+		elif elapsed_seconds >= 0.75:
+			_begin_victory_fallback(&"playback_did_not_start")
+	if _victory_video_failed and elapsed_seconds >= _victory_fallback_started_at + SUCCESS_FALLBACK_DURATION:
+		_complete_presentation(&"victory_fallback_completed")
 
 
 func _complete_presentation(reason: StringName = &"presentation_completed") -> void:
 	if not active or _completed_current:
 		return
 	_completed_current = true
-	_video_completion_reason = reason
+	if branch == &"success":
+		_victory_video_completion_reason = reason
+	else:
+		_video_completion_reason = reason
 	active = false
 	_set_phase(&"completed")
 	completion_count += 1
@@ -457,6 +524,12 @@ func reset_presentation(clear_event_cache := true, restore_camera := true) -> vo
 	_video_failed = false
 	_video_finished = false
 	_video_completion_reason = &"none"
+	_victory_video_play_requested = false
+	_victory_video_started = false
+	_victory_video_failed = false
+	_victory_video_finished = false
+	_victory_video_completion_reason = &"none"
+	_victory_fallback_started_at = 0.0
 	if clear_event_cache:
 		_observed_event_ids.clear()
 
@@ -474,6 +547,11 @@ func apply_accessibility_settings(values: Dictionary) -> void:
 func _clear_overlay() -> void:
 	flash_overlay.color.a = 0.0
 	red_edge.modulate.a = 0.0
+	victory_video.stop()
+	victory_video.paused = false
+	victory_video.visible = false
+	victory_video.modulate.a = 0.0
+	victory_fallback.visible = false
 	death_video.stop()
 	death_video.paused = false
 	death_video.visible = false
@@ -568,14 +646,19 @@ func snapshot() -> Dictionary:
 		"player_terminal_locked": player.get("terminal_locked") if player != null else false,
 		"effect_layer_count": _effect_layer_receipts().size(),
 		"media_visible": media_layer.visible,
-		"video_visible": death_video.visible,
-		"video_playing": death_video.is_playing(),
-		"video_stream_position": death_video.stream_position,
-		"video_stream_length": death_video.get_stream_length() if death_video.stream != null else 0.0,
+		"video_visible": death_video.visible or victory_video.visible,
+		"video_playing": death_video.is_playing() or victory_video.is_playing(),
+		"video_stream_position": victory_video.stream_position if branch == &"success" else death_video.stream_position,
+		"video_stream_length": victory_video.get_stream_length() if branch == &"success" and victory_video.stream != null else death_video.get_stream_length() if death_video.stream != null else 0.0,
 		"video_started": _video_started,
 		"video_finished": _video_finished,
 		"video_failed": _video_failed,
 		"video_completion_reason": _video_completion_reason,
+		"victory_video_started": _victory_video_started,
+		"victory_video_finished": _victory_video_finished,
+		"victory_video_failed": _victory_video_failed,
+		"victory_video_completion_reason": _victory_video_completion_reason,
+		"victory_video_fallback_visible": victory_fallback.visible,
 		"skip_available": skip_available,
 		"completion_count": completion_count,
 		"duplicate_event_count": duplicate_event_count,
@@ -674,26 +757,35 @@ func _refresh_active_receipt() -> void:
 		"authored_local_position": _failure_camera_position,
 		"authored_local_rotation": _failure_camera_rotation,
 	}
+	var active_video: VideoStreamPlayer = victory_video if branch == &"success" else death_video
+	var active_video_path := VICTORY_VIDEO_PATH if branch == &"success" else DEATH_VIDEO_PATH
+	var active_video_sha := VICTORY_VIDEO_SHA256 if branch == &"success" else DEATH_VIDEO_SHA256
+	var active_source_sha := VICTORY_VIDEO_SOURCE_SHA256 if branch == &"success" else DEATH_VIDEO_SOURCE_SHA256
+	var active_receipt_path := VICTORY_VIDEO_RECEIPT_PATH if branch == &"success" else DEATH_VIDEO_RECEIPT_PATH
 	_active_branch_receipt["media"] = {
-		"visible": death_video.visible or media_layer.visible,
-		"video_node_path": String(death_video.get_path()),
-		"video_path": DEATH_VIDEO_PATH,
-		"video_sha256": DEATH_VIDEO_SHA256,
-		"source_sha256": DEATH_VIDEO_SOURCE_SHA256,
-		"receipt_path": DEATH_VIDEO_RECEIPT_PATH,
-		"stream_bound": death_video.stream != null,
-		"stream_resource_path": death_video.stream.resource_path if death_video.stream != null else "",
-		"play_requested": _video_play_requested,
-		"playing": death_video.is_playing(),
-		"paused": death_video.paused,
-		"stream_position": death_video.stream_position,
-		"stream_length": death_video.get_stream_length() if death_video.stream != null else 0.0,
-		"volume_db": death_video.volume_db,
+		"family_id": &"terminal_victory_video" if branch == &"success" else &"terminal_death_video",
+		"declared_background": &"opaque_video",
+		"visible": active_video.visible or media_layer.visible or victory_fallback.visible,
+		"video_node_path": String(active_video.get_path()),
+		"video_path": active_video_path,
+		"video_sha256": active_video_sha,
+		"source_sha256": active_source_sha,
+		"receipt_path": active_receipt_path,
+		"stream_bound": active_video.stream != null,
+		"stream_resource_path": active_video.stream.resource_path if active_video.stream != null else "",
+		"play_requested": _victory_video_play_requested if branch == &"success" else _video_play_requested,
+		"playing": active_video.is_playing(),
+		"paused": active_video.paused,
+		"stream_position": active_video.stream_position,
+		"stream_length": active_video.get_stream_length() if active_video.stream != null else 0.0,
+		"volume_db": active_video.volume_db,
+		"bus": active_video.bus,
 		"fade_seconds": 0.32,
 		"skip_available": skip_available,
-		"fallback": _video_failed,
-		"finished": _video_finished,
-		"completion_reason": _video_completion_reason,
+		"fallback": _victory_video_failed if branch == &"success" else _video_failed,
+		"fallback_still_path": "res://art/source/cinematics/victory/provider/frames/frame_095.png" if branch == &"success" else "",
+		"finished": _victory_video_finished if branch == &"success" else _video_finished,
+		"completion_reason": _victory_video_completion_reason if branch == &"success" else _video_completion_reason,
 	}
 	_active_branch_receipt["duplicate_event_count"] = duplicate_event_count
 	_active_branch_receipt["completion_count"] = completion_count
@@ -719,7 +811,7 @@ func _retain_active_receipt(reason: StringName) -> void:
 		"live_effect_count": _effect_layer_receipts().size(),
 		"blast_playing": blast_audio.playing,
 		"tail_playing": tail_audio.playing,
-		"video_playing": death_video.is_playing(),
+		"video_playing": death_video.is_playing() or victory_video.is_playing(),
 	}
 	_retained_branch_receipts.append(_active_branch_receipt.duplicate(true))
 	while _retained_branch_receipts.size() > BRANCH_RECEIPT_LIMIT:
@@ -729,7 +821,7 @@ func _retain_active_receipt(reason: StringName) -> void:
 		"live_effect_count": 0,
 		"blast_playing": blast_audio.playing,
 		"tail_playing": tail_audio.playing,
-		"media_visible": media_layer.visible,
+		"media_visible": media_layer.visible or victory_fallback.visible,
 		"victory_avatar_visible": victory_avatar.visible,
 		"observed_usec": Time.get_ticks_usec(),
 	}
@@ -771,8 +863,11 @@ func _mcp_state() -> Dictionary:
 		"health_zero": state.get("health_zero", false),
 		"player_terminal_locked": state.get("player_terminal_locked", false),
 		"media_visible": media_layer.visible,
-		"video_visible": death_video.visible,
-		"video_playing": death_video.is_playing(),
+		"video_visible": death_video.visible or victory_video.visible,
+		"video_playing": death_video.is_playing() or victory_video.is_playing(),
+		"victory_video_playing": victory_video.is_playing(),
+		"victory_video_stream_path": victory_video.stream.resource_path if victory_video.stream != null else "",
+		"victory_video_fallback_visible": victory_fallback.visible,
 		"skip_available": skip_available,
 		"active_branch_receipt": _active_branch_receipt.duplicate(true),
 		"retained_branch_receipt_count": _retained_branch_receipts.size(),

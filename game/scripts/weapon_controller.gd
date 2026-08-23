@@ -67,6 +67,7 @@ var _fire_edge_queue: Array[Dictionary] = []
 var _active_fire_source := &"none"
 var _active_fire_press_edge_id := ""
 var _active_fire_press_time_usec := 0
+var _active_fire_press_shot_count := 0
 var _input_edge_serial := 0
 var _last_input_receipt: Dictionary = {}
 var _input_history: Array[Dictionary] = []
@@ -94,6 +95,10 @@ var _product_framing_position := Vector3.ZERO
 var _product_framing_scale := Vector3.ONE
 var _run_epoch := 0
 var _last_run_epoch_receipt: Dictionary = {}
+var _report_serial := 0
+var _last_report_receipt: Dictionary = {}
+var _report_history: Array[Dictionary] = []
+var _last_report_stop_reason := &"initial_state"
 
 
 func _ready() -> void:
@@ -284,6 +289,7 @@ func _begin_fire(source := &"mapped_action", edge_id := "", captured_at_usec := 
 	_active_fire_source = source
 	_active_fire_press_edge_id = edge_id
 	_active_fire_press_time_usec = captured_at_usec
+	_active_fire_press_shot_count = 0
 	var receipt := _try_submit_shot()
 	_next_shot_time = _now() + _fire_interval()
 	if _current_weapon()["fire_mode"] == FIRE_MODE_SEMI:
@@ -304,11 +310,11 @@ func _begin_fire(source := &"mapped_action", edge_id := "", captured_at_usec := 
 
 func _end_fire(source := &"mapped_action", cancellation_reason := "release", edge_id := "") -> void:
 	var was_held := _trigger_held
+	_stop_fire_report(StringName(cancellation_reason), false)
 	_trigger_held = false
 	_active_fire_press_edge_id = ""
 	_active_fire_press_time_usec = 0
-	if feedback.has_method(&"end_fire"):
-		feedback.call(&"end_fire")
+	_active_fire_press_shot_count = 0
 	if cancellation_reason == "release":
 		var magazine := int(_current_weapon()["magazine"])
 		_record_input_edge(source, &"release", was_held or not _observed_fire_down, "released", "", magazine, magazine, "", edge_id)
@@ -331,9 +337,23 @@ func _try_submit_shot() -> Dictionary:
 	if _shot_commits.has(shot_id):
 		return {}
 	_shot_commits[shot_id] = true
+	_active_fire_press_shot_count += 1
 	weapon["magazine"] = int(weapon["magazine"]) - 1
 	_weapons[_equipped_id] = weapon
 	var receipt := _resolve_ballistics(shot_id, weapon)
+	var sustained_authorized: bool = (
+		weapon["fire_mode"] == FIRE_MODE_AUTO
+		and _trigger_held
+		and not _active_fire_press_edge_id.is_empty()
+		and _active_fire_press_shot_count >= 2
+	)
+	var playback_class: StringName = &"single_transient"
+	if sustained_authorized:
+		playback_class = &"single_transient_plus_sustained" if _active_fire_press_shot_count == 2 else &"cadence_transient_plus_sustained"
+	receipt["press_edge_id"] = _active_fire_press_edge_id
+	receipt["press_shot_ordinal"] = _active_fire_press_shot_count
+	receipt["requested_playback_class"] = playback_class
+	receipt["sustained_report_authorized"] = sustained_authorized
 	_dispatch_impact_receipt(receipt)
 	shot_feedback.show_shot(receipt)
 	_last_shot = receipt
@@ -343,7 +363,8 @@ func _try_submit_shot() -> Dictionary:
 	_action_state = &"fire"
 	_action_until = _now() + 0.07
 	_recovery_until = _now() + float(weapon["recovery_seconds"])
-	feedback.call(&"trigger_fire", weapon["fire_mode"] == FIRE_MODE_AUTO)
+	feedback.call(&"trigger_fire", sustained_authorized)
+	_record_report_request(receipt, playback_class, sustained_authorized)
 	_trigger_product_recoil(weapon["fire_mode"] == FIRE_MODE_AUTO)
 	_present_shot_result(receipt)
 	shot_resolved.emit(receipt.duplicate(true))
@@ -1053,6 +1074,7 @@ func reset_transient_state_for_restore() -> void:
 	_active_fire_source = &"none"
 	_active_fire_press_edge_id = ""
 	_active_fire_press_time_usec = 0
+	_active_fire_press_shot_count = 0
 	_shot_commits.clear()
 	_shot_history.clear()
 	_last_shot.clear()
@@ -1204,16 +1226,68 @@ func _fire_rejection_reason() -> String:
 
 
 func _cancel_held_fire(reason: String) -> void:
-	if not _trigger_held and _active_fire_source == &"none":
-		return
-	var magazine := int(_current_weapon()["magazine"])
-	_record_input_edge(_active_fire_source, &"cancel", false, "cancelled", "", magazine, magazine, reason)
+	var had_active_press := _trigger_held or _active_fire_source != &"none" or not _active_fire_press_edge_id.is_empty()
+	if had_active_press:
+		var magazine := int(_current_weapon()["magazine"])
+		_record_input_edge(_active_fire_source, &"cancel", false, "cancelled", "", magazine, magazine, reason)
+	_stop_fire_report(StringName(reason), true)
 	_trigger_held = false
 	_active_fire_source = &"none"
 	_active_fire_press_edge_id = ""
 	_active_fire_press_time_usec = 0
+	_active_fire_press_shot_count = 0
+
+
+func _stop_fire_report(reason: StringName, stop_single_transient: bool) -> void:
+	# Product lifecycle authority is centralized here. Ordinary release ends only
+	# the sustained bed so the already-committed bounded transient can finish;
+	# reload/pause/death/shell/restore boundaries stop both retained players.
 	if feedback.has_method(&"end_fire"):
 		feedback.call(&"end_fire")
+	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
+	var auto_player := feedback.get_node_or_null("AutoFireAudio") as AudioStreamPlayer
+	if stop_single_transient and single_player != null:
+		single_player.stop()
+	if auto_player != null:
+		auto_player.stop()
+	_last_report_stop_reason = reason
+	_report_serial += 1
+	_last_report_receipt = {
+		"report_event_id": "run-%06d:report:%06d" % [_run_epoch, _report_serial],
+		"kind": &"stopped",
+		"stop_reason": reason,
+		"press_edge_id": _active_fire_press_edge_id,
+		"stop_single_transient": stop_single_transient,
+		"single_player_playing": single_player.playing if single_player != null else false,
+		"auto_player_playing": auto_player.playing if auto_player != null else false,
+		"timestamp_seconds": _now(),
+	}
+	_append_report_receipt(_last_report_receipt)
+
+
+func _record_report_request(receipt: Dictionary, playback_class: StringName, sustained_authorized: bool) -> void:
+	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
+	var auto_player := feedback.get_node_or_null("AutoFireAudio") as AudioStreamPlayer
+	_report_serial += 1
+	_last_report_receipt = {
+		"report_event_id": "run-%06d:report:%06d" % [_run_epoch, _report_serial],
+		"kind": &"requested",
+		"shot_id": receipt.get("shot_id", ""),
+		"press_edge_id": receipt.get("press_edge_id", ""),
+		"press_shot_ordinal": receipt.get("press_shot_ordinal", 0),
+		"requested_playback_class": playback_class,
+		"sustained_report_authorized": sustained_authorized,
+		"single_player_playing": single_player.playing if single_player != null else false,
+		"auto_player_playing": auto_player.playing if auto_player != null else false,
+		"timestamp_seconds": _now(),
+	}
+	_append_report_receipt(_last_report_receipt)
+
+
+func _append_report_receipt(receipt: Dictionary) -> void:
+	_report_history.append(receipt.duplicate(true))
+	while _report_history.size() > 24:
+		_report_history.pop_front()
 
 
 func _cancel_queued_fire_edges(reason: String) -> void:
@@ -1282,6 +1356,12 @@ func _mcp_state() -> Dictionary:
 		"trigger_held": _trigger_held,
 		"fire_action_down": _observed_fire_down,
 		"fire_rearm_required": _fire_rearm_required,
+		"active_fire_press_edge_id": _active_fire_press_edge_id,
+		"active_fire_press_shot_count": _active_fire_press_shot_count,
+		"report_authority": &"press_scoped_second_commit_sustained",
+		"last_report_stop_reason": _last_report_stop_reason,
+		"last_report_receipt": _last_report_receipt,
+		"fire_audio_players": _fire_audio_player_state(),
 		"last_run_epoch_receipt": _last_run_epoch_receipt,
 		"active_weapon_id": String(_equipped_id),
 		"active_profile_id": String(viewmodel.call(&"current_weapon_id")),
@@ -1342,8 +1422,8 @@ func _mcp_state() -> Dictionary:
 		"combat_clock_seconds": _combat_clock_seconds,
 		"fire_edge_authority": &"normalized_raw_input_events",
 		"active_fire_source": _active_fire_source,
-		"active_fire_press_edge_id": _active_fire_press_edge_id,
 		"active_fire_press_time_usec": _active_fire_press_time_usec,
+		"report_history": _report_history,
 		"last_input_receipt": _last_input_receipt,
 		"input_history": _input_history,
 		"shot_count": _shot_serial,
@@ -1368,4 +1448,21 @@ func _mcp_state() -> Dictionary:
 		"restore_epoch": _restore_epoch,
 		"transient_reset_complete": _transient_reset_complete,
 		"last_restore_receipt": _last_restore_receipt,
+	}
+
+
+func _fire_audio_player_state() -> Dictionary:
+	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
+	var auto_player := feedback.get_node_or_null("AutoFireAudio") as AudioStreamPlayer
+	return {
+		"single": {
+			"path": String(single_player.get_path()) if single_player != null else "",
+			"playing": single_player.playing if single_player != null else false,
+			"stream_path": single_player.stream.resource_path if single_player != null and single_player.stream != null else "",
+		},
+		"sustained": {
+			"path": String(auto_player.get_path()) if auto_player != null else "",
+			"playing": auto_player.playing if auto_player != null else false,
+			"stream_path": auto_player.stream.resource_path if auto_player != null and auto_player.stream != null else "",
+		},
 	}

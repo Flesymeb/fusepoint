@@ -7,6 +7,7 @@ signal mission_state_changed(state: Dictionary)
 const POINT_IDS: Array[StringName] = [&"alpha", &"bravo"]
 const BOMB_STAGE_IDS: Array[StringName] = [&"diagnosis", &"power_isolation", &"detonator_removal"]
 const HISTORY_LIMIT := 512
+const TESTER_RECEIPT_LIMIT := 8
 const LEADERBOARD_PATH := "user://fusepoint_results.cfg"
 
 @export_range(30.0, 900.0, 1.0) var mission_duration_seconds := 300.0
@@ -67,6 +68,11 @@ var last_tester_alpha_checkpoint_receipt: Dictionary = {}
 var tester_encounter_request_count := 0
 var last_tester_encounter_receipt: Dictionary = {}
 var tester_prepared_region := &""
+var tester_prepared_region_generation := 0
+var tester_terminal_setup_generation := 0
+var tester_prepared_terminal_branch := &""
+var last_tester_terminal_receipt: Dictionary = {}
+var tester_terminal_history: Array[Dictionary] = []
 
 var _active_capture := &""
 var _active_bomb_stage := false
@@ -133,6 +139,10 @@ func _initialize_mission_state() -> void:
 	terminal_event_id = ""
 	tester_countdown_zero_request_count = 0
 	tester_prepared_region = &""
+	tester_prepared_region_generation = 0
+	tester_prepared_terminal_branch = &""
+	last_tester_terminal_receipt.clear()
+	tester_terminal_history.clear()
 	elimination_count = 0
 	player_death_count = 0
 	last_result_snapshot.clear()
@@ -232,6 +242,11 @@ func _physics_process(delta: float) -> void:
 	if mission_state != &"active_gameplay":
 		_sync_presentation()
 		return
+	if OS.is_debug_build() and not tester_prepared_terminal_branch.is_empty():
+		# Terminal preparation is intentionally stable: ordinary mission time and
+		# capture/defusal progression resume only through the matching advance action.
+		_sync_presentation()
+		return
 	_commit_timer(delta)
 	if mission_state != &"active_gameplay":
 		_sync_presentation()
@@ -263,6 +278,159 @@ func tester_request_countdown_zero() -> Dictionary:
 		"terminal_commit_count": terminal_commit_count,
 		"terminal_event_id": terminal_event_id,
 	}
+
+
+func tester_prepare_terminal_branch(requested_branch: StringName) -> Dictionary:
+	tester_terminal_setup_generation += 1
+	var generation := tester_terminal_setup_generation
+	var receipt := {
+		"setup_id": "tester-terminal-%s-%06d" % [String(requested_branch), generation],
+		"branch_id": StringName("terminal:%s" % String(requested_branch)),
+		"setup_generation": generation,
+		"kind": &"terminal_prepare",
+		"requested_branch": requested_branch,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
+		"route_acceptance_claimed": false,
+		"run_epoch": run_epoch,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return _store_terminal_tester_receipt(receipt)
+	if requested_branch not in [&"success", &"failure"]:
+		receipt["failure_reason"] = &"unknown_terminal_branch"
+		return _store_terminal_tester_receipt(receipt)
+	if mission_state != &"active_gameplay" or terminal_commit_count > 0 or checkpoint_restore_in_progress or recovery_input_locked or not tester_prepared_terminal_branch.is_empty():
+		receipt["failure_reason"] = &"authoritative_state_unavailable"
+		return _store_terminal_tester_receipt(receipt)
+	var run_epoch_before := run_epoch
+	var terminal_count_before := terminal_commit_count
+	var timer_before := remaining_time
+	var preparation_calls: Array[Dictionary] = []
+	tester_prepared_terminal_branch = requested_branch
+	if requested_branch == &"success":
+		if remaining_time <= 0.0:
+			tester_prepared_terminal_branch = &""
+			receipt["failure_reason"] = &"success_requires_positive_countdown"
+			return _store_terminal_tester_receipt(receipt)
+		for point_id: StringName in POINT_IDS:
+			var was_secured := StringName((capture_points[point_id] as Dictionary).get("state", &"")) == &"secured_aegis"
+			var committed := _complete_capture(point_id)
+			preparation_calls.append({"api": &"complete_capture", "point_id": point_id, "already_secured": was_secured, "accepted": committed})
+			if not committed:
+				tester_prepared_terminal_branch = &""
+				receipt["preparation_calls"] = preparation_calls
+				receipt["failure_reason"] = &"authoritative_capture_preparation_failed"
+				return _store_terminal_tester_receipt(receipt)
+		while bomb_stage_index < 2:
+			_active_bomb_stage = true
+			bomb_state = [&"diagnosing", &"isolating_power", &"removing_detonator"][bomb_stage_index]
+			bomb_stage_progress = 1.0
+			var prepared_stage := BOMB_STAGE_IDS[bomb_stage_index]
+			_complete_bomb_stage()
+			preparation_calls.append({"api": &"complete_bomb_stage", "stage_id": prepared_stage, "accepted": terminal_commit_count == 0})
+		bomb_state = &"accessible"
+		bomb_stage_progress = 0.0
+		_active_bomb_stage = false
+	else:
+		remaining_time = minf(remaining_time, 1.0)
+		preparation_calls.append({"api": &"authoritative_countdown_owner", "remaining_time": remaining_time, "held_for_advance": true})
+	receipt.merge({
+		"resolved": true,
+		"accepted": mission_state == &"active_gameplay" and terminal_commit_count == terminal_count_before and tester_prepared_terminal_branch == requested_branch,
+		"prepared_branch": tester_prepared_terminal_branch,
+		"preparation_calls": preparation_calls,
+		"mission_snapshot": {
+			"remaining_time": remaining_time,
+			"capture_points": capture_points.duplicate(true),
+			"bomb_state": bomb_state,
+			"bomb_stage_index": bomb_stage_index,
+			"bomb_completed": bomb_completed.duplicate(),
+			"terminal_commit_count": terminal_commit_count,
+		},
+		"reset_isolation": {
+			"run_epoch_unchanged": run_epoch == run_epoch_before,
+			"terminal_state_unchanged": terminal_commit_count == terminal_count_before and terminal_event_id.is_empty(),
+			"countdown_not_increased": remaining_time <= timer_before + 0.001,
+			"presentation_not_started": mission_state == &"active_gameplay",
+			"result_not_written": last_result_snapshot.is_empty(),
+			"stable_until_matching_advance": true,
+			"route_acceptance_claimed": false,
+		},
+		"failure_reason": &"",
+	}, true)
+	_record_event(&"tester_terminal_prepared", receipt.duplicate(true), false)
+	return _store_terminal_tester_receipt(receipt)
+
+
+func tester_advance_terminal_branch(expected_branch: StringName, expected_generation: int) -> Dictionary:
+	var receipt := {
+		"setup_id": "tester-terminal-advance-%06d" % tester_terminal_setup_generation,
+		"branch_id": StringName("terminal:%s" % String(tester_prepared_terminal_branch)),
+		"setup_generation": tester_terminal_setup_generation,
+		"kind": &"terminal_advance",
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"prepared_branch": tester_prepared_terminal_branch,
+		"expected_branch": expected_branch,
+		"expected_generation": expected_generation,
+		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
+		"route_acceptance_claimed": false,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return _store_terminal_tester_receipt(receipt)
+	if expected_generation != tester_terminal_setup_generation:
+		receipt["failure_reason"] = &"stale_setup_generation"
+		return _store_terminal_tester_receipt(receipt)
+	if expected_branch != tester_prepared_terminal_branch or expected_branch not in [&"success", &"failure"]:
+		receipt["failure_reason"] = &"mismatched_prepared_branch"
+		return _store_terminal_tester_receipt(receipt)
+	if mission_state != &"active_gameplay" or terminal_commit_count > 0:
+		receipt["failure_reason"] = &"authoritative_state_unavailable"
+		return _store_terminal_tester_receipt(receipt)
+	var terminal_count_before := terminal_commit_count
+	tester_prepared_terminal_branch = &""
+	if expected_branch == &"success":
+		if bomb_stage_index != 2 or remaining_time <= 0.0:
+			receipt["failure_reason"] = &"success_preparation_incomplete"
+			return _store_terminal_tester_receipt(receipt)
+		_active_bomb_stage = true
+		bomb_state = &"removing_detonator"
+		bomb_stage_progress = 1.0
+		_complete_bomb_stage()
+	else:
+		remaining_time = 0.0
+		_commit_timer(0.0)
+	receipt.merge({
+		"resolved": true,
+		"accepted": terminal_commit_count == terminal_count_before + 1 and terminal_event_id.length() > 0 and mission_state == (&"bomb_defused" if expected_branch == &"success" else &"bomb_detonated"),
+		"terminal_event_id": terminal_event_id,
+		"terminal_commit_count": terminal_commit_count,
+		"duplicate_terminal_submit_count": terminal_duplicate_submit_count,
+		"authoritative_api": &"complete_bomb_stage" if expected_branch == &"success" else &"commit_timer",
+		"reset_isolation": {
+			"single_terminal_commit": terminal_commit_count == terminal_count_before + 1,
+			"prepared_fixture_cleared": tester_prepared_terminal_branch.is_empty(),
+			"result_owned_by_mission": not last_result_snapshot.is_empty(),
+			"route_acceptance_claimed": false,
+		},
+		"failure_reason": &"" if terminal_commit_count == terminal_count_before + 1 else &"authoritative_terminal_commit_failed",
+	}, true)
+	return _store_terminal_tester_receipt(receipt)
+
+
+func _store_terminal_tester_receipt(receipt: Dictionary) -> Dictionary:
+	last_tester_terminal_receipt = receipt.duplicate(true)
+	tester_terminal_history.append(last_tester_terminal_receipt.duplicate(true))
+	while tester_terminal_history.size() > TESTER_RECEIPT_LIMIT:
+		tester_terminal_history.pop_front()
+	return last_tester_terminal_receipt.duplicate(true)
 
 
 func tester_prepare_alpha_checkpoint() -> Dictionary:
@@ -347,22 +515,27 @@ func tester_prepare_alpha_checkpoint() -> Dictionary:
 
 
 func tester_prepare_encounter(region_id: StringName) -> Dictionary:
-	## Non-release combat fixture. Prerequisites are committed through the same
-	## capture/checkpoint transaction as ordinary play; the requested region is
-	## left alive and active so observation and commit remain separate actions.
+	## Non-release combat fixture. It changes only roster activation authority;
+	## objectives, checkpoints, damage, terminal state, and player transform stay
+	## untouched until a separate, generation-matched commit is requested.
 	tester_encounter_request_count += 1
 	var setup_id := "tester-encounter-%s-%06d" % [region_id, tester_encounter_request_count]
+	var setup_generation := tester_encounter_request_count
 	var timer_before := remaining_time
 	var run_epoch_before := run_epoch
-	var frontier_before := _capture_frontier()
+	var frontier_before := _fixture_progression_frontier()
+	var terminal_before := terminal_commit_count
 	last_tester_encounter_receipt = {
 		"setup_id": setup_id,
+		"branch_id": StringName("combat:%s" % String(region_id)),
+		"setup_generation": setup_generation,
 		"kind": &"encounter_prepare",
 		"requested_region": region_id,
 		"requested": true,
 		"resolved": false,
 		"accepted": false,
 		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
 		"run_epoch": run_epoch,
 		"route_acceptance_claimed": false,
 	}
@@ -375,22 +548,7 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 	if mission_state != &"active_gameplay" or deployment_snapshot.is_empty() or checkpoint_restore_in_progress or recovery_input_locked:
 		last_tester_encounter_receipt["failure_reason"] = &"authoritative_state_unavailable"
 		return last_tester_encounter_receipt.duplicate(true)
-	var prerequisite_commits: Array[StringName] = []
-	if region_id in [&"bravo", &"charlie"] and StringName((capture_points[&"alpha"] as Dictionary).get("state", &"")) != &"secured_aegis":
-		if not _complete_capture(&"alpha"):
-			_restore_frontier(frontier_before)
-			_sync_roster_after_frontier_restore()
-			last_tester_encounter_receipt["failure_reason"] = &"alpha_prerequisite_failed"
-			return last_tester_encounter_receipt.duplicate(true)
-		prerequisite_commits.append(&"alpha")
-	if region_id == &"charlie" and StringName((capture_points[&"bravo"] as Dictionary).get("state", &"")) != &"secured_aegis":
-		if not _complete_capture(&"bravo"):
-			_restore_frontier(frontier_before)
-			_sync_roster_after_frontier_restore()
-			last_tester_encounter_receipt["failure_reason"] = &"bravo_prerequisite_failed"
-			return last_tester_encounter_receipt.duplicate(true)
-		prerequisite_commits.append(&"bravo")
-	var progression: Dictionary = enemy_roster.call(&"sync_progression_for_checkpoint") if enemy_roster != null and enemy_roster.has_method(&"sync_progression_for_checkpoint") else {}
+	var progression: Dictionary = enemy_roster.call(&"tester_prepare_region_presence", region_id, setup_generation) if enemy_roster != null and enemy_roster.has_method(&"tester_prepare_region_presence") else {}
 	var roster_state: Dictionary = enemy_roster.call(&"_mcp_state") if enemy_roster != null and enemy_roster.has_method(&"_mcp_state") else {}
 	var expected_count := 3 if region_id == &"alpha" else 5 if region_id == &"bravo" else 10
 	var actor_ids: Array[String] = []
@@ -403,18 +561,27 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 		distinct_roles[String(actor.get("role", ""))] = true
 		distinct_slots[String(actor.get("slot", actor.get("route_slot", "")))] = true
 	actor_ids.sort()
-	var accepted: bool = progression.get("accepted", false) == true and StringName(progression.get("expected_region", &"")) == region_id and int(progression.get("active_count", 0)) == expected_count and actor_ids.size() == expected_count
+	var frontier_after := _fixture_progression_frontier()
+	var validation := {
+		"roster_accepted": progression.get("accepted", false) == true,
+		"region_matched": StringName(progression.get("active_region", &"")) == region_id,
+		"active_count_matched": int(progression.get("active_count", 0)) == expected_count,
+		"actor_id_count_matched": actor_ids.size() == expected_count,
+		"frontier_unchanged": frontier_after == frontier_before,
+		"terminal_unchanged": terminal_commit_count == terminal_before,
+	}
+	var accepted: bool = not validation.values().has(false)
 	if not accepted:
-		_restore_frontier(frontier_before)
-		var rollback_progression := _sync_roster_after_frontier_restore()
 		last_tester_encounter_receipt.merge({
 			"resolved": true,
-			"failure_reason": &"encounter_progression_validation_failed",
+			"failure_reason": &"encounter_preparation_validation_failed",
+			"validation": validation,
 			"progression": progression,
-			"rollback_progression": rollback_progression,
+			"frontier_unchanged": frontier_after == frontier_before,
 		}, true)
 		return last_tester_encounter_receipt.duplicate(true)
 	tester_prepared_region = region_id
+	tester_prepared_region_generation = setup_generation
 	last_tester_encounter_receipt.merge({
 		"resolved": true,
 		"accepted": true,
@@ -423,14 +590,17 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 		"stable_actor_ids": actor_ids,
 		"distinct_role_count": distinct_roles.size(),
 		"distinct_slot_count": distinct_slots.size(),
-		"prerequisite_commits": prerequisite_commits,
+		"validation": validation,
+		"prerequisite_commits": [],
 		"progression": progression,
 		"checkpoint_version": checkpoint_version,
 		"reset_isolation": {
 			"run_epoch_unchanged": run_epoch == run_epoch_before,
 			"timer_not_increased": remaining_time <= timer_before + 0.001,
-			"terminal_state_unchanged": terminal_commit_count == 0 and terminal_event_id.is_empty(),
+			"terminal_state_unchanged": terminal_commit_count == terminal_before,
+			"capture_points_unchanged": frontier_after == frontier_before,
 			"stable_identity_count": int(roster_state.get("stable_identity_count", 0)),
+			"no_actor_killed": int(progression.get("active_alive_count", 0)) == expected_count,
 			"route_acceptance_claimed": false,
 			"player_relocated": false,
 		},
@@ -440,23 +610,35 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 	return last_tester_encounter_receipt.duplicate(true)
 
 
-func tester_commit_prepared_encounter() -> Dictionary:
+func tester_commit_prepared_encounter(expected_region: StringName = &"", expected_generation := -1) -> Dictionary:
 	var region_id := tester_prepared_region
 	var receipt := {
 		"setup_id": "tester-encounter-commit-%06d" % tester_encounter_request_count,
+		"branch_id": StringName("combat:%s" % String(region_id)),
+		"setup_generation": tester_prepared_region_generation,
 		"kind": &"encounter_commit",
 		"requested": true,
 		"resolved": false,
 		"accepted": false,
 		"prepared_region": region_id,
 		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
 		"route_acceptance_claimed": false,
 	}
 	if not OS.is_debug_build():
 		receipt["failure_reason"] = &"release_build_forbidden"
 		return receipt
+	if expected_generation >= 0 and expected_generation != tester_prepared_region_generation:
+		receipt["failure_reason"] = &"stale_setup_generation"
+		return receipt
+	if not expected_region.is_empty() and expected_region != region_id:
+		receipt["failure_reason"] = &"mismatched_prepared_branch"
+		return receipt
 	if mission_state != &"active_gameplay" or region_id not in [&"alpha", &"bravo"]:
 		receipt["failure_reason"] = &"no_committable_prepared_capture"
+		return receipt
+	if not _point_is_legal(region_id):
+		receipt["failure_reason"] = &"ordinary_capture_prerequisite_missing"
 		return receipt
 	var checkpoint_before := checkpoint_version
 	var timer_before := remaining_time
@@ -471,6 +653,7 @@ func tester_commit_prepared_encounter() -> Dictionary:
 	}, true)
 	if committed:
 		tester_prepared_region = &""
+		tester_prepared_region_generation = 0
 	return receipt
 
 
@@ -870,6 +1053,23 @@ func _capture_frontier() -> Dictionary:
 	}
 
 
+func _fixture_progression_frontier() -> Dictionary:
+	## Tester preparation may legitimately publish bounded roster/animation events.
+	## Isolation concerns authoritative mission progression, not telemetry serials.
+	return {
+		"capture_points": capture_points.duplicate(true),
+		"committed_keys": committed_keys.duplicate(),
+		"route_locks": route_locks.duplicate(true),
+		"bomb_state": bomb_state,
+		"bomb_stage_index": bomb_stage_index,
+		"bomb_stage_progress": bomb_stage_progress,
+		"bomb_completed": bomb_completed.duplicate(),
+		"checkpoint_version": checkpoint_version,
+		"checkpoint_commit_count": checkpoint_commit_count,
+		"active_capture": _active_capture,
+	}
+
+
 func _restore_frontier(frontier: Dictionary) -> void:
 	capture_points = (frontier.get("capture_points", {}) as Dictionary).duplicate(true)
 	committed_keys.assign(frontier.get("committed_keys", []))
@@ -1075,6 +1275,9 @@ func _apply_checkpoint_snapshot(snapshot: Dictionary, restored_remaining_time: f
 	remaining_time = restored_remaining_time
 	_active_capture = &""
 	_active_bomb_stage = false
+	tester_prepared_region = &""
+	tester_prepared_region_generation = 0
+	tester_prepared_terminal_branch = &""
 	overlaps = {&"alpha": false, &"bravo": false, &"charlie": false}
 
 
@@ -1268,6 +1471,49 @@ func _mcp_state() -> Dictionary:
 	return {
 		"run_epoch": run_epoch,
 		"last_run_epoch_receipt": last_run_epoch_receipt,
+		"tester_fixture_summary": {
+			"encounter_branch_id": last_tester_encounter_receipt.get("branch_id", &""),
+			"encounter_generation": tester_prepared_region_generation,
+			"encounter_prepared_region": tester_prepared_region,
+			"encounter_accepted": last_tester_encounter_receipt.get("accepted", false),
+			"encounter_failure_reason": last_tester_encounter_receipt.get("failure_reason", &""),
+			"terminal_branch_id": last_tester_terminal_receipt.get("branch_id", &""),
+			"terminal_generation": tester_terminal_setup_generation,
+			"terminal_prepared_branch": tester_prepared_terminal_branch,
+			"terminal_accepted": last_tester_terminal_receipt.get("accepted", false),
+			"release_guard": &"OS.is_debug_build",
+		},
+		"mission_progress_summary": {
+			"mission_state": mission_state,
+			"alpha_state": (capture_points.get(&"alpha", {}) as Dictionary).get("state", &"unknown"),
+			"bravo_state": (capture_points.get(&"bravo", {}) as Dictionary).get("state", &"unknown"),
+			"bomb_state": bomb_state,
+			"bomb_stage_index": bomb_stage_index,
+			"terminal_commit_count": terminal_commit_count,
+		},
+		# Keep the fixture control plane ahead of the large mission/event payload so
+		# bounded MCP digests always expose the current generation and disposition.
+		"tester_fixture_state": {
+			"encounter_branch_id": last_tester_encounter_receipt.get("branch_id", &""),
+			"encounter_setup_generation": tester_prepared_region_generation,
+			"encounter_prepared_region": tester_prepared_region,
+			"encounter_requested": last_tester_encounter_receipt.get("requested", false),
+			"encounter_resolved": last_tester_encounter_receipt.get("resolved", false),
+			"encounter_accepted": last_tester_encounter_receipt.get("accepted", false),
+			"encounter_release_guard": last_tester_encounter_receipt.get("release_guard", &""),
+			"encounter_failure_reason": last_tester_encounter_receipt.get("failure_reason", &""),
+			"encounter_validation": last_tester_encounter_receipt.get("validation", {}),
+			"encounter_reset_isolation": last_tester_encounter_receipt.get("reset_isolation", {}),
+			"encounter_stable_actor_ids": last_tester_encounter_receipt.get("stable_actor_ids", []),
+			"terminal_branch_id": last_tester_terminal_receipt.get("branch_id", &""),
+			"terminal_setup_generation": tester_terminal_setup_generation,
+			"terminal_prepared_branch": tester_prepared_terminal_branch,
+			"terminal_requested": last_tester_terminal_receipt.get("requested", false),
+			"terminal_resolved": last_tester_terminal_receipt.get("resolved", false),
+			"terminal_accepted": last_tester_terminal_receipt.get("accepted", false),
+			"terminal_release_guard": last_tester_terminal_receipt.get("release_guard", &""),
+			"terminal_reset_isolation": last_tester_terminal_receipt.get("reset_isolation", {}),
+		},
 		"mission_state": mission_state,
 		"remaining_time": remaining_time,
 		"timer_owner": get_path(),
@@ -1300,7 +1546,12 @@ func _mcp_state() -> Dictionary:
 		"last_tester_alpha_checkpoint_receipt": last_tester_alpha_checkpoint_receipt,
 		"tester_encounter_request_count": tester_encounter_request_count,
 		"tester_prepared_region": tester_prepared_region,
+		"tester_prepared_region_generation": tester_prepared_region_generation,
 		"last_tester_encounter_receipt": last_tester_encounter_receipt,
+		"tester_terminal_setup_generation": tester_terminal_setup_generation,
+		"tester_prepared_terminal_branch": tester_prepared_terminal_branch,
+		"last_tester_terminal_receipt": last_tester_terminal_receipt,
+		"tester_terminal_history": tester_terminal_history,
 		"elimination_count": elimination_count,
 		"player_death_count": player_death_count,
 		"last_result_snapshot": last_result_snapshot,

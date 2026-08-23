@@ -1,4 +1,4 @@
-[gd_scene load_steps=9 format=3]
+[gd_scene load_steps=11 format=3]
 
 [ext_resource type="Script" path="res://scripts/terminal_presentation_controller.gd" id="1_controller"]
 [ext_resource type="PackedScene" path="res://systems/actors/humanoid/player_victory_avatar.tscn" id="2_avatar"]
@@ -7,6 +7,8 @@
 [ext_resource type="AudioStream" path="res://assets/audio/terminal/mega_bomb.wav" id="5_blast"]
 [ext_resource type="AudioStream" path="res://assets/audio/terminal/rolling_thunder.wav" id="6_tail"]
 [ext_resource type="VideoStream" path="res://assets/cinematics/fusepoint_bomb_death.ogv" id="7_death_video"]
+[ext_resource type="VideoStream" path="res://assets/cinematics/fusepoint_victory.ogv" id="8_victory_video"]
+[ext_resource type="Texture2D" path="res://art/source/cinematics/victory/provider/frames/frame_095.png" id="9_victory_still"]
 
 [sub_resource type="StyleBoxFlat" id="RedEdgeStyle"]
 bg_color = Color(0.08, 0.002, 0.001, 0)
@@ -50,6 +52,34 @@ volume_db = -5.0
 
 [node name="TerminalOverlay" type="CanvasLayer" parent="."]
 layer = 94
+
+[node name="VictoryFallback" type="TextureRect" parent="TerminalOverlay"]
+visible = false
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+texture = ExtResource("9_victory_still")
+expand_mode = 1
+stretch_mode = 6
+
+[node name="VictoryVideo" type="VideoStreamPlayer" parent="TerminalOverlay"]
+visible = false
+modulate = Color(1, 1, 1, 0)
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+stream = ExtResource("8_victory_video")
+volume_db = -8.0
+autoplay = false
+expand = true
+loop = false
+bus = &"Music"
 
 [node name="DeathVideo" type="VideoStreamPlayer" parent="TerminalOverlay"]
 visible = false

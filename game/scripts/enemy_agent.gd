@@ -224,9 +224,47 @@ func is_contesting(objective_position: Vector3, radius: float) -> bool:
 func authoritative_snapshot() -> Dictionary:
 	var combat := snapshot()
 	var presentation_state := _presentation_actor.get_component_state() if _presentation_actor != null else {}
+	var capsule_occupancy := _capsule_occupancy_snapshot()
+	var muzzle_occupancy := _muzzle_occupancy_snapshot()
+	var last_attack: Dictionary = combat.get("last_attack", {})
+	var last_shot_id := String(last_attack.get("shot_id", ""))
 	return {
 		"run_epoch": run_epoch,
 		"id": stable_id,
+		# One compact, front-loaded inspection cell keeps every required combat
+		# datum visible even when a bounded runtime digest truncates the richer
+		# presentation and feedback payload later in this snapshot.
+		"inspection_state": {
+			"role": tactical_role,
+			"region": region_id,
+			"route_slot": route_slot,
+			"active": mission_active,
+			"alive": is_alive(),
+			"position": global_position,
+			"rotation": rotation,
+			"velocity": velocity,
+			"avoidance_velocity": combat.get("navigation_safe_velocity", Vector3.ZERO),
+			"nearest_neighbor_spacing": combat.get("nearest_enemy_distance", -1.0),
+			"reservation_key": _route_reservation.get("key", ""),
+			"reservation_state": _route_reservation.get("state", &"none"),
+			"grounded": is_on_floor(),
+			"capsule_clear": capsule_occupancy.get("capsule_clear", false),
+			"capsule_static_blockers": capsule_occupancy.get("static_blocker_count", -1),
+			"perception_target_visible": combat.get("target_visible", false),
+			"perception_memory_seconds": combat.get("last_seen_target_remaining", 0.0),
+			"action": combat.get("state", &"idle"),
+			"animation_state": presentation_state.get("state", &"inactive"),
+			"animation_clip": presentation_state.get("animation", ""),
+			"animation_time_seconds": presentation_state.get("animation_position_seconds", 0.0),
+			"ammo": combat.get("rounds_remaining", 0),
+			"muzzle_clear": muzzle_occupancy.get("clear", false),
+			"muzzle_static_blockers": muzzle_occupancy.get("static_blocker_count", -1),
+			"shot_id": last_shot_id,
+			"shot_authorized": _last_pre_shot_authorization.get("accepted", false),
+			"shot_block_reason": _last_pre_shot_authorization.get("failure_reason", &"none"),
+			"reciprocal_static_occlusion": combat.get("fire_block_reason", &"unknown"),
+			"restore_epoch": _restore_epoch,
+		},
 		"region": region_id,
 		"role": tactical_role,
 		"route_slot": route_slot,
@@ -257,13 +295,30 @@ func authoritative_snapshot() -> Dictionary:
 		"stalled_seconds": _stalled_seconds,
 		"progress_watchdog_count": _progress_watchdog_count,
 		"grounded_occupancy": is_on_floor(),
+		"full_capsule_occupancy": capsule_occupancy,
 		"avoidance_enabled": _navigation_agent != null and _navigation_agent.avoidance_enabled,
 		"ammo": combat.get("rounds_remaining", 0),
 		"magazine_size": combat.get("magazine_size", 0),
-		"shot_event_id": String((combat.get("last_attack", {}) as Dictionary).get("shot_id", "")),
+		"shot_event_id": last_shot_id,
 		"occlusion": combat.get("fire_block_reason", &"unknown"),
 		"pre_shot_authorization": _last_pre_shot_authorization.duplicate(true),
+		"muzzle_state": muzzle_occupancy,
 		"shot_feedback": _shot_feedback.snapshot(),
+		"shot_causality": {
+			"shot_id": last_shot_id,
+			"ammo_before": last_attack.get("ammo_before", combat.get("rounds_remaining", 0)),
+			"ammo_after": last_attack.get("ammo_after", combat.get("rounds_remaining", 0)),
+			"ammo_commit": last_attack.get("ammo_commit", 0),
+			"animation_action": combat.get("state", &"idle"),
+			"tracer_impact_audio_owner": String(_shot_feedback.get_path()),
+			"damage_event_id": String(last_attack.get("event_id", last_shot_id)),
+		},
+		"perception_memory": {
+			"target_visible": combat.get("target_visible", false),
+			"last_seen_position": combat.get("last_seen_target_position", Vector3.ZERO),
+			"remaining_seconds": combat.get("last_seen_target_remaining", 0.0),
+			"target_path": combat.get("target", ""),
+		},
 		"nearest_neighbor_distance": combat.get("nearest_enemy_distance", -1.0),
 		"health": combat.get("health", {}),
 		"activation_sequence": activation_sequence,
@@ -303,6 +358,66 @@ func authoritative_snapshot() -> Dictionary:
 		"restore_readiness": _restore_readiness,
 		"last_event": _last_enemy_event,
 	}
+
+
+func _capsule_occupancy_snapshot() -> Dictionary:
+	var receipt := {
+		"checked_frame": Engine.get_physics_frames(),
+		"capsule_radius": 0.37,
+		"capsule_height": 1.7,
+		"static_blocker_count": -1,
+		"capsule_clear": false,
+		"accepted": false,
+	}
+	if not is_inside_tree() or get_world_3d() == null:
+		return receipt
+	var capsule := CapsuleShape3D.new()
+	capsule.radius = 0.37
+	capsule.height = 1.7
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = capsule
+	query.transform = Transform3D(Basis.IDENTITY, global_position + Vector3.UP * 0.92)
+	query.collision_mask = sight_collision_mask
+	query.exclude = [get_rid()]
+	query.collide_with_areas = false
+	query.collide_with_bodies = true
+	var blocker_count := 0
+	for hit: Dictionary in get_world_3d().direct_space_state.intersect_shape(query, 12):
+		if hit.get("collider") is StaticBody3D:
+			blocker_count += 1
+	receipt["static_blocker_count"] = blocker_count
+	receipt["capsule_clear"] = blocker_count == 0
+	receipt["accepted"] = blocker_count == 0
+	return receipt
+
+
+func _muzzle_occupancy_snapshot() -> Dictionary:
+	var receipt := {
+		"checked_frame": Engine.get_physics_frames(),
+		"node_path": String(_muzzle.get_path()) if _muzzle != null and _muzzle.is_inside_tree() else "",
+		"position": _muzzle.global_position if _muzzle != null and _muzzle.is_inside_tree() else global_position,
+		"forward": -_muzzle.global_basis.z if _muzzle != null and _muzzle.is_inside_tree() else -global_basis.z,
+		"static_blocker_count": -1,
+		"clear": false,
+	}
+	if _muzzle == null or not _muzzle.is_inside_tree() or get_world_3d() == null:
+		return receipt
+	var sphere := SphereShape3D.new()
+	sphere.radius = 0.12
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = sphere
+	query.transform = Transform3D(Basis.IDENTITY, _muzzle.global_position)
+	query.collision_mask = sight_collision_mask
+	query.exclude = [get_rid()]
+	query.collide_with_areas = false
+	query.collide_with_bodies = true
+	var blocker_count := 0
+	for hit: Dictionary in get_world_3d().direct_space_state.intersect_shape(query, 8):
+		if hit.get("collider") is StaticBody3D:
+			blocker_count += 1
+	receipt["static_blocker_count"] = blocker_count
+	receipt["clear"] = blocker_count == 0
+	return receipt
 
 
 func begin_checkpoint_restore(epoch: int) -> void:
@@ -609,17 +724,19 @@ func _pre_shot_authorization() -> Dictionary:
 	var eye_clear := _ray_reaches_target(_eye.global_position, endpoint)
 	var muzzle_clear := _ray_reaches_target(_muzzle.global_position, endpoint)
 	var reciprocal_clear := _reverse_ray_reaches_self(endpoint, _eye.global_position)
+	var muzzle_occupancy := _muzzle_occupancy_snapshot()
 	receipt["body_clear"] = static_blocker_count == 0
 	receipt["static_blocker_count"] = static_blocker_count
 	receipt["eye_clear"] = eye_clear
-	receipt["muzzle_clear"] = muzzle_clear
+	receipt["muzzle_clear"] = muzzle_clear and muzzle_occupancy.get("clear", false) == true
+	receipt["muzzle_occupancy"] = muzzle_occupancy
 	receipt["reciprocal_clear"] = reciprocal_clear
-	receipt["accepted"] = static_blocker_count == 0 and eye_clear and muzzle_clear and reciprocal_clear
+	receipt["accepted"] = static_blocker_count == 0 and eye_clear and muzzle_clear and muzzle_occupancy.get("clear", false) == true and reciprocal_clear
 	if static_blocker_count > 0:
 		receipt["reason"] = &"body_clearance_blocked"
 	elif not eye_clear:
 		receipt["reason"] = &"eye_occluded"
-	elif not muzzle_clear:
+	elif not muzzle_clear or muzzle_occupancy.get("clear", false) != true:
 		receipt["reason"] = &"muzzle_occluded"
 	elif not reciprocal_clear:
 		receipt["reason"] = &"reciprocal_occlusion_blocked"

@@ -186,6 +186,22 @@ tester_encounter_commit={
 "deadzone": 0.5,
 "events": []
 }
+tester_terminal_success_prepare={
+"deadzone": 0.5,
+"events": []
+}
+tester_terminal_success_advance={
+"deadzone": 0.5,
+"events": []
+}
+tester_terminal_failure_prepare={
+"deadzone": 0.5,
+"events": []
+}
+tester_terminal_failure_advance={
+"deadzone": 0.5,
+"events": []
+}
 tester_shell_death={
 "deadzone": 0.5,
 "events": []
