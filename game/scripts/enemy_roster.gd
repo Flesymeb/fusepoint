@@ -74,6 +74,8 @@ var last_tester_setup_receipt: Dictionary = {}
 var tester_setup_history: Array[Dictionary] = []
 var _tester_prepared_region: StringName = &""
 var _tester_prepared_generation := 0
+var _tester_advanced_region: StringName = &""
+var _tester_advanced_generation := 0
 
 @onready var player: Node3D = get_node(player_path) as Node3D
 @onready var mission_controller: Node = get_node(mission_controller_path)
@@ -105,7 +107,7 @@ func _ready() -> void:
 
 
 func _process(_delta: float) -> void:
-	if roster_initialized and not restore_in_progress and _tester_prepared_region.is_empty():
+	if roster_initialized and not restore_in_progress and _tester_prepared_region.is_empty() and _tester_advanced_region.is_empty():
 		_update_region_activation()
 
 
@@ -128,6 +130,8 @@ func set_run_epoch(epoch: int, reset_transients := true) -> bool:
 	if run_epoch > previous_epoch:
 		_tester_prepared_region = &""
 		_tester_prepared_generation = 0
+		_tester_advanced_region = &""
+		_tester_advanced_generation = 0
 		_roster_event_sequence = 0
 		qualification_event_sequence = 0
 		qualification_run_id = "encounter-run-%06d" % run_epoch
@@ -135,6 +139,7 @@ func set_run_epoch(epoch: int, reset_transients := true) -> bool:
 		progression_receipts.clear()
 		_progression_receipt_sequence = 0
 	for enemy: FusepointEnemyAgent in enemies.values():
+		enemy.clear_tester_prepared_hold()
 		enemy.set_run_epoch(run_epoch)
 		if reset_transients:
 			enemy.reset_shot_feedback()
@@ -444,6 +449,10 @@ func tester_request_alpha_presence() -> Dictionary:
 
 func tester_prepare_region_presence(region_id: StringName, setup_generation: int) -> Dictionary:
 	tester_setup_request_count += 1
+	# A new bounded preparation ends the previous observation window. The new
+	# selection below remains the only active region for this generation.
+	_tester_advanced_region = &""
+	_tester_advanced_generation = 0
 	var actor_ids_before: Array[String] = []
 	for actor_id: StringName in enemies:
 		actor_ids_before.append(String(actor_id))
@@ -482,8 +491,11 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 		_store_tester_setup_receipt()
 		return last_tester_setup_receipt.duplicate(true)
 	activation_sequence += 1
+	var hold_receipts: Array[Dictionary] = []
 	for enemy: FusepointEnemyAgent in enemies.values():
 		enemy.set_mission_active(enemy.region_id == region_id, activation_sequence)
+		if enemy.region_id == region_id:
+			hold_receipts.append(enemy.set_tester_prepared_hold(true, setup_generation))
 	_record_region_milestone(region_id)
 	var occupancy := validate_restore_occupancy(player.global_position, false)
 	var actor_ids_after: Array[String] = []
@@ -509,7 +521,10 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 		"no_actor_killed": active_alive_count == expected_count,
 		"route_acceptance_claimed": false,
 	}
-	var accepted: bool = occupancy.get("accepted", false) == true and active_region_ids.size() == expected_count and active_alive_count == expected_count and reset_isolation["capture_points_unchanged"] == true
+	var every_actor_held := hold_receipts.size() == expected_count
+	for hold_receipt: Dictionary in hold_receipts:
+		every_actor_held = every_actor_held and hold_receipt.get("accepted", false) == true
+	var accepted: bool = occupancy.get("accepted", false) == true and active_region_ids.size() == expected_count and active_alive_count == expected_count and reset_isolation["capture_points_unchanged"] == true and every_actor_held
 	last_tester_setup_receipt.merge({
 		"resolved": true,
 		"accepted": accepted,
@@ -518,6 +533,8 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 		"active_alive_count": active_alive_count,
 		"stable_actor_ids": active_region_ids,
 		"occupancy": occupancy,
+		"actor_hold_receipts": hold_receipts,
+		"stable_inspection_hold": every_actor_held,
 		"reset_isolation": reset_isolation,
 		"failure_reason": &"" if accepted else &"region_presence_validation_failed",
 	}, true)
@@ -556,6 +573,8 @@ func begin_restore_epoch() -> int:
 	restore_epoch += 1
 	_tester_prepared_region = &""
 	_tester_prepared_generation = 0
+	_tester_advanced_region = &""
+	_tester_advanced_generation = 0
 	restore_in_progress = true
 	restore_applied_actor_count = 0
 	last_restore_receipt.clear()
@@ -827,6 +846,8 @@ func _summary() -> Dictionary:
 			"route_acceptance_claimed": false,
 			"pinned_region": _tester_prepared_region,
 			"pinned_generation": _tester_prepared_generation,
+			"advanced_region": _tester_advanced_region,
+			"advanced_generation": _tester_advanced_generation,
 		},
 		"last_tester_setup_receipt": last_tester_setup_receipt,
 		"tester_setup_history": tester_setup_history,
@@ -896,9 +917,40 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 	if expected_region != _tester_prepared_region or expected_generation != _tester_prepared_generation:
 		receipt["failure_reason"] = &"prepared_generation_mismatch"
 		return receipt
+	var release_receipts: Array[Dictionary] = []
+	var active_ids: Array[String] = []
+	for enemy: FusepointEnemyAgent in enemies.values():
+		if enemy.region_id != expected_region or not enemy.mission_active:
+			continue
+		active_ids.append(String(enemy.stable_id))
+		release_receipts.append(enemy.set_tester_prepared_hold(false, expected_generation))
+	active_ids.sort()
+	var every_actor_released := not release_receipts.is_empty()
+	for actor_receipt: Dictionary in release_receipts:
+		every_actor_released = every_actor_released and actor_receipt.get("accepted", false) == true
+	if not every_actor_released:
+		receipt["failure_reason"] = &"actor_release_failed"
+		receipt["actor_release_receipts"] = release_receipts
+		return receipt
+	# Keep the released region selected for a bounded, inspectable observation
+	# window. Actors now run their ordinary AI; only the debug region selector is
+	# pinned until the next prepare or lifecycle reset.
+	_tester_advanced_region = expected_region
+	_tester_advanced_generation = expected_generation
 	_tester_prepared_region = &""
 	_tester_prepared_generation = 0
-	receipt.merge({"resolved": true, "accepted": true, "failure_reason": &""}, true)
+	receipt.merge({
+		"resolved": true,
+		"accepted": true,
+		"failure_reason": &"",
+		"active_stable_ids": active_ids,
+		"active_count": active_ids.size(),
+		"observation_region": _tester_advanced_region,
+		"observation_generation": _tester_advanced_generation,
+		"actor_release_receipts": release_receipts,
+		"combat_authority": &"ordinary_enemy_physics_perception_navigation_fire",
+		"route_acceptance_claimed": false,
+	}, true)
 	return receipt
 
 
@@ -969,6 +1021,8 @@ func _compact_actor_state(enemy: FusepointEnemyAgent) -> Dictionary:
 		"root_upright": snapshot.get("root_upright", false),
 		"aim_pitch_degrees": snapshot.get("aim_pitch_degrees", 0.0),
 		"restore_epoch": snapshot.get("restore_epoch", 0),
+		"setup_generation": inspection.get("setup_generation", _tester_prepared_generation),
+		"tester_prepared_hold": inspection.get("tester_prepared_hold", false),
 		"shot_feedback": {
 			"active_effect_count": feedback.get("active_effect_count", 0),
 			"presented_event_count": feedback.get("presented_event_count", 0),

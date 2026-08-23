@@ -61,6 +61,8 @@ var _last_progress_position := Vector3.ZERO
 var _stalled_seconds := 0.0
 var _progress_watchdog_count := 0
 var _combat_profile: Dictionary = {}
+var _tester_prepared_hold := false
+var _tester_prepared_generation := 0
 
 
 func _ready() -> void:
@@ -86,7 +88,7 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if not mission_active:
+	if not mission_active or _tester_prepared_hold:
 		return
 	_enforce_upright_navigation_root()
 	super._physics_process(delta)
@@ -157,6 +159,9 @@ func set_mission_active(active: bool, sequence := 0) -> void:
 	if mission_active == active and (not active or activation_sequence > 0):
 		return
 	mission_active = active
+	if not active:
+		_tester_prepared_hold = false
+		_tester_prepared_generation = 0
 	_navigation_safe_velocity = Vector3.ZERO
 	_navigation_desired_velocity = Vector3.ZERO
 	_navigation_safe_velocity_ready = false
@@ -185,7 +190,7 @@ func _ensure_presentation() -> void:
 
 
 func _apply_activation_state() -> void:
-	set_physics_process(mission_active)
+	set_physics_process(mission_active and not _tester_prepared_hold)
 	if _collision_shape != null:
 		_collision_shape.set_deferred("disabled", not mission_active or (_health != null and _health.is_dead))
 	if _navigation_agent != null:
@@ -194,6 +199,54 @@ func _apply_activation_state() -> void:
 		_presentation_actor.visible = mission_active and not cleanup_hidden
 	if not mission_active:
 		velocity = Vector3.ZERO
+
+
+func set_tester_prepared_hold(enabled: bool, setup_generation: int) -> Dictionary:
+	var receipt := {
+		"actor_id": stable_id,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"enabled": enabled,
+		"setup_generation": setup_generation,
+		"release_guard": &"OS.is_debug_build",
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if setup_generation <= 0 or not mission_active or not is_alive():
+		receipt["failure_reason"] = &"actor_not_stable_live"
+		return receipt
+	if not enabled and (not _tester_prepared_hold or setup_generation != _tester_prepared_generation):
+		receipt["failure_reason"] = &"prepared_generation_mismatch"
+		return receipt
+	_tester_prepared_hold = enabled
+	# Retain the released generation so paged inspection can correlate ordinary
+	# perception/combat samples with the preparation that selected this actor.
+	# Lifecycle reset remains the sole place that clears the generation.
+	_tester_prepared_generation = setup_generation
+	velocity = Vector3.ZERO
+	_navigation_safe_velocity = Vector3.ZERO
+	_navigation_desired_velocity = Vector3.ZERO
+	_navigation_safe_velocity_ready = false
+	if _navigation_agent != null:
+		_navigation_agent.set_velocity_forced(Vector3.ZERO)
+	_apply_activation_state()
+	receipt.merge({
+		"resolved": true,
+		"accepted": true,
+		"failure_reason": &"",
+		"physics_held": _tester_prepared_hold,
+		"visible": _presentation_actor != null and _presentation_actor.visible,
+		"collision_active": _collision_shape != null and not _collision_shape.disabled,
+	}, true)
+	return receipt
+
+
+func clear_tester_prepared_hold() -> void:
+	_tester_prepared_hold = false
+	_tester_prepared_generation = 0
+	_apply_activation_state()
 
 
 func apply_weapon_damage(amount: float, shot_id: String, origin: Vector3) -> bool:
@@ -264,6 +317,8 @@ func authoritative_snapshot() -> Dictionary:
 			"shot_block_reason": _last_pre_shot_authorization.get("failure_reason", &"none"),
 			"reciprocal_static_occlusion": combat.get("fire_block_reason", &"unknown"),
 			"restore_epoch": _restore_epoch,
+			"tester_prepared_hold": _tester_prepared_hold,
+			"setup_generation": _tester_prepared_generation,
 		},
 		"region": region_id,
 		"role": tactical_role,

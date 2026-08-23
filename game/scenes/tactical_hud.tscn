@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3]
+[gd_scene load_steps=12 format=3]
 
 [ext_resource type="Script" path="res://scripts/tactical_hud.gd" id="1_script"]
 [ext_resource type="Theme" path="res://systems/ui/fusepoint_theme.tres" id="2_theme"]
@@ -6,6 +6,7 @@
 [ext_resource type="PackedScene" path="res://ui/hud/minimap/minimap.tscn" id="4_minimap"]
 [ext_resource type="PackedScene" path="res://ui/hud/combat/weapon_ammo_hud.tscn" id="5_weapon"]
 [ext_resource type="FontFile" path="res://ui/hud/combat/fonts/BarlowCondensed-SemiBold.ttf" id="6_semibold"]
+[ext_resource type="Texture2D" path="res://assets/ui/icons/event_kill_rifle.svg" id="7_kill_icon"]
 
 [sub_resource type="StyleBoxFlat" id="ProgressBackground"]
 bg_color = Color(0.01, 0.02, 0.025, 0.52)
@@ -149,35 +150,95 @@ offset_right = 1250.0
 offset_bottom = 160.0
 theme_override_constants/separation = 2
 
-[node name="Row1" type="Label" parent="Root/CombatFeed"]
+[node name="Row1" type="HBoxContainer" parent="Root/CombatFeed"]
+layout_mode = 2
+[node name="Spacer" type="Control" parent="Root/CombatFeed/Row1"]
+layout_mode = 2
+size_flags_horizontal = 3
+[node name="Icon" type="TextureRect" parent="Root/CombatFeed/Row1"]
+visible = false
+custom_minimum_size = Vector2(28, 16)
+layout_mode = 2
+texture = ExtResource("7_kill_icon")
+expand_mode = 3
+stretch_mode = 5
+[node name="Text" type="Label" parent="Root/CombatFeed/Row1"]
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.76, 0.25, 0.96)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 0.86)
 theme_override_constants/outline_size = 4
 theme_override_font_sizes/font_size = 14
 horizontal_alignment = 2
-[node name="Row2" type="Label" parent="Root/CombatFeed"]
+[node name="Row2" type="HBoxContainer" parent="Root/CombatFeed"]
+layout_mode = 2
+[node name="Spacer" type="Control" parent="Root/CombatFeed/Row2"]
+layout_mode = 2
+size_flags_horizontal = 3
+[node name="Icon" type="TextureRect" parent="Root/CombatFeed/Row2"]
+visible = false
+custom_minimum_size = Vector2(28, 16)
+layout_mode = 2
+texture = ExtResource("7_kill_icon")
+expand_mode = 3
+stretch_mode = 5
+[node name="Text" type="Label" parent="Root/CombatFeed/Row2"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.92, 0.93, 0.9, 0.9)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 0.86)
 theme_override_constants/outline_size = 4
 theme_override_font_sizes/font_size = 14
 horizontal_alignment = 2
-[node name="Row3" type="Label" parent="Root/CombatFeed"]
+[node name="Row3" type="HBoxContainer" parent="Root/CombatFeed"]
+layout_mode = 2
+[node name="Spacer" type="Control" parent="Root/CombatFeed/Row3"]
+layout_mode = 2
+size_flags_horizontal = 3
+[node name="Icon" type="TextureRect" parent="Root/CombatFeed/Row3"]
+visible = false
+custom_minimum_size = Vector2(28, 16)
+layout_mode = 2
+texture = ExtResource("7_kill_icon")
+expand_mode = 3
+stretch_mode = 5
+[node name="Text" type="Label" parent="Root/CombatFeed/Row3"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.92, 0.93, 0.9, 0.84)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 0.86)
 theme_override_constants/outline_size = 4
 theme_override_font_sizes/font_size = 14
 horizontal_alignment = 2
-[node name="Row4" type="Label" parent="Root/CombatFeed"]
+[node name="Row4" type="HBoxContainer" parent="Root/CombatFeed"]
+layout_mode = 2
+[node name="Spacer" type="Control" parent="Root/CombatFeed/Row4"]
+layout_mode = 2
+size_flags_horizontal = 3
+[node name="Icon" type="TextureRect" parent="Root/CombatFeed/Row4"]
+visible = false
+custom_minimum_size = Vector2(28, 16)
+layout_mode = 2
+texture = ExtResource("7_kill_icon")
+expand_mode = 3
+stretch_mode = 5
+[node name="Text" type="Label" parent="Root/CombatFeed/Row4"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.92, 0.93, 0.9, 0.76)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 0.86)
 theme_override_constants/outline_size = 4
 theme_override_font_sizes/font_size = 14
 horizontal_alignment = 2
-[node name="Row5" type="Label" parent="Root/CombatFeed"]
+[node name="Row5" type="HBoxContainer" parent="Root/CombatFeed"]
+layout_mode = 2
+[node name="Spacer" type="Control" parent="Root/CombatFeed/Row5"]
+layout_mode = 2
+size_flags_horizontal = 3
+[node name="Icon" type="TextureRect" parent="Root/CombatFeed/Row5"]
+visible = false
+custom_minimum_size = Vector2(28, 16)
+layout_mode = 2
+texture = ExtResource("7_kill_icon")
+expand_mode = 3
+stretch_mode = 5
+[node name="Text" type="Label" parent="Root/CombatFeed/Row5"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.92, 0.93, 0.9, 0.68)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 0.86)

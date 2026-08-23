@@ -11,6 +11,7 @@ const COMBAT_ROW_LIMIT := 5
 const COMBAT_FEED_ALLOWED_KINDS: Array[StringName] = [
 	&"capture_started", &"capture_contested", &"capture_completed",
 	&"key_committed", &"route_unlocked", &"checkpoint_committed",
+	&"deployment_started", &"checkpoint_restored", &"weapon_hit",
 	&"enemy_died", &"terminal_submitted", &"player_death",
 ]
 
@@ -243,9 +244,7 @@ func reset_transient_feedback_for_restore(epoch: int) -> void:
 	_event_row_receipts.clear()
 	_event_row_expiries.clear()
 	_event_cleanup_receipts.clear()
-	for child: Node in feed.get_children():
-		if child is Label:
-			(child as Label).text = ""
+	_render_combat_rows()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -370,7 +369,7 @@ func _on_mission_event(event: Dictionary) -> void:
 		_story_elapsed = 0.0
 		_story_active = true
 		narrative.visible = true
-	var important := kind in [&"capture_started", &"capture_contested", &"capture_completed", &"key_committed", &"route_unlocked", &"checkpoint_committed", &"enemy_died", &"terminal_submitted"]
+	var important := kind in [&"deployment_started", &"capture_started", &"capture_contested", &"capture_completed", &"key_committed", &"route_unlocked", &"checkpoint_committed", &"checkpoint_restored", &"enemy_died", &"terminal_submitted"]
 	if important:
 		_push_combat_row(_row_receipt(event))
 
@@ -379,9 +378,18 @@ func _on_weapon_shot(event: Dictionary) -> void:
 	var event_id := String(event.get("shot_id", ""))
 	if event_id.is_empty():
 		return
-	# ShotFeedback owns the causal reticle, tracer, world VFX and audio. A shot
-	# result is not an authoritative feed record, so misses, material impacts and
-	# ordinary hit confirmations all terminate at that presentation boundary.
+	if StringName(event.get("result", &"miss")) == &"hit" and event.get("applied", false) == true:
+		_push_combat_row({
+			"event_id": event_id,
+			"kind": &"weapon_hit",
+			"text": "HIT CONFIRMED",
+			"style": &"confirmed_hit",
+			"target_path": String(event.get("target_path", "")),
+			"authority_frame": int(event.get("committed_frame", Engine.get_process_frames())),
+			"presentation_only": true,
+		})
+		return
+	# Misses and blocked impacts terminate at the reticle/world-feedback boundary.
 	_suppressed_combat_event_count += 1
 	_last_suppressed_combat_event = {
 		"event_id": event_id,
@@ -491,23 +499,32 @@ func _archive_row_cleanup(receipt: Dictionary, reason: StringName) -> void:
 
 func _render_combat_rows() -> void:
 	for index in feed.get_child_count():
-		var row := feed.get_child(index) as Label
+		var row_root := feed.get_child(index) as HBoxContainer
+		var row := row_root.get_node("Text") as Label
+		var icon := row_root.get_node("Icon") as TextureRect
 		row.text = _event_rows[index] if index < _event_rows.size() else ""
 		var row_receipt: Dictionary = _event_row_receipts[index] if index < _event_row_receipts.size() else {}
 		var style := StringName(row_receipt.get("style", &"compact_feed"))
 		var color := Color(1.0, 0.76, 0.25, 0.96) if style == &"restrained_yellow_kill" else Color(1.0, 0.34, 0.28, 0.96) if style == &"red_threat" else Color(0.32, 0.92, 1.0, 0.94) if style == &"confirmed_hit" else Color(0.92, 0.93, 0.9, maxf(0.64, 0.9 - float(index) * 0.07))
 		row.add_theme_color_override("font_color", color)
+		icon.visible = style == &"restrained_yellow_kill" and not row.text.is_empty()
+		icon.modulate = Color(color.r, color.g, color.b, color.a)
 
 
 func _format_event(event: Dictionary) -> String:
-	if StringName(event.get("kind", &"")) == &"enemy_died":
+	var kind := StringName(event.get("kind", &""))
+	if kind == &"enemy_died":
 		var source: Dictionary = event.get("payload", {})
 		var actor_id := String(source.get("actor_id", "RIFT HOSTILE")).replace("_", " ").replace("-", " ").to_upper()
-		return "YOU KILLED  %s" % actor_id
-	var kind := String(event.get("kind", "event")).replace("_", " ").to_upper()
+		return "ELIMINATED  %s" % actor_id
+	if kind == &"deployment_started":
+		return "ROUTE  ALPHA APPROACH LIVE"
+	if kind == &"checkpoint_restored":
+		return "RESTORED  CHECKPOINT READY"
+	var verb := String(kind).replace("_", " ").to_upper()
 	var payload: Dictionary = event.get("payload", {})
 	var subject := String(payload.get("objective_id", payload.get("actor_id", ""))).to_upper()
-	return "◆  %s%s" % [subject + "  " if not subject.is_empty() else "", kind]
+	return "%s%s" % [subject + "  " if not subject.is_empty() else "", verb]
 
 
 func _row_receipt(event: Dictionary) -> Dictionary:

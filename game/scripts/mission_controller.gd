@@ -663,6 +663,67 @@ func tester_commit_prepared_encounter(expected_region: StringName = &"", expecte
 	return receipt
 
 
+func tester_advance_prepared_encounter(expected_region: StringName = &"", expected_generation := -1) -> Dictionary:
+	var region_id := tester_prepared_region
+	var generation := tester_prepared_region_generation
+	var receipt := {
+		"setup_id": "tester-encounter-advance-%06d" % tester_encounter_request_count,
+		"branch_id": StringName("combat:%s" % String(region_id)),
+		"setup_generation": generation,
+		"kind": &"encounter_advance",
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"prepared_region": region_id,
+		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
+		"route_acceptance_claimed": false,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if expected_generation >= 0 and expected_generation != generation:
+		receipt["failure_reason"] = &"stale_setup_generation"
+		return receipt
+	if not expected_region.is_empty() and expected_region != region_id:
+		receipt["failure_reason"] = &"mismatched_prepared_branch"
+		return receipt
+	if mission_state != &"active_gameplay" or region_id not in [&"alpha", &"bravo", &"charlie"]:
+		receipt["failure_reason"] = &"no_advanceable_prepared_encounter"
+		return receipt
+	var frontier_before := _fixture_progression_frontier()
+	var terminal_before := terminal_commit_count
+	var checkpoint_before := checkpoint_version
+	var timer_before := remaining_time
+	var roster_release: Dictionary = enemy_roster.call(
+		&"tester_release_prepared_region",
+		region_id,
+		generation,
+	) if enemy_roster != null and enemy_roster.has_method(&"tester_release_prepared_region") else {}
+	var accepted: bool = roster_release.get("accepted", false) == true
+	receipt.merge({
+		"resolved": roster_release.get("resolved", false) == true,
+		"accepted": accepted,
+		"active_stable_ids": roster_release.get("active_stable_ids", []),
+		"region_count": roster_release.get("active_count", 0),
+		"roster_release": roster_release,
+		"reset_isolation": {
+			"capture_points_unchanged": _fixture_progression_frontier() == frontier_before,
+			"checkpoint_version_unchanged": checkpoint_version == checkpoint_before,
+			"terminal_state_unchanged": terminal_commit_count == terminal_before,
+			"timer_not_increased": remaining_time <= timer_before + 0.001,
+			"route_acceptance_claimed": false,
+		},
+		"failure_reason": &"" if accepted else roster_release.get("failure_reason", &"roster_release_failed"),
+	}, true)
+	if accepted:
+		tester_prepared_region = &""
+		tester_prepared_region_generation = 0
+	last_tester_encounter_receipt = receipt.duplicate(true)
+	_record_event(&"tester_encounter_advanced", receipt.duplicate(true), false)
+	return receipt
+
+
 func _tester_alpha_checkpoint_transform(hostile_positions: Array) -> Dictionary:
 	var alpha_objective := get_node(alpha_path) as Node3D
 	var authored_anchor := alpha_objective.get_parent().get_node_or_null("ProductAnchors/Alpha") as Node3D

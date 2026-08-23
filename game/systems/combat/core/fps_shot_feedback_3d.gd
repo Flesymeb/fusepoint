@@ -54,6 +54,7 @@ var _last_presentation: Dictionary = {}
 var _variant_use_counts := {0: 0, 1: 0, 2: 0, 3: 0}
 var _culled_effect_count := 0
 var _local_impact_suppression_count := 0
+var _player_report_suppression_count := 0
 var _audio_receipts: Array[Dictionary] = []
 var _audio_cleanup_count := 0
 
@@ -92,7 +93,12 @@ func show_shot(event: Dictionary) -> bool:
 	_variant_use_counts[variant_index] = int(_variant_use_counts.get(variant_index, 0)) + 1
 	var trace_clip := _clip_trace_endpoint_for_camera(from, to, local_player_hit)
 	var trace_to: Vector3 = trace_clip.get("endpoint", to)
-	var roles: Array[StringName] = [&"compact_muzzle", &"near_miss" if result == &"miss" else &"bounded_tracer", &"spatial_report_audio"]
+	var roles: Array[StringName] = [&"compact_muzzle", &"near_miss" if result == &"miss" else &"bounded_tracer"]
+	var player_report_suppressed := source_team == &"player"
+	if player_report_suppressed:
+		_player_report_suppression_count += 1
+	else:
+		roles.append(&"spatial_report_audio")
 	_spawn_muzzle(from, direction, tracer_color, event, variant_index)
 	_spawn_tracer(from, trace_to, tracer_color, event, result, variant_index)
 	var world_impact_suppressed := false
@@ -127,6 +133,8 @@ func show_shot(event: Dictionary) -> bool:
 		"local_player_hit": local_player_hit,
 		"world_impact_suppressed": world_impact_suppressed,
 		"suppression_reason": suppression_reason,
+		"player_report_suppressed": player_report_suppressed,
+		"report_audio_owner": &"weapon_component_fire_audio" if player_report_suppressed else &"enemy_spatial_feedback",
 		"roles": roles,
 		"variant_index": variant_index,
 		"effect_lifetimes": {"muzzle": muzzle_seconds, "tracer": tracer_seconds, "impact": 0.0 if world_impact_suppressed else impact_seconds},
@@ -169,6 +177,7 @@ func reset_feedback(epoch := -1) -> void:
 	_variant_use_counts = {0: 0, 1: 0, 2: 0, 3: 0}
 	_culled_effect_count = 0
 	_local_impact_suppression_count = 0
+	_player_report_suppression_count = 0
 
 
 func snapshot() -> Dictionary:
@@ -191,6 +200,9 @@ func snapshot() -> Dictionary:
 		"max_single_variant_share": _max_variant_share(),
 		"culled_effect_count": _culled_effect_count,
 		"local_impact_suppression_count": _local_impact_suppression_count,
+		"player_report_suppression_count": _player_report_suppression_count,
+		"player_report_audio_created": false,
+		"enemy_report_audio_owner": &"spatial_report_audio",
 		"audio_receipts": _audio_receipts.duplicate(true),
 		"audio_receipt_limit": AUDIO_RECEIPT_LIMIT,
 		"active_audio_voice_count": _active_audio_voice_count(),
@@ -359,7 +371,11 @@ func _build_concrete_impact(root: Node3D) -> void:
 
 
 func _spawn_audio(muzzle_position: Vector3, impact_position: Vector3, result: StringName, surface: StringName, source_team: StringName, local_player_hit: bool, event_identity: String) -> void:
-	_spawn_audio_cue(muzzle_position, _get_shot_audio(), &"spatial_report_audio", -5.0 if source_team == &"enemy" else -7.0, 0.92 if source_team == &"enemy" else 1.06, event_identity)
+	# The retained viewmodel's FireAudio/AutoFireAudio pair is the sole player
+	# report owner. This generic presenter keeps muzzle/tracer/impact feedback for
+	# player events, but only enemy events may create a spatial weapon report.
+	if source_team == &"enemy":
+		_spawn_audio_cue(muzzle_position, _get_shot_audio(), &"spatial_report_audio", -5.0, 0.92, event_identity)
 	if result == &"miss":
 		_spawn_audio_cue(impact_position, _get_near_miss_audio(), &"near_miss_audio", -10.0, 1.0, event_identity)
 	elif result in [&"hit", &"blocked"] and not local_player_hit:

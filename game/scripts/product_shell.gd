@@ -377,6 +377,10 @@ func _input(event: InputEvent) -> void:
 		_tester_commit_prepared_encounter()
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed(&"tester_encounter_advance"):
+		_tester_advance_prepared_encounter()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed(&"tester_terminal_success_prepare"):
 		_tester_prepare_terminal_branch(&"success")
 		get_viewport().set_input_as_handled()
@@ -505,6 +509,30 @@ func _tester_commit_prepared_encounter() -> void:
 		"route_acceptance_claimed": false,
 	}
 	receipt["failure_reason"] = mission_commit.get("failure_reason", &"")
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_advance_prepared_encounter() -> void:
+	var receipt := _new_tester_setup_receipt(&"encounter_advance")
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var prepared: Dictionary = mission.get("last_tester_encounter_receipt")
+	var mission_advance: Dictionary = mission.call(
+		&"tester_advance_prepared_encounter",
+		StringName(prepared.get("prepared_region", &"")),
+		int(prepared.get("setup_generation", -1)),
+	)
+	receipt["mission_advance"] = mission_advance
+	receipt["branch_id"] = mission_advance.get("branch_id", &"")
+	receipt["setup_generation"] = mission_advance.get("setup_generation", 0)
+	receipt["resolved"] = mission_advance.get("resolved", false) == true
+	receipt["accepted"] = mission_advance.get("accepted", false) == true
+	receipt["active_stable_ids"] = mission_advance.get("active_stable_ids", [])
+	receipt["region_count"] = mission_advance.get("region_count", 0)
+	receipt["reset_isolation"] = mission_advance.get("reset_isolation", {})
+	receipt["route_acceptance_claimed"] = false
+	receipt["failure_reason"] = mission_advance.get("failure_reason", &"")
 	_store_tester_setup_receipt(receipt)
 
 
