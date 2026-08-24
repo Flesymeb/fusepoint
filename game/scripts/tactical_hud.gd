@@ -3,17 +3,15 @@ extends CanvasLayer
 
 signal combat_row_presented(receipt: Dictionary)
 
-const DEPLOYMENT_STORY_CUES: Array[String] = [
-	"11:40 — Kestrel Ridge. Rift Front inside.",
-	"Sector C bomb armed. Support unavailable.",
-	"You are the only EOD operator on site.",
-	"Retake Alpha. Secure Bravo. Defuse Charlie.",
-]
+const DEPLOYMENT_STORY_TEXT := "11:40 — KESTREL RIDGE MILITARY BASE\nThe Rift Front planted a timed bomb in the Sector C rocket maintenance bay.\nCommunications are down. Support is not coming. You are the only operator who can enter.\nRetake Alpha first, then hold Bravo and recover both defusal keys.\nIn five minutes, the base disappears with the bomb."
 const SAFE_AREA_RATIO := 0.05
-const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v3_priority_lanes"
+const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v4_split_narrative_lanes"
 const COMBAT_ROW_LIFETIME_SECONDS := 6.0
 const COMBAT_ROW_LIMIT := 5
 const STORY_TYPE_SECONDS := 1.35
+const OPENING_REVEAL_SECONDS := 6.0
+const OPENING_HOLD_END_SECONDS := 10.0
+const OPENING_FADE_END_SECONDS := 13.0
 const COMBAT_FEED_ALLOWED_KINDS: Array[StringName] = [
 	&"capture_started", &"capture_contested", &"capture_interrupted", &"capture_completed",
 	&"key_committed", &"route_unlocked", &"checkpoint_committed",
@@ -61,6 +59,10 @@ var _story_weapon_lock_active := false
 var _story_full_text := ""
 var _story_phase := &"inactive"
 var _story_visible_characters := 0
+var _story_profile := &"inactive"
+var _last_story_profile := &"inactive"
+var _last_story_completion_receipt: Dictionary = {}
+var _last_tester_radio_receipt: Dictionary = {}
 var _event_rows: Array[String] = []
 var _event_row_receipts: Array[Dictionary] = []
 var _event_row_expiries: Array[float] = []
@@ -180,9 +182,15 @@ func _apply_responsive_layout() -> void:
 	feed.size = Vector2(324.0, 152.0 if expanded else 128.0)
 	reticle.position = center - Vector2(14.0, 14.0)
 	reticle.size = Vector2(28.0, 28.0)
-	var narrative_width := minf(760.0, viewport_size.x - safe.x * 2.0 - 8.0)
-	narrative.position = Vector2(center.x - narrative_width * 0.5, safe.y + (156.0 if expanded else 138.0))
-	narrative.size = Vector2(narrative_width, 132.0 if expanded else 112.0)
+	var narrative_width := minf(900.0, viewport_size.x - safe.x * 2.0 - 8.0)
+	if _story_profile == &"opening":
+		narrative.position = Vector2(center.x - narrative_width * 0.5, safe.y + (176.0 if expanded else 154.0))
+		narrative.size = Vector2(narrative_width, 244.0 if expanded else 210.0)
+		narrative.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	else:
+		narrative.position = Vector2(center.x - narrative_width * 0.5, viewport_size.y * (0.62 if expanded else 0.64))
+		narrative.size = Vector2(narrative_width, 96.0 if expanded else 82.0)
+		narrative.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	var objective_width := minf(460.0 if expanded else 360.0, viewport_size.x - safe.x * 2.0 - 8.0)
 	objective_band.position = Vector2(center.x - objective_width * 0.5, viewport_size.y - safe.y - (106.0 if expanded else 96.0))
 	objective_band.size = Vector2(objective_width, 82.0 if expanded else 60.0)
@@ -267,6 +275,7 @@ func reset_transient_feedback_for_restore(epoch: int) -> void:
 	_story_confirmation_source = &""
 	_story_full_text = ""
 	_story_phase = &"inactive"
+	_story_profile = &"inactive"
 	_story_visible_characters = 0
 	_set_story_weapon_lock(false)
 	narrative.visible = false
@@ -283,6 +292,7 @@ func _input(event: InputEvent) -> void:
 		return
 	var shot_serial_before := int(weapon.get("_shot_serial")) if weapon != null else -1
 	var phase_before := _story_phase
+	var profile_before := _story_profile
 	var cue_before := _story_cue_index
 	_story_confirmation_source = _story_input_source(event)
 	_advance_story_cue()
@@ -298,6 +308,8 @@ func _input(event: InputEvent) -> void:
 		"cue_after": _story_cue_index,
 		"phase_before": phase_before,
 		"phase_after": _story_phase,
+		"profile_before": profile_before,
+		"profile_after": _story_profile,
 		"advance_count": _story_advance_count,
 		"weapon_shot_serial_before": shot_serial_before,
 		"weapon_shot_serial_after": int(weapon.get("_shot_serial")) if weapon != null else -1,
@@ -490,14 +502,14 @@ func _objective_title(point_id: StringName) -> String:
 func _on_mission_event(event: Dictionary) -> void:
 	var kind := StringName(event.get("kind", &""))
 	if kind == &"deployment_started":
-		_begin_story_cues(DEPLOYMENT_STORY_CUES, String(event.get("event_id", "deployment")))
+		_begin_opening_story(String(event.get("event_id", "deployment")))
 	elif kind == &"capture_completed":
 		var payload: Dictionary = event.get("payload", {})
 		var objective_id := StringName(payload.get("objective_id", &""))
 		if objective_id == &"alpha":
-			_begin_story_cues(["Alpha secure. Key one live. Move to Bravo."], String(event.get("event_id", "alpha_handoff")))
+			_begin_radio_cues(["COMMAND  //  Alpha secure. Wiring topology recovered. Move to Bravo."], String(event.get("event_id", "alpha_handoff")))
 		elif objective_id == &"bravo":
-			_begin_story_cues(["Bravo secure. Both keys live. Breach Charlie."], String(event.get("event_id", "bravo_handoff")))
+			_begin_radio_cues(["COMMAND  //  Bravo secure. Isolation frequency recovered. Breach Charlie."], String(event.get("event_id", "bravo_handoff")))
 	var important := kind in COMBAT_FEED_ALLOWED_KINDS
 	if important:
 		_push_combat_row(_row_receipt(event))
@@ -678,6 +690,9 @@ func _update_story(delta: float) -> void:
 	if not _story_active:
 		return
 	_story_elapsed += delta
+	if _story_profile == &"opening":
+		_update_opening_story()
+		return
 	if _story_elapsed < STORY_TYPE_SECONDS:
 		_story_phase = &"typing"
 		_story_visible_characters = clampi(int(floor(float(_story_full_text.length()) * _story_elapsed / STORY_TYPE_SECONDS)), 0, _story_full_text.length())
@@ -690,13 +705,75 @@ func _update_story(delta: float) -> void:
 		narrative.modulate.a = 1.0
 
 
-func _begin_story_cues(cues: Array[String], event_id: String) -> void:
+func _update_opening_story() -> void:
+	if _story_elapsed < OPENING_REVEAL_SECONDS:
+		_story_phase = &"opening_reveal"
+		_story_visible_characters = clampi(int(floor(float(_story_full_text.length()) * _story_elapsed / OPENING_REVEAL_SECONDS)), 0, _story_full_text.length())
+		narrative.text = _story_full_text.left(_story_visible_characters)
+		narrative.modulate.a = 1.0
+	elif _story_elapsed < OPENING_HOLD_END_SECONDS:
+		_story_phase = &"opening_hold"
+		_story_visible_characters = _story_full_text.length()
+		narrative.text = _story_full_text
+		narrative.modulate.a = 1.0
+	elif _story_elapsed < OPENING_FADE_END_SECONDS:
+		_story_phase = &"opening_fade"
+		_story_visible_characters = _story_full_text.length()
+		narrative.text = _story_full_text
+		narrative.modulate.a = 1.0 - ((_story_elapsed - OPENING_HOLD_END_SECONDS) / (OPENING_FADE_END_SECONDS - OPENING_HOLD_END_SECONDS))
+	else:
+		_finish_story(&"opening_timeline_complete")
+
+
+func _begin_opening_story(event_id: String) -> void:
+	_begin_story_cues([DEPLOYMENT_STORY_TEXT], event_id, &"opening")
+
+
+func _begin_radio_cues(cues: Array[String], event_id: String) -> void:
+	_begin_story_cues(cues, event_id, &"radio")
+
+
+func tester_prepare_authoritative_radio_cue(authority: Dictionary) -> Dictionary:
+	## Presentation-only deterministic branch setup. The ProductShell may call
+	## this only after its existing alpha-checkpoint fixture has committed and
+	## restored an authoritative secured-alpha snapshot.
+	_last_tester_radio_receipt = {
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"presentation_only": true,
+		"release_guard": &"OS.is_debug_build",
+		"authority": authority.duplicate(true),
+	}
+	if not OS.is_debug_build():
+		_last_tester_radio_receipt["failure_reason"] = &"release_build_forbidden"
+		return _last_tester_radio_receipt.duplicate(true)
+	if StringName(authority.get("point_id", &"")) != &"alpha" or StringName(authority.get("point_state", &"")) != &"secured_aegis":
+		_last_tester_radio_receipt["failure_reason"] = &"authoritative_alpha_state_required"
+		return _last_tester_radio_receipt.duplicate(true)
+	var event_id := String(authority.get("event_id", ""))
+	if event_id.is_empty():
+		_last_tester_radio_receipt["failure_reason"] = &"authoritative_event_id_required"
+		return _last_tester_radio_receipt.duplicate(true)
+	_begin_radio_cues(["COMMAND  //  Alpha secure. Wiring topology recovered. Move to Bravo."], event_id)
+	_last_tester_radio_receipt.merge({
+		"resolved": true,
+		"accepted": _story_active and _story_profile == &"radio",
+		"failure_reason": &"" if _story_active and _story_profile == &"radio" else &"presentation_start_failed",
+		"presentation_serial": _story_presentation_serial,
+	}, true)
+	return _last_tester_radio_receipt.duplicate(true)
+
+
+func _begin_story_cues(cues: Array[String], event_id: String, profile: StringName) -> void:
 	if cues.is_empty():
 		return
 	_story_cues = cues.duplicate()
 	_story_presentation_serial += 1
 	_story_cue_index = 0
 	_story_event_id = event_id
+	_story_profile = profile
+	_last_story_profile = profile
 	_story_elapsed = 0.0
 	_story_active = true
 	_story_confirmation_source = &""
@@ -706,6 +783,7 @@ func _begin_story_cues(cues: Array[String], event_id: String) -> void:
 	narrative.text = ""
 	narrative.visible = true
 	narrative.modulate.a = 1.0
+	_apply_responsive_layout()
 	_set_story_weapon_lock(false)
 
 
@@ -713,6 +791,9 @@ func _advance_story_cue() -> void:
 	if not _story_active:
 		return
 	_story_advance_count += 1
+	if _story_profile == &"opening":
+		_finish_story(_story_confirmation_source if not _story_confirmation_source.is_empty() else &"opening_skip")
+		return
 	if _story_cue_index + 1 < _story_cues.size():
 		_story_cue_index += 1
 		_story_full_text = _story_cues[_story_cue_index]
@@ -726,9 +807,21 @@ func _advance_story_cue() -> void:
 
 
 func _finish_story(source: StringName) -> void:
+	var completed_profile := _story_profile
 	_story_active = false
 	_story_phase = &"complete"
 	_story_confirmation_source = source
+	_story_profile = &"inactive"
+	_last_story_completion_receipt = {
+		"presentation_serial": _story_presentation_serial,
+		"event_id": _story_event_id,
+		"profile": completed_profile,
+		"completion_source": source,
+		"elapsed_seconds": _story_elapsed,
+		"completed_frame": Engine.get_process_frames(),
+		"opening_timeline_complete": completed_profile == &"opening" and source == &"opening_timeline_complete",
+		"player_confirmed": completed_profile == &"radio" and source in [&"enter", &"left_click", &"physical_g_skip"],
+	}
 	narrative.visible = false
 	narrative.text = ""
 	narrative.modulate.a = 0.0
@@ -753,14 +846,18 @@ func _mcp_state() -> Dictionary:
 		"story_active": _story_active,
 		"story_elapsed": _story_elapsed,
 		"story_event_id": _story_event_id,
+		"story_profile": _story_profile,
+		"last_story_profile": _last_story_profile,
+		"last_story_completion_receipt": _last_story_completion_receipt,
+		"last_tester_radio_receipt": _last_tester_radio_receipt,
 		"story_cue_index": _story_cue_index,
 		"story_cue_count": _story_cues.size(),
 		"story_current_text": narrative.text,
-		"story_indefinite_dwell": true,
+		"story_indefinite_dwell": _story_profile == &"radio",
 		"story_phase": _story_phase,
 		"story_visible_characters": _story_visible_characters,
 		"story_total_characters": _story_full_text.length(),
-		"story_timing_seconds": {"type": STORY_TYPE_SECONDS, "hold": &"until_player_confirmation"},
+		"story_timing_seconds": {"reveal": OPENING_REVEAL_SECONDS, "hold_end": OPENING_HOLD_END_SECONDS, "fade_end": OPENING_FADE_END_SECONDS} if (_story_profile == &"opening" or (_story_profile == &"inactive" and _last_story_profile == &"opening")) else {"type": STORY_TYPE_SECONDS, "hold": &"until_player_confirmation"},
 		"story_advance_count": _story_advance_count,
 		"story_confirmation_source": _story_confirmation_source,
 		"story_presentation_serial": _story_presentation_serial,

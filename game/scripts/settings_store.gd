@@ -8,6 +8,9 @@ const SECTION := "accessibility"
 const WINDOWED_SIZE := Vector2i(1280, 720)
 const FULLSCREEN_SIZE := Vector2i(1920, 1080)
 
+var _display_apply_serial := 0
+var _last_display_apply_receipt: Dictionary = {}
+
 var values := {
 	"master_volume": 0.85,
 	"subtitle_size": 18.0,
@@ -51,19 +54,36 @@ func save_settings(next_values: Dictionary) -> void:
 func apply_runtime() -> void:
 	var window := get_window()
 	var fullscreen_enabled := bool(values.get("fullscreen_enabled", false))
-	# Retain the registered Maaack menu helper as the single window-mode
-	# mechanism while FusepointSettingsStore remains the product-owned value.
+	var target_size := FULLSCREEN_SIZE if fullscreen_enabled else WINDOWED_SIZE
+	var size_before := window.size
+	var mode_before := window.mode
+	# Fusepoint owns the persisted display choice while the retained Maaack
+	# helper remains the only mutation mechanism. Commit physical pixels before
+	# native mode so fullscreen cannot inherit the 1280x720 window override, then
+	# reaffirm the same target after the mode transition in this one transaction.
 	if fullscreen_enabled:
-		# A window launched with the 1280x720 debug override otherwise carries
-		# that backing size into fullscreen on some display servers.
-		AppSettings.set_fullscreen_enabled(false, window)
-		AppSettings.set_resolution(FULLSCREEN_SIZE, window, false)
+		AppSettings.set_resolution(target_size, window, false)
 		AppSettings.set_fullscreen_enabled(true, window)
+		AppSettings.set_resolution(target_size, window, false)
 	else:
 		AppSettings.set_fullscreen_enabled(false, window)
-		AppSettings.set_resolution(WINDOWED_SIZE, window, false)
+		AppSettings.set_resolution(target_size, window, false)
 	window.content_scale_factor = 1.0
 	window.scaling_3d_scale = 1.0
+	_display_apply_serial += 1
+	_last_display_apply_receipt = {
+		"transaction_id": "display-apply-%06d" % _display_apply_serial,
+		"persisted_fullscreen": fullscreen_enabled,
+		"target_physical_size": target_size,
+		"size_before": size_before,
+		"mode_before": mode_before,
+		"size_after": window.size,
+		"mode_after": window.mode,
+		"ordered_steps": [&"physical_size", &"native_mode", &"physical_size_reaffirmed"] if fullscreen_enabled else [&"windowed_mode", &"physical_size"],
+		"content_scale_size": window.content_scale_size,
+		"render_scale_3d": window.scaling_3d_scale,
+		"committed_frame": Engine.get_process_frames(),
+	}
 	AudioServer.set_bus_volume_db(0, linear_to_db(clampf(float(values["master_volume"]), 0.001, 1.0)))
 	var player := get_tree().get_first_node_in_group(&"player")
 	if player != null:
@@ -91,9 +111,9 @@ func _mcp_state() -> Dictionary:
 		"config_path": CONFIG_PATH,
 		"values": values,
 		"persisted": FileAccess.file_exists(CONFIG_PATH),
+		"display_apply_receipt": _last_display_apply_receipt,
 		"display": {
 			"fullscreen_enabled": bool(values.get("fullscreen_enabled", false)),
-			"requested_size": FULLSCREEN_SIZE if bool(values.get("fullscreen_enabled", false)) else WINDOWED_SIZE,
 			"window_mode": window.mode,
 			"window_size": window.size,
 			"viewport_size": window.get_visible_rect().size,

@@ -24,7 +24,6 @@ const ROUTE_TERMINAL_COLLISION_ROOTS := {
 	&"b_to_c": NodePath("Charlie/RocketBombAssembly/DeviceCollision"),
 }
 const DEPLOYMENT_MIN_CHARLIE_DISTANCE := 35.0
-const DEPLOYMENT_INDUSTRIAL_VISTA_OFFSET := Vector3(6.0, 0.0, 10.4)
 const SOURCE_CLOUD_SHADER := "res://shaders/clouds.gdshader"
 const SOURCE_SUN_FLARE_SCRIPT := "res://scripts/source_sun_flare.gd"
 const MIGRATION_MANIFEST_PATH := "res://scenes/arena_foundation_migration_manifest.json"
@@ -65,6 +64,7 @@ var collision_source_counts := {"selected": 0, "excluded": 0}
 var collision_source_triangles := {"selected": 0, "excluded": 0}
 var selected_collision_sources: Array[String] = []
 var excluded_collision_sources: Array[String] = []
+var collision_source_partitions: Array[Dictionary] = []
 var deployment_anchor_selection: Dictionary = {}
 var last_industrial_cue_receipt: Dictionary = {}
 var industrial_cue_response_count := 0
@@ -316,8 +316,11 @@ func _transform_aabb(local_aabb: AABB, world_transform: Transform3D) -> AABB:
 
 
 func _build_map_collision() -> void:
-	var faces := PackedVector3Array()
 	var collision_inverse := map_collision.global_transform.affine_inverse()
+	var collision_container := Node3D.new()
+	collision_container.name = "AuthoredMapConcaveCollision"
+	map_collision.add_child(collision_container)
+	var partition_index := 0
 	for node in map_instance.find_children("*", "MeshInstance3D", true, false):
 		var mesh_instance := node as MeshInstance3D
 		if mesh_instance.mesh == null:
@@ -334,21 +337,38 @@ func _build_map_collision() -> void:
 		collision_source_triangles["selected"] = int(collision_source_triangles["selected"]) + triangle_count
 		selected_collision_sources.append(source_path)
 		var to_collision := collision_inverse * mesh_instance.global_transform
+		var partition_faces := PackedVector3Array()
 		for vertex in source_faces:
-			faces.append(to_collision * vertex)
-	if faces.size() < 3:
+			partition_faces.append(to_collision * vertex)
+		if partition_faces.size() < 3:
+			continue
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(partition_faces)
+		var source_body := StaticBody3D.new()
+		source_body.name = "Source_%02d_%s" % [partition_index, String(mesh_instance.name).left(36)]
+		source_body.collision_layer = map_collision.collision_layer
+		source_body.collision_mask = map_collision.collision_mask
+		source_body.set_meta(&"source_mesh_path", source_path)
+		source_body.set_meta(&"triangle_count", triangle_count)
+		var collision_shape := CollisionShape3D.new()
+		collision_shape.name = "ConcaveShape"
+		collision_shape.shape = shape
+		source_body.add_child(collision_shape)
+		collision_container.add_child(source_body)
+		source_body.add_to_group(NAVIGATION_SOURCE_GROUP)
+		collision_source_partitions.append({
+			"partition_index": partition_index,
+			"collider_path": String(source_body.get_path()),
+			"source_mesh_path": source_path,
+			"triangle_count": triangle_count,
+		})
+		partition_index += 1
+	if collision_source_partitions.is_empty():
 		push_error("Standoff Arena exposed no usable mesh faces for collision.")
 		return
-	var shape := ConcavePolygonShape3D.new()
-	shape.set_faces(faces)
-	var collision_shape := CollisionShape3D.new()
-	collision_shape.name = "AuthoredMapConcaveCollision"
-	collision_shape.shape = shape
-	map_collision.add_child(collision_shape)
-	map_collision.add_to_group(NAVIGATION_SOURCE_GROUP)
-	collision_triangle_count = faces.size() / 3
+	collision_triangle_count = int(collision_source_triangles["selected"])
 	collision_ready = true
-	print("Arena structural collision built from %d triangles across %d selected sources; %d decorative sources excluded." % [collision_triangle_count, collision_source_counts["selected"], collision_source_counts["excluded"]])
+	print("Arena structural collision built as %d source-bound partitions from %d triangles; %d decorative sources excluded." % [collision_source_partitions.size(), collision_triangle_count, collision_source_counts["excluded"]])
 
 
 func _is_structural_collision_source(mesh_instance: MeshInstance3D) -> bool:
@@ -486,12 +506,12 @@ func _bind_product_anchors() -> bool:
 		$Bravo.global_position = projected["bravo"] + Vector3.UP * 1.2
 		$Charlie.global_position = projected["charlie"] + Vector3.UP * 1.2
 		if player != null and player.has_method(&"bind_deployment_to_walkable"):
-			# The first navigation corner sits under the native loading stair and
-			# produced a wall-dominated deployment frame. Face the preserved southeast
-			# container lane instead: it opens layered cover and roof silhouettes while
-			# Alpha remains occluded and the HUD still owns immediate A-first routing.
-			var industrial_vista: Vector3 = projected["spawn"] + DEPLOYMENT_INDUSTRIAL_VISTA_OFFSET
-			player.call(&"bind_deployment_to_walkable", projected["spawn"] + Vector3.UP * 0.9, industrial_vista + Vector3.UP * 0.9)
+			# Spawn position remains the verified native-street anchor. Bind only the
+			# initial facing to the same capsule-clear navigation chain that drives the
+			# HUD, so immediate forward input follows the legal first corner instead of
+			# driving into the source wall at the former 11.68/-17.60 wedge.
+			var initial_route_target: Vector3 = edges["spawn_to_a"][1] if edges["spawn_to_a"].size() > 1 else projected["alpha"]
+			player.call(&"bind_deployment_to_walkable", projected["spawn"] + Vector3.UP * 0.9, initial_route_target + Vector3.UP * 0.9)
 	var failure_reason := &""
 	if not route_pair_provisional_accepted:
 		failure_reason = StringName(deployment_anchor_selection.get("failure_reason", &"spawn_alpha_route_budget_unavailable"))
@@ -532,9 +552,9 @@ func _bind_product_anchors() -> bool:
 		"route_budget_accepted": route_budget_accepted,
 		"route_budget_acceptance_authority": &"route_probe_first_legal_alpha_overlap",
 		"deployment_framing": {
-			"target_id": &"southeast_native_container_lane",
-			"target_position": projected["spawn"] + DEPLOYMENT_INDUSTRIAL_VISTA_OFFSET,
-			"immediate_route_authority": &"hud_alpha_first",
+			"target_id": &"capsule_clear_first_navigation_corner",
+			"target_position": edges["spawn_to_a"][1] if edges["spawn_to_a"].size() > 1 else projected["alpha"],
+			"immediate_route_authority": &"navigation_chain_and_hud_alpha_first",
 			"alpha_center_sightline_blocked": deployment_anchor_selection.get("alpha_capture_sightline_blocked", false),
 			"authored_geometry_changed": false,
 		},
@@ -1012,6 +1032,7 @@ func _mcp_state() -> Dictionary:
 		"collision_source_triangles": collision_source_triangles,
 		"selected_collision_sources": selected_collision_sources,
 		"excluded_collision_sources": excluded_collision_sources,
+		"collision_source_partitions": collision_source_partitions,
 		"navigation_bake_started": navigation_bake_started,
 		"navigation_ready": navigation_ready,
 		"navigation_vertex_count": navigation_vertex_count,

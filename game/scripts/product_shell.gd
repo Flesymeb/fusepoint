@@ -324,8 +324,18 @@ func _on_settings_focus_entered(control: Control) -> void:
 func _reveal_settings_pair(control: Control) -> void:
 	if app_state != STATE_SETTINGS or not is_instance_valid(control):
 		return
-	settings_scroll.ensure_control_visible(control)
+	# Focus often arrives in the same frame as the 100/200% reflow. Wait for the
+	# container's minimum-size propagation before asking ScrollContainer to reveal
+	# the focused row and its associated label.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if app_state != STATE_SETTINGS or not is_instance_valid(control):
+		return
 	var label := _setting_label_for(control)
+	if settings_scroll.is_ancestor_of(label):
+		settings_scroll.ensure_control_visible(label)
+	settings_scroll.ensure_control_visible(control)
+	await get_tree().process_frame
 	var scroll_rect := settings_scroll.get_global_rect()
 	var pair_rect := label.get_global_rect().merge(control.get_global_rect())
 	if pair_rect.position.y < scroll_rect.position.y:
@@ -1258,6 +1268,9 @@ func apply_accessibility_settings(values: Dictionary) -> void:
 	$Root/Pages/BriefingPage/Copy.add_theme_font_size_override("font_size", _applied_subtitle_size)
 	_apply_readability_scale(root, _applied_ui_scale)
 	_apply_responsive_layout.call_deferred()
+	var focused := get_viewport().gui_get_focus_owner()
+	if app_state == STATE_SETTINGS and focused != null:
+		_reveal_settings_pair.call_deferred(focused)
 	if hud.has_method(&"apply_accessibility_settings"):
 		hud.call(&"apply_accessibility_settings", values)
 
@@ -1300,6 +1313,7 @@ func _apply_responsive_layout() -> void:
 	settings_grid.custom_minimum_size.x = 0.0
 	settings_grid.add_theme_constant_override("h_separation", 0 if settings_single_column else 36)
 	settings_grid.add_theme_constant_override("v_separation", 14 if settings_single_column else 18)
+	settings_scroll.clip_contents = true
 	for control: Control in _settings_controls().slice(0, _settings_labels().size()):
 		control.custom_minimum_size.x = 0.0 if settings_single_column else 280.0
 		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1406,6 +1420,15 @@ func _on_restore_feedback_completed(epoch: int) -> void:
 		_last_tester_setup_receipt["handoff_epoch"] = epoch
 		_last_tester_setup_receipt["result_state"] = app_state
 		_last_tester_setup_receipt["accepted"] = app_state == STATE_GAMEPLAY and player.get("gameplay_input_enabled") == true
+		var points: Dictionary = mission.get("capture_points")
+		var alpha: Dictionary = points.get(&"alpha", {})
+		_last_tester_setup_receipt["radio_presentation"] = hud.call(&"tester_prepare_authoritative_radio_cue", {
+			"point_id": &"alpha",
+			"point_state": alpha.get("state", &""),
+			"event_id": "tester-radio:%s" % String((_last_tester_setup_receipt.get("mission_setup", {}) as Dictionary).get("setup_id", "alpha-checkpoint")),
+			"run_epoch": int(mission.get("run_epoch")),
+			"checkpoint_version": int(mission.get("checkpoint_version")),
+		})
 		if not _tester_setup_history.is_empty():
 			_tester_setup_history[-1] = _last_tester_setup_receipt.duplicate(true)
 
