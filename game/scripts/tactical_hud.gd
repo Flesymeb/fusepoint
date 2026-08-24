@@ -12,9 +12,7 @@ const SAFE_AREA_RATIO := 0.05
 const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v3_priority_lanes"
 const COMBAT_ROW_LIFETIME_SECONDS := 6.0
 const COMBAT_ROW_LIMIT := 5
-const STORY_TYPE_SECONDS := 6.0
-const STORY_HOLD_UNTIL_SECONDS := 10.0
-const STORY_END_SECONDS := 13.0
+const STORY_TYPE_SECONDS := 1.35
 const COMBAT_FEED_ALLOWED_KINDS: Array[StringName] = [
 	&"capture_started", &"capture_contested", &"capture_interrupted", &"capture_completed",
 	&"key_committed", &"route_unlocked", &"checkpoint_committed",
@@ -131,7 +129,7 @@ func set_hud_enabled(enabled: bool) -> void:
 func apply_accessibility_settings(values: Dictionary) -> void:
 	_applied_ui_scale = clampf(float(values.get("ui_scale", 1.0)), 1.0, 2.0)
 	_applied_subtitle_size = clampi(int(values.get("subtitle_size", 18)), 14, 32)
-	narrative.add_theme_font_size_override("font_size", clampi(_applied_subtitle_size + 2, 20, 32))
+	narrative.add_theme_font_size_override("font_size", clampi(_applied_subtitle_size + 18, 36, 44))
 	# Accessibility scale is semantic and persistent; layout absorbs the growth
 	# by reflowing priority regions instead of scaling the whole CanvasLayer.
 	var multiplier := 1.0 + (_applied_ui_scale - 1.0) * 0.38
@@ -144,7 +142,7 @@ func apply_accessibility_settings(values: Dictionary) -> void:
 		var base_size := int(control.get_meta(&"fusepoint_hud_base_font_size"))
 		if base_size > 0 and base_size < 34:
 			control.add_theme_font_size_override("font_size", int(round(base_size * multiplier)))
-	narrative.add_theme_font_size_override("font_size", clampi(int(round((_applied_subtitle_size + 2) * multiplier)), 20, 32))
+	narrative.add_theme_font_size_override("font_size", clampi(int(round((_applied_subtitle_size + 18) * multiplier)), 36, 44))
 	if weapon_hud.has_method(&"apply_accessibility_scale"):
 		weapon_hud.call(&"apply_accessibility_scale", _applied_ui_scale)
 	_apply_responsive_layout.call_deferred()
@@ -684,17 +682,11 @@ func _update_story(delta: float) -> void:
 		_story_visible_characters = clampi(int(floor(float(_story_full_text.length()) * _story_elapsed / STORY_TYPE_SECONDS)), 0, _story_full_text.length())
 		narrative.text = _story_full_text.left(_story_visible_characters)
 		narrative.modulate.a = 1.0
-	elif _story_elapsed < STORY_HOLD_UNTIL_SECONDS:
-		_story_phase = &"hold"
+	else:
+		_story_phase = &"awaiting_confirmation"
 		_story_visible_characters = _story_full_text.length()
 		narrative.text = _story_full_text
 		narrative.modulate.a = 1.0
-	elif _story_elapsed < STORY_END_SECONDS:
-		_story_phase = &"fade"
-		narrative.text = _story_full_text
-		narrative.modulate.a = 1.0 - (_story_elapsed - STORY_HOLD_UNTIL_SECONDS) / (STORY_END_SECONDS - STORY_HOLD_UNTIL_SECONDS)
-	else:
-		_finish_story(&"timeline_complete")
 
 
 func _begin_story_cues(cues: Array[String], event_id: String) -> void:
@@ -707,11 +699,7 @@ func _begin_story_cues(cues: Array[String], event_id: String) -> void:
 	_story_elapsed = 0.0
 	_story_active = true
 	_story_confirmation_source = &""
-	_story_full_text = ""
-	for cue: String in _story_cues:
-		if not _story_full_text.is_empty():
-			_story_full_text += "\n"
-		_story_full_text += cue
+	_story_full_text = _story_cues[0]
 	_story_phase = &"typing"
 	_story_visible_characters = 0
 	narrative.text = ""
@@ -724,6 +712,15 @@ func _advance_story_cue() -> void:
 	if not _story_active:
 		return
 	_story_advance_count += 1
+	if _story_cue_index + 1 < _story_cues.size():
+		_story_cue_index += 1
+		_story_full_text = _story_cues[_story_cue_index]
+		_story_elapsed = 0.0
+		_story_phase = &"typing"
+		_story_visible_characters = 0
+		narrative.text = ""
+		narrative.modulate.a = 1.0
+		return
 	_finish_story(_story_confirmation_source if not _story_confirmation_source.is_empty() else &"player_skip")
 
 
@@ -758,11 +755,11 @@ func _mcp_state() -> Dictionary:
 		"story_cue_index": _story_cue_index,
 		"story_cue_count": _story_cues.size(),
 		"story_current_text": narrative.text,
-		"story_indefinite_dwell": false,
+		"story_indefinite_dwell": true,
 		"story_phase": _story_phase,
 		"story_visible_characters": _story_visible_characters,
 		"story_total_characters": _story_full_text.length(),
-		"story_timing_seconds": {"type": STORY_TYPE_SECONDS, "hold_until": STORY_HOLD_UNTIL_SECONDS, "end": STORY_END_SECONDS},
+		"story_timing_seconds": {"type": STORY_TYPE_SECONDS, "hold": &"until_player_confirmation"},
 		"story_advance_count": _story_advance_count,
 		"story_confirmation_source": _story_confirmation_source,
 		"story_presentation_serial": _story_presentation_serial,

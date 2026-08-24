@@ -104,7 +104,7 @@ var _eye: Node3D
 var _muzzle: Node3D
 var _presentation: Node
 var _death_audio: AudioStreamPlayer3D
-var _target_health: FPSHealth
+var _target_health: Node
 var _home_position := Vector3.ZERO
 var _has_home_position := false
 var _last_seen_target_position := Vector3.ZERO
@@ -244,7 +244,7 @@ func _physics_process(delta: float) -> void:
 		return
 	if target == null or not is_instance_valid(target):
 		_acquire_target()
-	if _target_health != null and _target_health.is_dead:
+	if _damage_receiver_is_dead(_target_health):
 		set_target(null)
 	if target == null:
 		_search_or_return_home(delta)
@@ -773,7 +773,7 @@ func _nearest_enemy_distance() -> float:
 			continue
 		var actor := node as Node3D
 		var actor_health := _find_damage_receiver(actor)
-		if actor_health != null and actor_health.is_dead:
+		if _damage_receiver_is_dead(actor_health):
 			continue
 		nearest = minf(nearest, global_position.distance_to(actor.global_position))
 	return nearest
@@ -1336,7 +1336,7 @@ func _target_aim_position(candidate: Node3D) -> Vector3:
 	return head.global_position if head != null else candidate.global_position + Vector3.UP * target_height
 
 
-func _find_damage_receiver(root: Variant) -> FPSHealth:
+func _find_damage_receiver(root: Variant) -> Node:
 	# Snapshot callers may carry data dictionaries alongside scene actors. Keep
 	# the receiver boundary typed: Dictionaries are state and Nodes are objects;
 	# neither is ever accessed using the other's property mechanism.
@@ -1345,10 +1345,24 @@ func _find_damage_receiver(root: Variant) -> FPSHealth:
 	var root_node := root as Node
 	if root_node is FPSHealth:
 		return root_node as FPSHealth
+	if root_node.has_method(&"apply_damage"):
+		return root_node
 	for child: Node in root_node.get_children():
 		if child is FPSHealth:
 			return child as FPSHealth
 	return null
+
+
+func _damage_receiver_is_dead(receiver: Node) -> bool:
+	if receiver == null or not is_instance_valid(receiver):
+		return false
+	if receiver is FPSHealth:
+		return (receiver as FPSHealth).is_dead
+	if "combat_death_locked" in receiver:
+		return receiver.get("combat_death_locked") == true
+	if "health" in receiver:
+		return float(receiver.get("health")) <= 0.0
+	return false
 
 
 func _face_target(delta: float) -> void:

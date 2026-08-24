@@ -345,11 +345,26 @@ func tester_prepare_terminal_branch(requested_branch: StringName) -> Dictionary:
 	else:
 		remaining_time = minf(remaining_time, 1.0)
 		preparation_calls.append({"api": &"authoritative_countdown_owner", "remaining_time": remaining_time, "held_for_advance": true})
-	var presentation_relocation := _tester_terminal_presentation_relocation(requested_branch)
-	if presentation_relocation.get("accepted", false) != true:
+	var roster_hold: Dictionary = enemy_roster.call(
+		&"tester_prepare_region_presence", &"charlie", generation
+	) if enemy_roster != null and enemy_roster.has_method(&"tester_prepare_region_presence") else {}
+	if roster_hold.get("accepted", false) != true:
 		_restore_frontier(frontier_before)
 		tester_prepared_terminal_branch = &""
 		receipt["preparation_calls"] = preparation_calls
+		receipt["roster_hold"] = roster_hold
+		receipt["failure_reason"] = &"charlie_stable_roster_unavailable"
+		return _store_terminal_tester_receipt(receipt)
+	var presentation_relocation := _tester_terminal_presentation_relocation(requested_branch)
+	if presentation_relocation.get("accepted", false) != true:
+		var roster_release: Dictionary = enemy_roster.call(
+			&"tester_release_prepared_region", &"charlie", generation
+		) if enemy_roster != null and enemy_roster.has_method(&"tester_release_prepared_region") else {}
+		_restore_frontier(frontier_before)
+		tester_prepared_terminal_branch = &""
+		receipt["preparation_calls"] = preparation_calls
+		receipt["roster_hold"] = roster_hold
+		receipt["roster_release"] = roster_release
 		receipt["presentation_relocation"] = presentation_relocation
 		receipt["failure_reason"] = &"terminal_presentation_destination_rejected"
 		return _store_terminal_tester_receipt(receipt)
@@ -358,6 +373,7 @@ func tester_prepare_terminal_branch(requested_branch: StringName) -> Dictionary:
 		"accepted": mission_state == &"active_gameplay" and terminal_commit_count == terminal_count_before and tester_prepared_terminal_branch == requested_branch,
 		"prepared_branch": tester_prepared_terminal_branch,
 		"preparation_calls": preparation_calls,
+		"roster_hold": roster_hold,
 		"presentation_relocation": presentation_relocation,
 		"mission_snapshot": {
 			"remaining_time": remaining_time,
@@ -373,6 +389,7 @@ func tester_prepare_terminal_branch(requested_branch: StringName) -> Dictionary:
 			"countdown_not_increased": remaining_time <= timer_before + 0.001,
 			"presentation_not_started": mission_state == &"active_gameplay",
 			"result_not_written": last_result_snapshot.is_empty(),
+			"charlie_roster_held": roster_hold.get("accepted", false) == true,
 			"stable_until_matching_advance": true,
 			"route_acceptance_claimed": false,
 		},
@@ -566,12 +583,19 @@ func tester_advance_terminal_branch(expected_branch: StringName, expected_genera
 	if mission_state != &"active_gameplay" or terminal_commit_count > 0:
 		receipt["failure_reason"] = &"authoritative_state_unavailable"
 		return _store_terminal_tester_receipt(receipt)
+	if expected_branch == &"success" and (bomb_stage_index != 2 or remaining_time <= 0.0):
+		receipt["failure_reason"] = &"success_preparation_incomplete"
+		return _store_terminal_tester_receipt(receipt)
+	var roster_release: Dictionary = enemy_roster.call(
+		&"tester_release_prepared_region", &"charlie", expected_generation
+	) if enemy_roster != null and enemy_roster.has_method(&"tester_release_prepared_region") else {}
+	if roster_release.get("accepted", false) != true:
+		receipt["roster_release"] = roster_release
+		receipt["failure_reason"] = &"charlie_roster_release_failed"
+		return _store_terminal_tester_receipt(receipt)
 	var terminal_count_before := terminal_commit_count
 	tester_prepared_terminal_branch = &""
 	if expected_branch == &"success":
-		if bomb_stage_index != 2 or remaining_time <= 0.0:
-			receipt["failure_reason"] = &"success_preparation_incomplete"
-			return _store_terminal_tester_receipt(receipt)
 		_active_bomb_stage = true
 		bomb_state = &"removing_detonator"
 		bomb_stage_progress = 1.0
@@ -586,10 +610,12 @@ func tester_advance_terminal_branch(expected_branch: StringName, expected_genera
 		"terminal_commit_count": terminal_commit_count,
 		"duplicate_terminal_submit_count": terminal_duplicate_submit_count,
 		"authoritative_api": &"complete_bomb_stage" if expected_branch == &"success" else &"commit_timer",
+		"roster_release": roster_release,
 		"reset_isolation": {
 			"single_terminal_commit": terminal_commit_count == terminal_count_before + 1,
 			"prepared_fixture_cleared": tester_prepared_terminal_branch.is_empty(),
 			"result_owned_by_mission": not last_result_snapshot.is_empty(),
+			"charlie_roster_hold_released": roster_release.get("accepted", false) == true,
 			"route_acceptance_claimed": false,
 		},
 		"failure_reason": &"" if terminal_commit_count == terminal_count_before + 1 else &"authoritative_terminal_commit_failed",
