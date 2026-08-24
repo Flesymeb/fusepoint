@@ -146,6 +146,16 @@ func ordered_peer_cache() -> Array[Node]:
 
 
 func peer_cache_receipt() -> Dictionary:
+	var callback_count := 0
+	var duplicate_callback_count := 0
+	var consumption_count := 0
+	var callback_frame_actor_count := 0
+	for enemy: FusepointEnemyAgent in _ordered_peer_cache:
+		callback_count += int(enemy.get("_safe_velocity_callback_count"))
+		duplicate_callback_count += int(enemy.get("_safe_velocity_duplicate_callback_count"))
+		consumption_count += int(enemy.get("_navigation_safe_velocity_consumption_count"))
+		if int(enemy.get("_navigation_safe_velocity_receipt_frame")) == _peer_cache_physics_frame:
+			callback_frame_actor_count += 1
 	return {
 		"owner_path": String(get_path()) if is_inside_tree() else "",
 		"physics_frame": _peer_cache_physics_frame,
@@ -154,6 +164,12 @@ func peer_cache_receipt() -> Dictionary:
 		"ordering": &"authored_roster_order",
 		"scene_tree_enumeration_per_actor": false,
 		"sort_per_actor": false,
+		"safe_velocity_callback_count": callback_count,
+		"safe_velocity_duplicate_callback_count": duplicate_callback_count,
+		"safe_velocity_consumption_count": consumption_count,
+		"callback_actor_count_this_physics_cycle": callback_frame_actor_count,
+		"maximum_callback_admissions_per_actor_per_cycle": 1,
+		"single_consumption_path": true,
 	}
 
 
@@ -498,6 +514,10 @@ func tester_request_alpha_presence() -> Dictionary:
 	return tester_prepare_region_presence(&"alpha", tester_setup_request_count + 1)
 
 
+func _fixture_includes_enemy(region_id: StringName, enemy: FusepointEnemyAgent) -> bool:
+	return region_id == &"all" or enemy.region_id == region_id
+
+
 func tester_prepare_region_presence(region_id: StringName, setup_generation: int) -> Dictionary:
 	tester_setup_request_count += 1
 	# A new bounded preparation ends the previous observation window. The new
@@ -514,7 +534,7 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 	var terminal_before := int(mission_controller.get("terminal_commit_count"))
 	var mission_snapshot_before: Dictionary = mission_controller.call(&"_mcp_state")
 	var points_before: Dictionary = (mission_snapshot_before.get("capture_points", {}) as Dictionary).duplicate(true)
-	var expected_count := 3 if region_id == &"alpha" else 5 if region_id == &"bravo" else 10 if region_id == &"charlie" else 0
+	var expected_count := 3 if region_id == &"alpha" else 5 if region_id == &"bravo" else 10 if region_id == &"charlie" else 18 if region_id == &"all" else 0
 	last_tester_setup_receipt = {
 		"setup_id": "tester-%s-presence-%06d" % [String(region_id), tester_setup_request_count],
 		"branch_id": StringName("combat:%s" % String(region_id)),
@@ -544,8 +564,9 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 	activation_sequence += 1
 	var hold_receipts: Array[Dictionary] = []
 	for enemy: FusepointEnemyAgent in enemies.values():
-		enemy.set_mission_active(enemy.region_id == region_id, activation_sequence)
-		if enemy.region_id == region_id:
+		var included := _fixture_includes_enemy(region_id, enemy)
+		enemy.set_mission_active(included, activation_sequence)
+		if included:
 			hold_receipts.append(enemy.set_tester_prepared_hold(true, setup_generation))
 	_record_region_milestone(region_id)
 	var occupancy := validate_restore_occupancy(player.global_position, false)
@@ -555,7 +576,7 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 	for actor_id: StringName in enemies:
 		actor_ids_after.append(String(actor_id))
 		var enemy := enemies[actor_id] as FusepointEnemyAgent
-		if enemy.mission_active and enemy.region_id == region_id:
+		if enemy.mission_active and _fixture_includes_enemy(region_id, enemy):
 			active_region_ids.append(String(actor_id))
 			active_alive_count += 1 if enemy.is_alive() else 0
 	actor_ids_after.sort()
@@ -1012,7 +1033,7 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 	var release_receipts: Array[Dictionary] = []
 	var active_ids: Array[String] = []
 	for enemy: FusepointEnemyAgent in enemies.values():
-		if enemy.region_id != expected_region or not enemy.mission_active:
+		if not _fixture_includes_enemy(expected_region, enemy) or not enemy.mission_active:
 			continue
 		active_ids.append(String(enemy.stable_id))
 		release_receipts.append(enemy.set_tester_prepared_hold(false, expected_generation))

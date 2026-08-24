@@ -381,6 +381,10 @@ func _input(event: InputEvent) -> void:
 		_tester_prepare_encounter(&"charlie")
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed(&"tester_encounter_all_prepare"):
+		_tester_prepare_encounter(&"all")
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed(&"tester_encounter_commit"):
 		_tester_commit_prepared_encounter()
 		get_viewport().set_input_as_handled()

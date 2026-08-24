@@ -44,11 +44,18 @@ func _ready() -> void:
 	visible = false
 
 
-func _make_array_mesh(vertices: PackedVector3Array, indices: PackedInt32Array, material: Material) -> ArrayMesh:
+func _make_array_mesh(
+	vertices: PackedVector3Array,
+	indices: PackedInt32Array,
+	material: Material,
+	colors := PackedColorArray(),
+) -> ArrayMesh:
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices
 	arrays[Mesh.ARRAY_INDEX] = indices
+	if not colors.is_empty():
+		arrays[Mesh.ARRAY_COLOR] = colors
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	mesh.surface_set_material(0, material)
@@ -56,32 +63,82 @@ func _make_array_mesh(vertices: PackedVector3Array, indices: PackedInt32Array, m
 
 
 func _build_flash_mesh(material: Material) -> ArrayMesh:
-	var vertices := PackedVector3Array([Vector3.ZERO])
-	var indices := PackedInt32Array()
-	const RAY_COUNT := 18
-	for ray_index in RAY_COUNT:
-		var angle := TAU * float(ray_index) / float(RAY_COUNT)
-		var next_angle := TAU * float(ray_index + 1) / float(RAY_COUNT)
-		var radius := 0.52 + 0.24 * sin(float(ray_index) * 2.17)
-		var next_radius := 0.52 + 0.24 * sin(float(ray_index + 1) * 2.17)
-		vertices.append(Vector3(cos(angle) * radius, sin(float(ray_index) * 1.73) * 0.18, sin(angle) * radius))
-		vertices.append(Vector3(cos(next_angle) * next_radius, sin(float(ray_index + 1) * 1.73) * 0.18, sin(next_angle) * next_radius))
-		var base := 1 + ray_index * 2
-		indices.append_array(PackedInt32Array([0, base, base + 1]))
-	return _make_array_mesh(vertices, indices, material)
+	return _build_irregular_volume(
+		material,
+		PackedFloat32Array([-0.34, -0.12, 0.13, 0.38]),
+		PackedFloat32Array([0.34, 0.62, 0.48, 0.22]),
+		10,
+		1.73,
+		Color(1.0, 0.98, 0.78, 0.72),
+		Color(1.0, 0.34, 0.04, 0.08),
+	)
 
 
 func _build_flame_mesh(material: Material) -> ArrayMesh:
-	var vertices := PackedVector3Array([
-		Vector3(-0.11, -0.18, 0.0), Vector3(0.13, -0.16, 0.0), Vector3(0.18, 0.02, 0.0),
-		Vector3(0.045, 0.28, 0.0), Vector3(-0.09, 0.12, 0.0),
-		Vector3(0.0, -0.17, -0.1), Vector3(0.0, -0.15, 0.13), Vector3(0.0, 0.03, 0.17),
-		Vector3(0.0, 0.3, 0.035), Vector3(0.0, 0.11, -0.08),
-	])
-	return _make_array_mesh(vertices, PackedInt32Array([
-		0, 1, 2, 0, 2, 3, 0, 3, 4,
-		5, 6, 7, 5, 7, 8, 5, 8, 9,
-	]), material)
+	# A closed, faceted flame seed gives every particle a genuine 3D silhouette.
+	# The cloud's randomized motion supplies the larger fireball volume without
+	# exposing detached opaque cards when a frame lands between particle phases.
+	return _build_irregular_volume(
+		material,
+		PackedFloat32Array([-0.28, -0.10, 0.16, 0.43, 0.72]),
+		PackedFloat32Array([0.08, 0.18, 0.125, 0.072, 0.018]),
+		7,
+		2.31,
+		Color(1.0, 0.86, 0.25, 0.86),
+		Color(0.9, 0.035, 0.004, 0.05),
+	)
+
+
+func _build_irregular_volume(
+	material: Material,
+	ring_heights: PackedFloat32Array,
+	ring_radii: PackedFloat32Array,
+	segments: int,
+	noise_seed: float,
+	base_color: Color,
+	tip_color: Color,
+) -> ArrayMesh:
+	var vertices := PackedVector3Array()
+	var colors := PackedColorArray()
+	var indices := PackedInt32Array()
+	var bottom_y := ring_heights[0] - maxf(0.025, ring_radii[0] * 0.35)
+	var top_y := ring_heights[ring_heights.size() - 1] + maxf(0.025, ring_radii[ring_radii.size() - 1] * 0.55)
+	vertices.append(Vector3(0.0, bottom_y, 0.0))
+	colors.append(base_color)
+	for ring_index in ring_heights.size():
+		var t := float(ring_index) / float(maxi(1, ring_heights.size() - 1))
+		for segment_index in segments:
+			var angle := TAU * float(segment_index) / float(segments)
+			var irregularity := 1.0 + 0.34 * sin(float(segment_index) * noise_seed + float(ring_index) * 1.47)
+			var radius := ring_radii[ring_index] * irregularity
+			var twist := 0.15 * sin(float(ring_index) * 1.91 + noise_seed)
+			var center_offset := Vector2(
+				0.045 * sin(float(ring_index) * 1.37 + noise_seed),
+				0.04 * cos(float(ring_index) * 1.81 + noise_seed),
+			)
+			vertices.append(Vector3(center_offset.x + cos(angle + twist) * radius, ring_heights[ring_index], center_offset.y + sin(angle + twist) * radius))
+			colors.append(base_color.lerp(tip_color, t))
+	var top_index := vertices.size()
+	vertices.append(Vector3(0.025 * sin(noise_seed), top_y, 0.025 * cos(noise_seed)))
+	colors.append(tip_color)
+	for segment_index in segments:
+		var next_segment := (segment_index + 1) % segments
+		indices.append_array(PackedInt32Array([0, 1 + next_segment, 1 + segment_index]))
+	for ring_index in ring_heights.size() - 1:
+		var ring_start := 1 + ring_index * segments
+		var next_ring_start := ring_start + segments
+		for segment_index in segments:
+			var next_segment := (segment_index + 1) % segments
+			var a := ring_start + segment_index
+			var b := ring_start + next_segment
+			var c := next_ring_start + segment_index
+			var d := next_ring_start + next_segment
+			indices.append_array(PackedInt32Array([a, b, c, b, d, c]))
+	var final_ring_start := 1 + (ring_heights.size() - 1) * segments
+	for segment_index in segments:
+		var next_segment := (segment_index + 1) % segments
+		indices.append_array(PackedInt32Array([final_ring_start + segment_index, final_ring_start + next_segment, top_index]))
+	return _make_array_mesh(vertices, indices, material, colors)
 
 
 func _build_spark_mesh(material: Material) -> ArrayMesh:
@@ -109,8 +166,8 @@ func _build_pressure_ring_mesh(material: Material) -> ArrayMesh:
 		var irregularity := 0.035 * sin(float(segment_index) * 2.43)
 		var inner_radius := 0.82 + irregularity
 		var outer_radius := 1.0 + irregularity * 0.5
-		vertices.append(Vector3(cos(angle) * inner_radius, 0.0, sin(angle) * inner_radius))
-		vertices.append(Vector3(cos(angle) * outer_radius, 0.018 * sin(float(segment_index) * 1.31), sin(angle) * outer_radius))
+		vertices.append(Vector3(cos(angle) * inner_radius, -0.018, sin(angle) * inner_radius))
+		vertices.append(Vector3(cos(angle) * outer_radius, 0.018 + 0.012 * sin(float(segment_index) * 1.31), sin(angle) * outer_radius))
 	for segment_index in SEGMENTS:
 		var next := (segment_index + 1) % SEGMENTS
 		var a := segment_index * 2
@@ -122,11 +179,15 @@ func _build_pressure_ring_mesh(material: Material) -> ArrayMesh:
 
 
 func _build_dust_mesh(material: Material) -> ArrayMesh:
-	var vertices := PackedVector3Array([
-		Vector3(-0.16, -0.1, 0.0), Vector3(0.2, -0.08, 0.0), Vector3(0.14, 0.14, 0.0), Vector3(-0.2, 0.11, 0.0),
-		Vector3(0.0, -0.09, -0.17), Vector3(0.0, -0.07, 0.2), Vector3(0.0, 0.15, 0.13), Vector3(0.0, 0.12, -0.19),
-	])
-	return _make_array_mesh(vertices, PackedInt32Array([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]), material)
+	return _build_irregular_volume(
+		material,
+		PackedFloat32Array([-0.16, -0.05, 0.08, 0.18]),
+		PackedFloat32Array([0.14, 0.22, 0.19, 0.09]),
+		8,
+		1.39,
+		Color(0.32, 0.24, 0.16, 0.58),
+		Color(0.12, 0.095, 0.08, 0.06),
+	)
 
 
 func play(event_id: String, authority_origin: Vector3, visible_origin: Vector3, particle_scale: float) -> void:
@@ -176,9 +237,9 @@ func play(event_id: String, authority_origin: Vector3, visible_origin: Vector3, 
 	wave_hide.tween_interval(1.08)
 	wave_hide.tween_callback(pressure_wave.set_visible.bind(false))
 
-	local_light.light_energy = 22.0
+	local_light.light_energy = 12.0
 	var light_tween := create_tween()
-	light_tween.tween_property(local_light, "light_energy", 2.0, 0.22)
+	light_tween.tween_property(local_light, "light_energy", 1.5, 0.20)
 	light_tween.tween_property(local_light, "light_energy", 0.0, 1.25)
 
 

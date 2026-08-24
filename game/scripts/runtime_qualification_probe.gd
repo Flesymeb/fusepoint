@@ -10,6 +10,7 @@ const RAW_PAGE_SIZE := 240
 const CYCLE_HISTORY_LIMIT := 3
 const LOW_FPS_FRAME_MS := 1000.0 / 45.0
 const DEEP_OBSERVATION_INTERVAL := 2.0
+const SAMPLE_CONTEXT_INTERVAL := 0.25
 const COMBAT_SAMPLE_INTERVAL := 1.0
 const COMBAT_HISTORY_LIMIT := 24
 const TARGET_RESOLUTION := Vector2i(1920, 1080)
@@ -33,6 +34,7 @@ const TARGET_RESOLUTION := Vector2i(1920, 1080)
 var _raw_frame_times_ms: Array[float] = []
 var _raw_phase_ids: Array[StringName] = []
 var _raw_explosion_flags: Array[bool] = []
+var _raw_active_enemy_counts: Array[int] = []
 var _sample_count := 0
 var _sample_sum_ms := 0.0
 var _sample_max_ms := 0.0
@@ -65,6 +67,10 @@ var _qualification_enabled := false
 var _observation_mode := &"ordinary_bounded"
 var _observation_epoch := 0
 var _last_observation_receipt: Dictionary = {}
+var _sample_context_remaining := 0.0
+var _cached_phase := &"unknown"
+var _cached_explosion_window := false
+var _cached_active_enemy_count := 0
 
 
 func _ready() -> void:
@@ -92,23 +98,34 @@ func _input(event: InputEvent) -> void:
 
 func set_qualification_enabled(enabled: bool, source: StringName = &"tester_control") -> Dictionary:
 	_observation_epoch += 1
-	_qualification_enabled = enabled
-	_observation_mode = &"deep_qualification" if enabled else &"ordinary_bounded"
+	var debug_allowed := OS.is_debug_build()
+	var resolved_enabled := enabled and debug_allowed
+	_qualification_enabled = resolved_enabled
+	_observation_mode = &"deep_qualification" if resolved_enabled else &"ordinary_bounded"
 	if enabled:
 		_counter_refresh_remaining = 0.0
 		_combat_sample_remaining = 0.0
-	set_process(enabled)
+		_sample_context_remaining = 0.0
+		_refresh_sample_context()
+	set_process(resolved_enabled)
 	_last_observation_receipt = {
 		"event_id": "qualification-observation-%06d" % _observation_epoch,
 		"requested": true,
 		"resolved": true,
-		"accepted": OS.is_debug_build(),
-		"enabled": enabled,
+		"accepted": debug_allowed,
+		"enabled": resolved_enabled,
 		"mode": _observation_mode,
 		"source": source,
 		"release_guard": &"OS.is_debug_build",
 		"process_frame": Engine.get_process_frames(),
 		"physics_frame": Engine.get_physics_frames(),
+		"failure_reason": &"" if debug_allowed else &"release_build_forbidden",
+		"reset_isolation": {
+			"mutates_gameplay_authority": false,
+			"ordinary_process_disabled": not resolved_enabled,
+			"deep_counter_unchanged_when_disabled": true,
+			"run_epoch": int(mission.get("run_epoch")),
+		},
 	}
 	return _last_observation_receipt.duplicate(true)
 
@@ -116,15 +133,25 @@ func set_qualification_enabled(enabled: bool, source: StringName = &"tester_cont
 func _process(delta: float) -> void:
 	if not _qualification_enabled or delta <= 0.0:
 		return
-	var mission_state: Dictionary = mission.call(&"_mcp_state")
+	_sample_context_remaining -= delta
+	if _sample_context_remaining <= 0.0:
+		_sample_context_remaining = SAMPLE_CONTEXT_INTERVAL
+		_refresh_sample_context()
+	var mission_state: Dictionary = mission.call(&"_mcp_state") if _counter_refresh_remaining <= 0.0 else {}
 	var observed_epoch := int(mission_state.get("run_epoch", 0))
+	if mission_state.is_empty():
+		observed_epoch = int(mission.get("run_epoch"))
 	var restore_count := int(mission_state.get("checkpoint_restore_count", 0))
+	if mission_state.is_empty():
+		restore_count = _last_checkpoint_restore_count
 	var marker := "run-%06d" % observed_epoch
 	if observed_epoch != _run_epoch or marker != _cycle_marker:
-		_begin_cycle(observed_epoch, marker, restore_count, mission_state)
-	_update_lifecycle_boundaries(mission_state, restore_count)
+		var initial_state: Dictionary = mission.call(&"_mcp_state")
+		_begin_cycle(observed_epoch, marker, restore_count, initial_state)
+	if not mission_state.is_empty():
+		_update_lifecycle_boundaries(mission_state, restore_count)
 	var frame_ms := delta * 1000.0
-	_record_sample(frame_ms, _phase_id(mission_state), _is_explosion_window(mission_state))
+	_record_sample(frame_ms, _cached_phase, _cached_explosion_window, _cached_active_enemy_count)
 	_counter_refresh_remaining -= delta
 	if _counter_refresh_remaining <= 0.0:
 		_counter_refresh_remaining = DEEP_OBSERVATION_INTERVAL
@@ -135,6 +162,18 @@ func _process(delta: float) -> void:
 	if _combat_sample_remaining <= 0.0:
 		_combat_sample_remaining = COMBAT_SAMPLE_INTERVAL
 		_sample_combat_presentation()
+
+
+func _refresh_sample_context() -> void:
+	var mission_state_id := StringName(mission.get("mission_state"))
+	var bomb_state_id := StringName(mission.get("bomb_state"))
+	_cached_phase = bomb_state_id if bomb_state_id in [&"diagnosing", &"isolating_power", &"removing_detonator", &"detonated", &"defused"] else mission_state_id
+	_cached_explosion_window = bomb_state_id == &"detonated" or mission_state_id == &"bomb_detonated"
+	_cached_active_enemy_count = 0
+	var roster_enemies: Dictionary = roster.get("enemies")
+	for candidate: Variant in roster_enemies.values():
+		if candidate != null and is_instance_valid(candidate) and candidate.get("mission_active") == true:
+			_cached_active_enemy_count += 1
 
 
 func _begin_cycle(epoch: int, marker: String, restore_count: int, mission_state: Dictionary) -> void:
@@ -148,6 +187,7 @@ func _begin_cycle(epoch: int, marker: String, restore_count: int, mission_state:
 	_raw_frame_times_ms.clear()
 	_raw_phase_ids.clear()
 	_raw_explosion_flags.clear()
+	_raw_active_enemy_counts.clear()
 	_sample_count = 0
 	_sample_sum_ms = 0.0
 	_sample_max_ms = 0.0
@@ -252,7 +292,7 @@ func _append_cycle_boundary(kind: StringName, payload: Dictionary = {}) -> void:
 		_cycle_boundaries.pop_front()
 
 
-func _record_sample(frame_ms: float, phase: StringName, explosion_window: bool) -> void:
+func _record_sample(frame_ms: float, phase: StringName, explosion_window: bool, active_enemy_count: int) -> void:
 	_sample_count += 1
 	_sample_sum_ms += frame_ms
 	_sample_max_ms = maxf(_sample_max_ms, frame_ms)
@@ -260,10 +300,12 @@ func _record_sample(frame_ms: float, phase: StringName, explosion_window: bool) 
 	_raw_frame_times_ms.append(frame_ms)
 	_raw_phase_ids.append(phase)
 	_raw_explosion_flags.append(explosion_window)
+	_raw_active_enemy_counts.append(active_enemy_count)
 	if _raw_frame_times_ms.size() > RAW_SAMPLE_CAPACITY:
 		_raw_frame_times_ms.pop_front()
 		_raw_phase_ids.pop_front()
 		_raw_explosion_flags.pop_front()
+		_raw_active_enemy_counts.pop_front()
 	var phase_entry: Dictionary = _phase_samples.get(phase, {
 		"sample_count": 0,
 		"sum_ms": 0.0,
@@ -455,6 +497,31 @@ func _raw_tail() -> Array[float]:
 	return tail
 
 
+func _one_percent_low_fps(frame_times: Array) -> float:
+	if frame_times.is_empty():
+		return 0.0
+	var ordered: Array[float] = []
+	for value: Variant in frame_times:
+		ordered.append(float(value))
+	ordered.sort()
+	var worst_count := maxi(1, ceili(float(ordered.size()) * 0.01))
+	var worst_sum := 0.0
+	for index in range(ordered.size() - worst_count, ordered.size()):
+		worst_sum += ordered[index]
+	var worst_average_ms := worst_sum / float(worst_count)
+	return 1000.0 / worst_average_ms if worst_average_ms > 0.0 else 0.0
+
+
+func _workload_counts_seen(counts: Array) -> Array[int]:
+	var seen: Array[int] = []
+	for value: Variant in counts:
+		var count := int(value)
+		if count in [3, 5, 10, 18] and count not in seen:
+			seen.append(count)
+	seen.sort()
+	return seen
+
+
 func _cleanup_delta(start: Dictionary, finish: Dictionary) -> Dictionary:
 	var delta := {}
 	for key: Variant in finish:
@@ -510,6 +577,8 @@ func _cycle_record(include_raw: bool) -> Dictionary:
 		"average_frame_ms": _sample_sum_ms / float(_sample_count) if _sample_count > 0 else 0.0,
 		"min_frame_ms": 0.0 if is_inf(_sample_min_ms) else _sample_min_ms,
 		"max_frame_ms": _sample_max_ms,
+		"one_percent_low_fps": _one_percent_low_fps(_raw_frame_times_ms),
+		"workload_counts_seen": _workload_counts_seen(_raw_active_enemy_counts),
 		"phase_aggregates": _phase_aggregates(),
 		"explosion_sample_count": _explosion_sample_count,
 		"explosion_max_low_fps_streak": _explosion_max_low_streak,
@@ -529,6 +598,7 @@ func _cycle_record(include_raw: bool) -> Dictionary:
 		record["raw_frame_times_ms"] = _raw_frame_times_ms.duplicate()
 		record["raw_phase_ids"] = _raw_phase_ids.duplicate()
 		record["raw_explosion_flags"] = _raw_explosion_flags.duplicate()
+		record["raw_active_enemy_counts"] = _raw_active_enemy_counts.duplicate()
 	return record
 
 
@@ -537,6 +607,7 @@ func _public_cycle_summary(record: Dictionary) -> Dictionary:
 	result.erase("raw_frame_times_ms")
 	result.erase("raw_phase_ids")
 	result.erase("raw_explosion_flags")
+	result.erase("raw_active_enemy_counts")
 	return result
 
 
@@ -571,6 +642,7 @@ func qualification_sample_page(cycle_serial: int, offset := 0, limit := RAW_PAGE
 	var frame_times: Array = source.get("raw_frame_times_ms", [])
 	var phase_ids: Array = source.get("raw_phase_ids", [])
 	var explosion_flags: Array = source.get("raw_explosion_flags", [])
+	var active_enemy_counts: Array = source.get("raw_active_enemy_counts", [])
 	var safe_offset := clampi(offset, 0, frame_times.size())
 	var safe_limit := clampi(limit, 1, RAW_PAGE_SIZE)
 	var end := mini(safe_offset + safe_limit, frame_times.size())
@@ -582,6 +654,7 @@ func qualification_sample_page(cycle_serial: int, offset := 0, limit := RAW_PAGE
 			"frame_ms": frame_ms,
 			"phase": phase_ids[index] if index < phase_ids.size() else &"unknown",
 			"explosion_window": bool(explosion_flags[index]) if index < explosion_flags.size() else false,
+			"active_enemy_count": int(active_enemy_counts[index]) if index < active_enemy_counts.size() else -1,
 			"below_45_fps": frame_ms > LOW_FPS_FRAME_MS,
 		})
 	return {
@@ -601,6 +674,8 @@ func qualification_sample_page(cycle_serial: int, offset := 0, limit := RAW_PAGE
 		"total_count": frame_times.size(),
 		"next_offset": end if end < frame_times.size() else -1,
 		"samples": samples,
+		"workload_counts_seen": _workload_counts_seen(active_enemy_counts),
+		"one_percent_low_fps": _one_percent_low_fps(frame_times),
 	}
 
 
@@ -678,6 +753,10 @@ func qualification_snapshot() -> Dictionary:
 		"explosion_current_low_fps_streak": _explosion_low_streak,
 		"explosion_max_low_fps_streak": _explosion_max_low_streak,
 		"explosion_threshold_breach_visible": _explosion_breach_visible,
+		"active_enemy_count": _cached_active_enemy_count,
+		"required_workload_counts": [3, 5, 10, 18],
+		"workload_counts_seen": _workload_counts_seen(_raw_active_enemy_counts),
+		"one_percent_low_fps": _one_percent_low_fps(_raw_frame_times_ms),
 		"cleanup": _cleanup_counters.duplicate(true),
 		"retained_cycle_limit": CYCLE_HISTORY_LIMIT,
 		"retained_cycle_count": _retained_cycle_index().size(),
@@ -691,6 +770,18 @@ func qualification_snapshot() -> Dictionary:
 			"bounded": true,
 		},
 		"raw_frame_time_tail_ms": _raw_tail(),
+		"qualification_fixture_contract": {
+			"prepare_actions": {
+				3: &"tester_encounter_alpha_prepare",
+				5: &"tester_encounter_bravo_prepare",
+				10: &"tester_encounter_charlie_prepare",
+				18: &"tester_encounter_all_prepare",
+			},
+			"advance_action": &"tester_encounter_advance",
+			"controls_unbound": true,
+			"non_release": true,
+			"requested_resolved_reset_receipt": true,
+		},
 		"combat_animation_observation": {
 			"presentation_neutral": true,
 			"production_bindings_only": true,

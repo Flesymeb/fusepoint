@@ -291,14 +291,16 @@ func _victory_ground_position() -> Vector3:
 func _begin_failure() -> void:
 	_spawn_explosion_layers(world_origin)
 	_bind_failure_camera()
-	flash_overlay.color = Color(1.0, 0.92, 0.68, _flash_scale() * 0.72)
-	red_edge.modulate = Color(1.0, 1.0, 1.0, _red_scale() * 0.36)
+	# Let the world-space blast and local-light response carry the impact. The
+	# overlays identify injury at the edges without bleaching the authored bay.
+	flash_overlay.color = Color(1.0, 0.94, 0.76, _flash_scale() * 0.46)
+	red_edge.modulate = Color(1.0, 1.0, 1.0, _red_scale() * 0.24)
 	_flash_tween = create_tween()
-	_flash_tween.tween_property(flash_overlay, "color:a", _flash_scale() * 0.2, 0.12).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-	_flash_tween.tween_property(flash_overlay, "color:a", 0.0, 0.38).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_flash_tween.tween_property(flash_overlay, "color:a", _flash_scale() * 0.10, 0.10).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	_flash_tween.tween_property(flash_overlay, "color:a", 0.0, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_edge_tween = create_tween()
-	_edge_tween.tween_property(red_edge, "modulate:a", 0.12 * _red_scale(), 0.65).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	_edge_tween.tween_property(red_edge, "modulate:a", 0.0, 0.85)
+	_edge_tween.tween_property(red_edge, "modulate:a", 0.075 * _red_scale(), 0.55).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_edge_tween.tween_property(red_edge, "modulate:a", 0.0, 0.70)
 	blast_audio.global_position = world_origin
 	tail_audio.global_position = world_origin
 	blast_audio.volume_db = -1.5 + linear_to_db(maxf(0.01, _volume_scale()))

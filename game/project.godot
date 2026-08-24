@@ -190,6 +190,10 @@ tester_encounter_charlie_prepare={
 "deadzone": 0.5,
 "events": []
 }
+tester_encounter_all_prepare={
+"deadzone": 0.5,
+"events": []
+}
 tester_encounter_commit={
 "deadzone": 0.5,
 "events": []

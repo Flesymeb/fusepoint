@@ -741,7 +741,7 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 	if not OS.is_debug_build():
 		last_tester_encounter_receipt["failure_reason"] = &"release_build_forbidden"
 		return last_tester_encounter_receipt.duplicate(true)
-	if region_id not in [&"alpha", &"bravo", &"charlie"]:
+	if region_id not in [&"alpha", &"bravo", &"charlie", &"all"]:
 		last_tester_encounter_receipt["failure_reason"] = &"unknown_region"
 		return last_tester_encounter_receipt.duplicate(true)
 	if mission_state != &"active_gameplay" or deployment_snapshot.is_empty() or checkpoint_restore_in_progress or recovery_input_locked:
@@ -749,12 +749,12 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 		return last_tester_encounter_receipt.duplicate(true)
 	var progression: Dictionary = enemy_roster.call(&"tester_prepare_region_presence", region_id, setup_generation) if enemy_roster != null and enemy_roster.has_method(&"tester_prepare_region_presence") else {}
 	var roster_state: Dictionary = enemy_roster.call(&"_mcp_state") if enemy_roster != null and enemy_roster.has_method(&"_mcp_state") else {}
-	var expected_count := 3 if region_id == &"alpha" else 5 if region_id == &"bravo" else 10
+	var expected_count := 3 if region_id == &"alpha" else 5 if region_id == &"bravo" else 10 if region_id == &"charlie" else 18
 	var actor_ids: Array[String] = []
 	var distinct_roles := {}
 	var distinct_slots := {}
 	for actor: Dictionary in roster_state.get("actor_index", []):
-		if StringName(actor.get("region", &"")) != region_id:
+		if region_id != &"all" and StringName(actor.get("region", &"")) != region_id:
 			continue
 		actor_ids.append(String(actor.get("id", "")))
 		distinct_roles[String(actor.get("role", ""))] = true
@@ -887,7 +887,7 @@ func tester_advance_prepared_encounter(expected_region: StringName = &"", expect
 	if not expected_region.is_empty() and expected_region != region_id:
 		receipt["failure_reason"] = &"mismatched_prepared_branch"
 		return receipt
-	if mission_state != &"active_gameplay" or region_id not in [&"alpha", &"bravo", &"charlie"]:
+	if mission_state != &"active_gameplay" or region_id not in [&"alpha", &"bravo", &"charlie", &"all"]:
 		receipt["failure_reason"] = &"no_advanceable_prepared_encounter"
 		return receipt
 	var frontier_before := _fixture_progression_frontier()
