@@ -163,14 +163,15 @@ func peer_cache_receipt() -> Dictionary:
 		"stable_peer_count": _ordered_peer_cache.size(),
 		"ordering": &"authored_roster_order",
 		"scene_tree_enumeration_per_actor": false,
-		"sort_per_actor": false,
-		"safe_velocity_callback_count": callback_count,
-		"safe_velocity_duplicate_callback_count": duplicate_callback_count,
-		"safe_velocity_consumption_count": consumption_count,
-		"callback_actor_count_this_physics_cycle": callback_frame_actor_count,
-		"maximum_callback_admissions_per_actor_per_cycle": 1,
-		"single_consumption_path": true,
-	}
+			"sort_per_actor": false,
+			"safe_velocity_callback_count": callback_count,
+			"safe_velocity_duplicate_callback_count": duplicate_callback_count,
+			"safe_velocity_consumption_count": consumption_count,
+			"callback_actor_count_this_physics_cycle": callback_frame_actor_count,
+			"maximum_callback_admissions_per_actor_per_cycle": 1,
+			"single_consumption_path": true,
+			"route_reservations": FusepointEnemyAgent.route_reservation_cache_receipt(),
+		}
 
 
 func reset_transient_feedback() -> void:

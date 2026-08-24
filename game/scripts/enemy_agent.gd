@@ -30,6 +30,8 @@ const REGION_COMBAT_PROFILES := {
 }
 
 static var _route_reservations: Dictionary = {}
+static var _route_reservation_cleanup_frame := -1
+static var _route_reservation_cleanup_count := 0
 @export var stable_id: StringName = &"enemy-unconfigured"
 @export var region_id: StringName = &"alpha"
 @export var tactical_role: StringName = &"defender"
@@ -742,7 +744,7 @@ func _submit_navigation_velocity(desired_velocity: Vector3) -> void:
 func _on_navigation_velocity_computed(safe_velocity: Vector3) -> void:
 	# Exactly one separation pass is consumed for each server avoidance receipt.
 	var physics_frame := Engine.get_physics_frames()
-	if _navigation_safe_velocity_ready and _navigation_safe_velocity_receipt_frame == physics_frame:
+	if _navigation_safe_velocity_receipt_frame == physics_frame:
 		_safe_velocity_duplicate_callback_count += 1
 		return
 	_navigation_safe_velocity = _separation_safe_velocity(safe_velocity)
@@ -824,11 +826,24 @@ func _release_route_reservation() -> void:
 
 func _cleanup_route_reservations() -> void:
 	var now_frame := Engine.get_physics_frames()
+	if _route_reservation_cleanup_frame == now_frame:
+		return
+	_route_reservation_cleanup_frame = now_frame
+	_route_reservation_cleanup_count += 1
 	for actor_id: Variant in _route_reservations.keys():
 		var record: Dictionary = _route_reservations.get(actor_id, {})
 		var actor := record.get("actor") as Node
 		if actor == null or not is_instance_valid(actor) or int(record.get("expires_frame", -1)) < now_frame:
 			_route_reservations.erase(actor_id)
+
+
+static func route_reservation_cache_receipt() -> Dictionary:
+	return {
+		"active_reservation_count": _route_reservations.size(),
+		"cleanup_frame": _route_reservation_cleanup_frame,
+		"cleanup_count": _route_reservation_cleanup_count,
+		"cleanup_scope": &"once_per_physics_frame_global",
+	}
 
 
 func _update_progress_watchdog(delta: float) -> void:

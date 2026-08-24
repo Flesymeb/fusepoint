@@ -39,6 +39,7 @@ var _sample_count := 0
 var _sample_sum_ms := 0.0
 var _sample_max_ms := 0.0
 var _sample_min_ms := INF
+var _hitch_count := 0
 var _explosion_sample_count := 0
 var _explosion_low_streak := 0
 var _explosion_max_low_streak := 0
@@ -81,7 +82,7 @@ func _ready() -> void:
 	# in the scene-ready traversal. The first process tick observes them only
 	# after that traversal is complete.
 	_counter_refresh_remaining = 0.0
-	set_process(false)
+	set_process(true)
 	set_process_input(true)
 
 
@@ -107,7 +108,7 @@ func set_qualification_enabled(enabled: bool, source: StringName = &"tester_cont
 		_combat_sample_remaining = 0.0
 		_sample_context_remaining = 0.0
 		_refresh_sample_context()
-	set_process(resolved_enabled)
+	set_process(true)
 	_last_observation_receipt = {
 		"event_id": "qualification-observation-%06d" % _observation_epoch,
 		"requested": true,
@@ -122,7 +123,8 @@ func set_qualification_enabled(enabled: bool, source: StringName = &"tester_cont
 		"failure_reason": &"" if debug_allowed else &"release_build_forbidden",
 		"reset_isolation": {
 			"mutates_gameplay_authority": false,
-			"ordinary_process_disabled": not resolved_enabled,
+			"ordinary_process_enabled": true,
+			"ordinary_process_limited_to_frame_accumulator": not resolved_enabled,
 			"deep_counter_unchanged_when_disabled": true,
 			"run_epoch": int(mission.get("run_epoch")),
 		},
@@ -131,27 +133,44 @@ func set_qualification_enabled(enabled: bool, source: StringName = &"tester_cont
 
 
 func _process(delta: float) -> void:
-	if not _qualification_enabled or delta <= 0.0:
+	if delta <= 0.0:
 		return
 	_sample_context_remaining -= delta
 	if _sample_context_remaining <= 0.0:
 		_sample_context_remaining = SAMPLE_CONTEXT_INTERVAL
 		_refresh_sample_context()
+	var observed_epoch := int(mission.get("run_epoch"))
+	var marker := "run-%06d" % observed_epoch
+	if observed_epoch != _run_epoch or marker != _cycle_marker:
+		_begin_cycle(
+			observed_epoch,
+			marker,
+			int(mission.get("checkpoint_restore_count")),
+			{
+				"mission_state": mission.get("mission_state"),
+				"bomb_state": mission.get("bomb_state"),
+				"run_epoch": observed_epoch,
+				"event_sequence": int(mission.get("event_sequence")),
+			},
+			false
+		)
+	var frame_ms := delta * 1000.0
+	_record_sample(frame_ms, _cached_phase, _cached_explosion_window, _cached_active_enemy_count)
+	if not _qualification_enabled:
+		return
 	var mission_state: Dictionary = mission.call(&"_mcp_state") if _counter_refresh_remaining <= 0.0 else {}
-	var observed_epoch := int(mission_state.get("run_epoch", 0))
+	observed_epoch = int(mission_state.get("run_epoch", 0))
 	if mission_state.is_empty():
 		observed_epoch = int(mission.get("run_epoch"))
 	var restore_count := int(mission_state.get("checkpoint_restore_count", 0))
 	if mission_state.is_empty():
 		restore_count = _last_checkpoint_restore_count
-	var marker := "run-%06d" % observed_epoch
+	marker = "run-%06d" % observed_epoch
 	if observed_epoch != _run_epoch or marker != _cycle_marker:
 		var initial_state: Dictionary = mission.call(&"_mcp_state")
 		_begin_cycle(observed_epoch, marker, restore_count, initial_state)
 	if not mission_state.is_empty():
 		_update_lifecycle_boundaries(mission_state, restore_count)
-	var frame_ms := delta * 1000.0
-	_record_sample(frame_ms, _cached_phase, _cached_explosion_window, _cached_active_enemy_count)
 	_counter_refresh_remaining -= delta
 	if _counter_refresh_remaining <= 0.0:
 		_counter_refresh_remaining = DEEP_OBSERVATION_INTERVAL
@@ -176,7 +195,7 @@ func _refresh_sample_context() -> void:
 			_cached_active_enemy_count += 1
 
 
-func _begin_cycle(epoch: int, marker: String, restore_count: int, mission_state: Dictionary) -> void:
+func _begin_cycle(epoch: int, marker: String, restore_count: int, mission_state: Dictionary, collect_deep_receipts := true) -> void:
 	if _sample_count > 0:
 		_cycle_history.append(_cycle_record(true))
 		while _cycle_history.size() > CYCLE_HISTORY_LIMIT:
@@ -192,6 +211,7 @@ func _begin_cycle(epoch: int, marker: String, restore_count: int, mission_state:
 	_sample_sum_ms = 0.0
 	_sample_max_ms = 0.0
 	_sample_min_ms = INF
+	_hitch_count = 0
 	_explosion_sample_count = 0
 	_explosion_low_streak = 0
 	_explosion_max_low_streak = 0
@@ -206,7 +226,7 @@ func _begin_cycle(epoch: int, marker: String, restore_count: int, mission_state:
 	_last_mission_state = StringName(mission_state.get("mission_state", &"unknown"))
 	_last_mission_event_sequence = int(mission_state.get("event_sequence", -1))
 	_cycle_cleanup_settled = false
-	var shell_state: Dictionary = shell.call(&"_mcp_state")
+	var shell_state: Dictionary = shell.call(&"_mcp_state") if collect_deep_receipts else {}
 	var lifecycle_action: Dictionary = shell_state.get("last_lifecycle_action_receipt", {})
 	var run_epoch_receipt: Dictionary = mission_state.get("last_run_epoch_receipt", {})
 	_cycle_boundaries = [{
@@ -222,9 +242,17 @@ func _begin_cycle(epoch: int, marker: String, restore_count: int, mission_state:
 		"shell_lifecycle_action_id": lifecycle_action.get("action_id", ""),
 		"at_usec": Time.get_ticks_usec(),
 	}]
-	_refresh_cleanup_counters()
-	_cycle_cleanup_start = _cleanup_counters.duplicate(true)
-	_settle_cycle_cleanup_start()
+	if collect_deep_receipts:
+		_refresh_cleanup_counters()
+		_cycle_cleanup_start = _cleanup_counters.duplicate(true)
+		_settle_cycle_cleanup_start()
+	else:
+		_cleanup_counters = {"deferred_until_qualification": true}
+		_cycle_cleanup_start = _cleanup_counters.duplicate(true)
+		_append_cycle_boundary(&"ordinary_observer_started", {
+			"deep_receipts_collected": false,
+			"hotpath_scope": &"frame_time_accumulator_and_sampled_context",
+		})
 
 
 func _settle_cycle_cleanup_start() -> void:
@@ -297,6 +325,8 @@ func _record_sample(frame_ms: float, phase: StringName, explosion_window: bool, 
 	_sample_sum_ms += frame_ms
 	_sample_max_ms = maxf(_sample_max_ms, frame_ms)
 	_sample_min_ms = minf(_sample_min_ms, frame_ms)
+	if frame_ms > LOW_FPS_FRAME_MS:
+		_hitch_count += 1
 	_raw_frame_times_ms.append(frame_ms)
 	_raw_phase_ids.append(phase)
 	_raw_explosion_flags.append(explosion_window)
@@ -578,6 +608,8 @@ func _cycle_record(include_raw: bool) -> Dictionary:
 		"min_frame_ms": 0.0 if is_inf(_sample_min_ms) else _sample_min_ms,
 		"max_frame_ms": _sample_max_ms,
 		"one_percent_low_fps": _one_percent_low_fps(_raw_frame_times_ms),
+		"hitch_count": _hitch_count,
+		"hitch_threshold_ms": LOW_FPS_FRAME_MS,
 		"workload_counts_seen": _workload_counts_seen(_raw_active_enemy_counts),
 		"phase_aggregates": _phase_aggregates(),
 		"explosion_sample_count": _explosion_sample_count,
@@ -674,9 +706,11 @@ func qualification_sample_page(cycle_serial: int, offset := 0, limit := RAW_PAGE
 		"total_count": frame_times.size(),
 		"next_offset": end if end < frame_times.size() else -1,
 		"samples": samples,
-		"workload_counts_seen": _workload_counts_seen(active_enemy_counts),
-		"one_percent_low_fps": _one_percent_low_fps(frame_times),
-	}
+			"workload_counts_seen": _workload_counts_seen(active_enemy_counts),
+			"one_percent_low_fps": _one_percent_low_fps(frame_times),
+			"hitch_count": int(source.get("hitch_count", 0)),
+			"hitch_threshold_ms": LOW_FPS_FRAME_MS,
+		}
 
 
 func _qualification_evidence_state() -> Dictionary:
@@ -726,6 +760,7 @@ func qualification_snapshot() -> Dictionary:
 			"epoch": _observation_epoch,
 			"last_receipt": _last_observation_receipt,
 			"ordinary_process_enabled": is_processing() and not _qualification_enabled,
+			"ordinary_hotpath_scope": &"frame_time_accumulator_and_sampled_context",
 			"deep_inspection_per_frame_in_ordinary_play": false,
 			"start_action": &"tester_qualification_start",
 			"stop_action": &"tester_qualification_stop",
@@ -748,6 +783,8 @@ func qualification_snapshot() -> Dictionary:
 		"average_frame_ms": _sample_sum_ms / float(_sample_count) if _sample_count > 0 else 0.0,
 		"minimum_frame_ms": 0.0 if is_inf(_sample_min_ms) else _sample_min_ms,
 		"maximum_frame_ms": _sample_max_ms,
+		"hitch_count": _hitch_count,
+		"hitch_threshold_ms": LOW_FPS_FRAME_MS,
 		"phase_aggregates": _phase_aggregates(),
 		"explosion_sample_count": _explosion_sample_count,
 		"explosion_current_low_fps_streak": _explosion_low_streak,
