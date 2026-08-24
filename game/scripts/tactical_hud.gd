@@ -54,6 +54,10 @@ var _story_cue_index := -1
 var _story_event_id := ""
 var _story_advance_count := 0
 var _story_confirmation_source := &""
+var _story_presentation_serial := 0
+var _story_input_serial := 0
+var _last_story_input_receipt: Dictionary = {}
+var _story_input_history: Array[Dictionary] = []
 var _story_weapon_lock_active := false
 var _story_full_text := ""
 var _story_phase := &"inactive"
@@ -275,13 +279,47 @@ func reset_transient_feedback_for_restore(epoch: int) -> void:
 func _input(event: InputEvent) -> void:
 	if not _hud_enabled or not _story_active or not _is_story_advance_input(event):
 		return
-	_story_confirmation_source = &"left_click" if event is InputEventMouseButton else &"enter"
+	var shot_serial_before := int(weapon.get("_shot_serial")) if weapon != null else -1
+	var phase_before := _story_phase
+	var cue_before := _story_cue_index
+	_story_confirmation_source = _story_input_source(event)
 	_advance_story_cue()
 	get_viewport().set_input_as_handled()
+	_story_input_serial += 1
+	_last_story_input_receipt = {
+		"input_id": "story-input-%06d" % _story_input_serial,
+		"presentation_serial": _story_presentation_serial,
+		"event_id": _story_event_id,
+		"source": _story_confirmation_source,
+		"handled": true,
+		"cue_before": cue_before,
+		"cue_after": _story_cue_index,
+		"phase_before": phase_before,
+		"phase_after": _story_phase,
+		"advance_count": _story_advance_count,
+		"weapon_shot_serial_before": shot_serial_before,
+		"weapon_shot_serial_after": int(weapon.get("_shot_serial")) if weapon != null else -1,
+		"fire_leak": weapon != null and int(weapon.get("_shot_serial")) != shot_serial_before,
+		"committed_frame": Engine.get_process_frames(),
+	}
+	_story_input_history.append(_last_story_input_receipt.duplicate(true))
+	while _story_input_history.size() > 12:
+		_story_input_history.pop_front()
 
 
 func _is_story_advance_input(event: InputEvent) -> bool:
-	return event.is_action_pressed(&"skip_presentation")
+	if event is InputEventMouseButton:
+		var mouse_event := event as InputEventMouseButton
+		return mouse_event.button_index == MOUSE_BUTTON_LEFT and mouse_event.pressed
+	return event.is_action_pressed(&"menu_accept") or event.is_action_pressed(&"skip_presentation")
+
+
+func _story_input_source(event: InputEvent) -> StringName:
+	if event is InputEventMouseButton:
+		return &"left_click"
+	if event.is_action_pressed(&"skip_presentation"):
+		return &"physical_g_skip"
+	return &"enter"
 
 
 func _process(delta: float) -> void:
@@ -655,6 +693,7 @@ func _begin_story_cues(cues: Array[String], event_id: String) -> void:
 	if cues.is_empty():
 		return
 	_story_cues = cues.duplicate()
+	_story_presentation_serial += 1
 	_story_cue_index = 0
 	_story_event_id = event_id
 	_story_elapsed = 0.0
@@ -677,7 +716,7 @@ func _advance_story_cue() -> void:
 	if not _story_active:
 		return
 	_story_advance_count += 1
-	_finish_story(&"player_skip")
+	_finish_story(_story_confirmation_source if not _story_confirmation_source.is_empty() else &"player_skip")
 
 
 func _finish_story(source: StringName) -> void:
@@ -718,6 +757,9 @@ func _mcp_state() -> Dictionary:
 		"story_timing_seconds": {"type": STORY_TYPE_SECONDS, "hold_until": STORY_HOLD_UNTIL_SECONDS, "end": STORY_END_SECONDS},
 		"story_advance_count": _story_advance_count,
 		"story_confirmation_source": _story_confirmation_source,
+		"story_presentation_serial": _story_presentation_serial,
+		"last_story_input_receipt": _last_story_input_receipt,
+		"story_input_history": _story_input_history,
 		"story_weapon_lock_active": _story_weapon_lock_active,
 		"story_font_px": narrative.get_theme_font_size("font_size"),
 		"story_non_blocking_gameplay": not _story_weapon_lock_active,

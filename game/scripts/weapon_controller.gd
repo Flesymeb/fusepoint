@@ -10,6 +10,9 @@ const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
 const AK74_PRODUCT_FRAME_OFFSET := Vector3(0.0, 0.12, 0.0)
 const AK74_PRODUCT_FRAME_SCALE := Vector3.ONE * 0.88
+const PLAYER_REPORT_TRANSIENT_BUS := &"PlayerReportTransient"
+const PLAYER_REPORT_TRANSIENT_SECONDS := 0.12
+const AUTO_SUSTAIN_ARM_SECONDS := 0.24
 
 @export_node_path("Camera3D") var camera_path: NodePath
 @export_node_path("Node3D") var viewmodel_path: NodePath
@@ -67,6 +70,7 @@ var _fire_edge_queue: Array[Dictionary] = []
 var _active_fire_source := &"none"
 var _active_fire_press_edge_id := ""
 var _active_fire_press_time_usec := 0
+var _active_fire_press_started_combat_seconds := 0.0
 var _active_fire_press_shot_count := 0
 var _active_fire_continuation_authorized := false
 var _input_edge_serial := 0
@@ -107,6 +111,16 @@ var _single_report_source_path := ""
 var _bounded_single_report_bound := false
 var _bounded_single_report_bytes := 0
 var _bounded_single_report_duration := 0.0
+var _report_gate_thread: Thread
+var _report_gate_mutex := Mutex.new()
+var _report_gate_semaphore := Semaphore.new()
+var _report_gate_shutdown := false
+var _report_gate_deadline_usec := 0
+var _report_gate_generation := 0
+var _report_gate_bus_index := -1
+var _report_gate_last_open_usec := 0
+var _report_gate_last_close_usec := 0
+var _report_gate_last_close_generation := 0
 var _tester_audio_generation := 0
 var _last_tester_audio_receipt: Dictionary = {}
 var _tester_audio_history: Array[Dictionary] = []
@@ -119,6 +133,7 @@ func _ready() -> void:
 	viewmodel.set("handle_mouse_wheel", false)
 	_configure_component_feedback_boundary()
 	_capture_retained_component_report_identity()
+	_configure_realtime_report_gate()
 	if viewmodel.has_signal(&"weapon_changed"):
 		viewmodel.connect(&"weapon_changed", _on_viewmodel_weapon_changed)
 	if viewmodel.has_signal(&"aiming_changed"):
@@ -127,6 +142,10 @@ func _ready() -> void:
 	if player != null and player.has_signal(&"spawn_reset"):
 		player.connect(&"spawn_reset", _on_spawn_reset)
 	call_deferred(&"_finish_ready")
+
+
+func _exit_tree() -> void:
+	_shutdown_realtime_report_gate()
 
 
 func _finish_ready() -> void:
@@ -261,6 +280,11 @@ func _authorize_auto_continuation_after_input_pump(now: float) -> void:
 		return
 	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or now < _next_shot_time:
 		return
+	# Keep the first shot immediate, but do not turn a short AUTO tap into a
+	# cadence stream when a slow render/input pump delivers its release late.
+	# Once armed, subsequent commits still use the authored RPM interval.
+	if now - _active_fire_press_started_combat_seconds < AUTO_SUSTAIN_ARM_SECONDS:
+		return
 	# A quick press can cross cadence inside several physics ticks before its
 	# queued release is delivered by the next render input pump. Requiring this
 	# later pump to observe the same generation still down distinguishes a real
@@ -272,6 +296,11 @@ func _observe_fire_transition(pressed: bool, source: StringName, captured_at_use
 	if pressed == _observed_fire_down:
 		return
 	_observed_fire_down = pressed
+	if pressed and _story_consumer_owns_primary_input():
+		_fire_rearm_required = true
+		var magazine := int(_current_weapon()["magazine"])
+		_record_input_edge(source, &"press", false, "story_input_owned", "", magazine, magazine, "presentation_consumer", "")
+		return
 	if not pressed and _fire_rearm_required:
 		_fire_rearm_required = false
 		return
@@ -287,6 +316,11 @@ func _observe_fire_transition(pressed: bool, source: StringName, captured_at_use
 		"captured_at_seconds": _now(),
 		"captured_at_usec": captured_at_usec if captured_at_usec > 0 else Time.get_ticks_usec(),
 	})
+
+
+func _story_consumer_owns_primary_input() -> bool:
+	var tactical_hud := get_tree().get_first_node_in_group(&"tactical_hud")
+	return tactical_hud != null and tactical_hud.get("_hud_enabled") == true and tactical_hud.get("_story_active") == true
 
 
 func _drain_fire_edges() -> void:
@@ -319,6 +353,7 @@ func _begin_fire(source := &"mapped_action", edge_id := "", captured_at_usec := 
 	_active_fire_source = source
 	_active_fire_press_edge_id = edge_id
 	_active_fire_press_time_usec = captured_at_usec
+	_active_fire_press_started_combat_seconds = _now()
 	_active_fire_press_shot_count = 0
 	_active_fire_continuation_authorized = false
 	var receipt := _try_submit_shot()
@@ -345,6 +380,7 @@ func _end_fire(source := &"mapped_action", cancellation_reason := "release", edg
 	_trigger_held = false
 	_active_fire_press_edge_id = ""
 	_active_fire_press_time_usec = 0
+	_active_fire_press_started_combat_seconds = 0.0
 	_active_fire_press_shot_count = 0
 	_active_fire_continuation_authorized = false
 	if cancellation_reason == "release":
@@ -395,6 +431,7 @@ func _try_submit_shot() -> Dictionary:
 	_action_state = &"fire"
 	_action_until = _now() + 0.07
 	_recovery_until = _now() + float(weapon["recovery_seconds"])
+	_open_realtime_report_gate(shot_id)
 	feedback.call(&"trigger_fire", sustained_authorized)
 	_record_report_request(receipt, playback_class, sustained_authorized)
 	_trigger_product_recoil(weapon["fire_mode"] == FIRE_MODE_AUTO)
@@ -715,6 +752,94 @@ func _capture_retained_component_report_identity() -> void:
 	_bounded_single_report_bound = false
 	_bounded_single_report_bytes = 0
 	_bounded_single_report_duration = single_player.stream.get_length()
+
+
+func _configure_realtime_report_gate() -> void:
+	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
+	_report_gate_bus_index = AudioServer.get_bus_index(PLAYER_REPORT_TRANSIENT_BUS)
+	if single_player == null or single_player.stream == null or _report_gate_bus_index < 0:
+		_bounded_single_report_bound = false
+		return
+	# The accepted retained source and FireAudio owner stay untouched. Only their
+	# candidate-owned output route is isolated so a real-time worker can close the
+	# mixed output even while the render/game thread is stalled.
+	single_player.bus = PLAYER_REPORT_TRANSIENT_BUS
+	AudioServer.set_bus_mute(_report_gate_bus_index, true)
+	_bounded_single_report_bound = single_player.stream.resource_path == _single_report_source_path
+	_bounded_single_report_bytes = int(round(PLAYER_REPORT_TRANSIENT_SECONDS * AudioServer.get_mix_rate())) * 2
+	_report_gate_shutdown = false
+	_report_gate_thread = Thread.new()
+	var start_error := _report_gate_thread.start(_report_gate_worker)
+	if start_error != OK:
+		_bounded_single_report_bound = false
+		_report_gate_thread = null
+
+
+func _open_realtime_report_gate(_shot_id: String) -> void:
+	if not _bounded_single_report_bound or _report_gate_bus_index < 0:
+		return
+	var opened_usec := Time.get_ticks_usec()
+	_report_gate_mutex.lock()
+	_report_gate_generation += 1
+	_report_gate_deadline_usec = opened_usec + int(PLAYER_REPORT_TRANSIENT_SECONDS * 1000000.0)
+	_report_gate_last_open_usec = opened_usec
+	_report_gate_mutex.unlock()
+	AudioServer.set_bus_mute(_report_gate_bus_index, false)
+	_report_gate_semaphore.post()
+
+
+func _close_realtime_report_gate_immediately() -> void:
+	if _report_gate_bus_index < 0:
+		return
+	_report_gate_mutex.lock()
+	_report_gate_generation += 1
+	_report_gate_deadline_usec = 0
+	_report_gate_last_close_usec = Time.get_ticks_usec()
+	_report_gate_last_close_generation = _report_gate_generation
+	_report_gate_mutex.unlock()
+	AudioServer.set_bus_mute(_report_gate_bus_index, true)
+
+
+func _report_gate_worker() -> void:
+	while true:
+		_report_gate_semaphore.wait()
+		while true:
+			_report_gate_mutex.lock()
+			var shutdown := _report_gate_shutdown
+			var generation := _report_gate_generation
+			var deadline_usec := _report_gate_deadline_usec
+			_report_gate_mutex.unlock()
+			if shutdown:
+				return
+			if deadline_usec <= 0:
+				break
+			var remaining_usec := deadline_usec - Time.get_ticks_usec()
+			if remaining_usec > 0:
+				OS.delay_usec(remaining_usec)
+			_report_gate_mutex.lock()
+			var still_current := generation == _report_gate_generation and deadline_usec == _report_gate_deadline_usec
+			if still_current:
+				_report_gate_deadline_usec = 0
+				_report_gate_last_close_usec = Time.get_ticks_usec()
+				_report_gate_last_close_generation = generation
+			_report_gate_mutex.unlock()
+			if still_current:
+				# Global server singletons are thread-safe; this closes the mixed bus
+				# without waiting for a frame/tween callback.
+				AudioServer.set_bus_mute(_report_gate_bus_index, true)
+				break
+
+
+func _shutdown_realtime_report_gate() -> void:
+	_close_realtime_report_gate_immediately()
+	if _report_gate_thread == null:
+		return
+	_report_gate_mutex.lock()
+	_report_gate_shutdown = true
+	_report_gate_mutex.unlock()
+	_report_gate_semaphore.post()
+	_report_gate_thread.wait_to_finish()
+	_report_gate_thread = null
 
 
 func set_run_epoch(epoch: int, reset_transients := true) -> bool:
@@ -1120,6 +1245,7 @@ func reset_transient_state_for_restore() -> void:
 	_active_fire_source = &"none"
 	_active_fire_press_edge_id = ""
 	_active_fire_press_time_usec = 0
+	_active_fire_press_started_combat_seconds = 0.0
 	_active_fire_press_shot_count = 0
 	_active_fire_continuation_authorized = false
 	_shot_commits.clear()
@@ -1419,6 +1545,7 @@ func _stop_fire_report(reason: StringName, stop_single_transient: bool) -> void:
 	var auto_player := feedback.get_node_or_null("AutoFireAudio") as AudioStreamPlayer
 	if stop_single_transient and single_player != null:
 		single_player.stop()
+		_close_realtime_report_gate_immediately()
 		_single_report_generation += 1
 		_single_report_deadline = -1.0
 		_single_report_shot_id = ""
@@ -1452,7 +1579,9 @@ func _record_report_request(receipt: Dictionary, playback_class: StringName, sus
 		"requested_playback_class": playback_class,
 		"sustained_report_authorized": sustained_authorized,
 		"physical_eof_seconds": _bounded_single_report_duration,
-			"physical_eof_owner": &"retained_component_fire_audio",
+		"physical_eof_owner": &"retained_component_fire_audio",
+		"mixed_output_boundary_seconds": PLAYER_REPORT_TRANSIENT_SECONDS,
+		"mixed_output_gate_generation": _report_gate_generation,
 		"single_player_playing": single_player.playing if single_player != null else false,
 		"auto_player_playing": auto_player.playing if auto_player != null else false,
 		"timestamp_seconds": _now(),
@@ -1699,6 +1828,15 @@ func _fire_audio_player_state() -> Dictionary:
 			"playback_stream_class": single_player.stream.get_class() if single_player != null and single_player.stream != null else "",
 			"playback_stream_length": single_player.stream.get_length() if single_player != null and single_player.stream != null else 0.0,
 			"audio_server_bounded": _bounded_single_report_bound,
+			"mixed_output_bus": PLAYER_REPORT_TRANSIENT_BUS,
+			"mixed_output_bus_muted": AudioServer.is_bus_mute(_report_gate_bus_index) if _report_gate_bus_index >= 0 else true,
+			"mixed_output_boundary_seconds": PLAYER_REPORT_TRANSIENT_SECONDS,
+			"gate_generation": _report_gate_generation,
+			"gate_deadline_usec": _report_gate_deadline_usec,
+			"gate_last_open_usec": _report_gate_last_open_usec,
+			"gate_last_close_usec": _report_gate_last_close_usec,
+			"gate_last_close_generation": _report_gate_last_close_generation,
+			"render_stall_independent": _report_gate_thread != null,
 			"retained_stream_unchanged": single_player != null and single_player.stream != null and single_player.stream.resource_path == _single_report_source_path,
 			"adapter_source_substitution_used": false,
 		},

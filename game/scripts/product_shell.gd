@@ -23,6 +23,7 @@ const BRIEFING_CAPTIONS: Array[String] = [
 	"BREACH CHARLIE AND DISMANTLE THE DEVICE.\nSUPPORT IS NOT COMING.",
 ]
 const BRIEFING_BEAT_SECONDS := 2.5
+const BRIEFING_TYPE_CHARACTERS_PER_SECOND := 42.0
 const TRANSITION_HISTORY_LIMIT := 32
 const TERMINAL_RESULT_RECEIPT_LIMIT := 4
 const SAFE_AREA_RATIO := 0.05
@@ -101,6 +102,12 @@ var _opening_media_status := &"uninitialized"
 var _opening_completion_source := &""
 var _opening_completion_count := 0
 var _briefing_manual_advance_count := 0
+var _briefing_cue_elapsed := 0.0
+var _briefing_visible_characters := 0
+var _briefing_cue_revealed := false
+var _briefing_input_serial := 0
+var _last_briefing_input_receipt: Dictionary = {}
+var _briefing_input_history: Array[Dictionary] = []
 var _activation_serial := 0
 var _activation_frame := -1
 var _last_activation_receipt: Dictionary = {}
@@ -962,7 +969,10 @@ func _start_loading() -> void:
 
 func _start_briefing() -> void:
 	_briefing_elapsed = 0.0
-	_briefing_caption_index = -1
+	_briefing_caption_index = 0
+	_briefing_cue_elapsed = 0.0
+	_briefing_visible_characters = 0
+	_briefing_cue_revealed = false
 	_briefing_complete = false
 	_deployment_requested = false
 	_opening_completion_source = &""
@@ -983,6 +993,7 @@ func _start_briefing() -> void:
 	else:
 		_opening_media_status = &"matched_still_fallback"
 		briefing_video.visible = false
+	$Root/Pages/BriefingPage/Copy.text = ""
 	_update_briefing(0.0)
 
 
@@ -990,12 +1001,14 @@ func _update_briefing(delta: float) -> void:
 	if briefing_video.stream != null and briefing_video.paused:
 		return
 	_briefing_elapsed += maxf(delta, 0.0)
-	var next_index := mini(int(_briefing_elapsed / BRIEFING_BEAT_SECONDS), BRIEFING_CAPTIONS.size() - 1)
-	if next_index != _briefing_caption_index:
-		_briefing_caption_index = next_index
-		$Root/Pages/BriefingPage/Copy.text = BRIEFING_CAPTIONS[next_index]
-	if _briefing_elapsed >= BRIEFING_BEAT_SECONDS * BRIEFING_CAPTIONS.size():
-		_complete_briefing(false)
+	if _briefing_complete or _briefing_cue_revealed or _briefing_caption_index < 0:
+		return
+	_briefing_cue_elapsed += maxf(delta, 0.0)
+	var cue := BRIEFING_CAPTIONS[_briefing_caption_index]
+	_briefing_visible_characters = mini(cue.length(), int(floor(_briefing_cue_elapsed * BRIEFING_TYPE_CHARACTERS_PER_SECOND)))
+	$Root/Pages/BriefingPage/Copy.text = cue.left(_briefing_visible_characters)
+	if _briefing_visible_characters >= cue.length():
+		_briefing_cue_revealed = true
 
 
 func _briefing_primary_action() -> void:
@@ -1010,14 +1023,48 @@ func _briefing_primary_action() -> void:
 func _advance_briefing_cue() -> void:
 	if app_state != STATE_BRIEFING or _briefing_complete:
 		return
+	var cue_before := _briefing_caption_index
+	var revealed_before := _briefing_cue_revealed
+	var action := &"advance_cue"
 	_briefing_manual_advance_count += 1
+	if not _briefing_cue_revealed:
+		var cue := BRIEFING_CAPTIONS[_briefing_caption_index]
+		_briefing_visible_characters = cue.length()
+		_briefing_cue_revealed = true
+		$Root/Pages/BriefingPage/Copy.text = cue
+		action = &"complete_partial_reveal"
+		_record_briefing_input(cue_before, revealed_before, action)
+		return
 	var next_index := _briefing_caption_index + 1
 	if next_index >= BRIEFING_CAPTIONS.size():
 		_complete_briefing(false, &"manual_cue_complete")
+		_record_briefing_input(cue_before, revealed_before, &"complete_briefing")
 		return
-	_briefing_elapsed = maxf(_briefing_elapsed, float(next_index) * BRIEFING_BEAT_SECONDS)
 	_briefing_caption_index = next_index
-	$Root/Pages/BriefingPage/Copy.text = BRIEFING_CAPTIONS[next_index]
+	_briefing_cue_elapsed = 0.0
+	_briefing_visible_characters = 0
+	_briefing_cue_revealed = false
+	$Root/Pages/BriefingPage/Copy.text = ""
+	_record_briefing_input(cue_before, revealed_before, action)
+
+
+func _record_briefing_input(cue_before: int, revealed_before: bool, action: StringName) -> void:
+	_briefing_input_serial += 1
+	_last_briefing_input_receipt = {
+		"input_id": "briefing-input-%06d" % _briefing_input_serial,
+		"source": _last_input_family,
+		"handled": true,
+		"action": action,
+		"cue_before": cue_before,
+		"cue_after": _briefing_caption_index,
+		"revealed_before": revealed_before,
+		"revealed_after": _briefing_cue_revealed,
+		"manual_advance_count": _briefing_manual_advance_count,
+		"committed_frame": Engine.get_process_frames(),
+	}
+	_briefing_input_history.append(_last_briefing_input_receipt.duplicate(true))
+	while _briefing_input_history.size() > 12:
+		_briefing_input_history.pop_front()
 
 
 func _toggle_opening_pause() -> void:
@@ -1050,7 +1097,6 @@ func _on_opening_video_finished() -> void:
 	if app_state != STATE_BRIEFING or _briefing_complete:
 		return
 	_opening_media_status = &"finished"
-	_complete_briefing(false)
 
 
 func _deploy() -> void:
@@ -1642,6 +1688,13 @@ func _mcp_state() -> Dictionary:
 		"briefing_complete": _briefing_complete,
 		"briefing_skip_count": _briefing_skip_count,
 		"briefing_manual_advance_count": _briefing_manual_advance_count,
+		"briefing_cue_elapsed": _briefing_cue_elapsed,
+		"briefing_visible_characters": _briefing_visible_characters,
+		"briefing_total_characters": BRIEFING_CAPTIONS[_briefing_caption_index].length() if _briefing_caption_index >= 0 and _briefing_caption_index < BRIEFING_CAPTIONS.size() else 0,
+		"briefing_cue_revealed": _briefing_cue_revealed,
+		"briefing_indefinite_dwell": _briefing_cue_revealed and not _briefing_complete,
+		"last_briefing_input_receipt": _last_briefing_input_receipt,
+		"briefing_input_history": _briefing_input_history,
 		"opening_media_status": _opening_media_status,
 		"opening_stream_bound": briefing_video.stream != null,
 		"opening_video_playing": briefing_video.is_playing(),
