@@ -69,6 +69,8 @@ var _event_row_expiries: Array[float] = []
 var _event_cleanup_receipts: Array[Dictionary] = []
 var _suppressed_combat_event_count := 0
 var _last_suppressed_combat_event: Dictionary = {}
+var _objective_authority_receipt: Dictionary = {}
+var _objective_handoff_history: Array[Dictionary] = []
 var _minimap_bound := false
 var _hud_enabled := false
 var _applied_ui_scale := 1.0
@@ -413,6 +415,11 @@ func _update_mission_state() -> void:
 			objective_progress.value = float(point_state.get("progress", 0.0)) * 100.0
 			var threat_count := int(point_state.get("contest_enemy_count", 0))
 			objective_detail.text = "%s   •   %dm   •   THREATS %d" % [String(point_state.get("state", &"unknown")).replace("_", " ").to_upper(), int(distance), threat_count]
+	else:
+		objective_label.text = ""
+		objective_detail.text = ""
+		objective_progress.visible = false
+	_update_objective_authority_receipt(point_id, point_state, distance, contextual)
 
 
 func _update_bomb_interaction_band(state: Dictionary, distance: float) -> void:
@@ -470,6 +477,7 @@ func _bravo_locked_handoff_active() -> bool:
 
 
 func _current_objective_id() -> StringName:
+	var points: Dictionary = mission.get("capture_points")
 	if arena != null and player != null:
 		var nearest_id := &""
 		var nearest_distance := INF
@@ -477,18 +485,23 @@ func _current_objective_id() -> StringName:
 			var candidate := arena.get_node_or_null(String(candidate_id).capitalize()) as Node3D
 			if candidate == null:
 				continue
+			if candidate_id in POINT_IDS_SAFE() and StringName((points.get(candidate_id, {}) as Dictionary).get("state", &"")) == &"secured_aegis":
+				continue
 			var candidate_distance := player.global_position.distance_to(candidate.global_position)
 			if candidate_distance <= 12.0 and candidate_distance < nearest_distance:
 				nearest_id = candidate_id
 				nearest_distance = candidate_distance
 		if not nearest_id.is_empty():
 			return nearest_id
-	var points: Dictionary = mission.get("capture_points")
 	if StringName(points[&"alpha"]["state"]) != &"secured_aegis":
 		return &"alpha"
 	if StringName(points[&"bravo"]["state"]) != &"secured_aegis":
 		return &"bravo"
 	return &"charlie"
+
+
+func POINT_IDS_SAFE() -> Array[StringName]:
+	return [&"alpha", &"bravo"]
 
 
 func _objective_title(point_id: StringName) -> String:
@@ -497,6 +510,32 @@ func _objective_title(point_id: StringName) -> String:
 	if point_id == &"bravo":
 		return "BRAVO • SECURE CRANE YARD"
 	return "CHARLIE • DEFUSE ROCKET BAY"
+
+
+func _update_objective_authority_receipt(point_id: StringName, point_state: Dictionary, distance: float, contextual: bool) -> void:
+	var points: Dictionary = mission.get("capture_points")
+	var alpha_secured := StringName((points.get(&"alpha", {}) as Dictionary).get("state", &"")) == &"secured_aegis"
+	var bravo_secured := StringName((points.get(&"bravo", {}) as Dictionary).get("state", &"")) == &"secured_aegis"
+	var stale_alpha_visible := contextual and point_id == &"alpha" and alpha_secured
+	var previous_id := StringName(_objective_authority_receipt.get("current_objective_id", &""))
+	_objective_authority_receipt = {
+		"source": &"mission.objective_state_for",
+		"current_objective_id": point_id,
+		"state": point_state.duplicate(true),
+		"distance_meters": distance,
+		"contextual_visible": contextual,
+		"active_capture": mission.get("_active_capture"),
+		"alpha_secured": alpha_secured,
+		"bravo_secured": bravo_secured,
+		"legal_next_objective": &"bravo" if alpha_secured and not bravo_secured else &"charlie" if alpha_secured and bravo_secured else &"alpha",
+		"lower_band_text": objective_label.text,
+		"stale_alpha_lower_band": stale_alpha_visible,
+		"event_frame": Engine.get_process_frames(),
+	}
+	if previous_id != point_id:
+		_objective_handoff_history.append(_objective_authority_receipt.duplicate(true))
+		while _objective_handoff_history.size() > 8:
+			_objective_handoff_history.pop_front()
 
 
 func _on_mission_event(event: Dictionary) -> void:
@@ -508,8 +547,10 @@ func _on_mission_event(event: Dictionary) -> void:
 		var objective_id := StringName(payload.get("objective_id", &""))
 		if objective_id == &"alpha":
 			_begin_radio_cues(["COMMAND  //  Alpha secure. Wiring topology recovered. Move to Bravo."], String(event.get("event_id", "alpha_handoff")))
+			_update_mission_state()
 		elif objective_id == &"bravo":
 			_begin_radio_cues(["COMMAND  //  Bravo secure. Isolation frequency recovered. Breach Charlie."], String(event.get("event_id", "bravo_handoff")))
+			_update_mission_state()
 	var important := kind in COMBAT_FEED_ALLOWED_KINDS
 	if important:
 		_push_combat_row(_row_receipt(event))
@@ -883,6 +924,8 @@ func _mcp_state() -> Dictionary:
 			"presentation": &"compact_route_line_handoff",
 			"text": route_label.text,
 		},
+		"objective_authority_receipt": _objective_authority_receipt,
+		"objective_handoff_history": _objective_handoff_history,
 		"event_rows": _event_rows,
 		"combat_row_receipts": _event_row_receipts,
 		"combat_row_cleanup_receipts": _event_cleanup_receipts,

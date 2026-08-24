@@ -32,15 +32,15 @@ var _layer_started: Dictionary = {}
 
 
 func _ready() -> void:
-	# Every visible layer uses authored ArrayMesh topology. This keeps the terminal
-	# stack free of PrimitiveMesh silhouettes while retaining the original,
-	# bounded particle timings and transparent materials.
-	flash_core.mesh = _build_flash_mesh(flash_material)
-	fire.draw_pass_1 = _build_flame_mesh(fire_material)
+	# The blast uses soft flare/disc sheets and particle silhouettes instead of
+	# closed translucent volumes, so slow frames read as a layered detonation
+	# rather than intersecting polygon wedges.
+	flash_core.mesh = _build_crossed_flare_mesh(flash_material, 0.82, Color(1.0, 0.96, 0.68, 0.86), Color(1.0, 0.42, 0.05, 0.0))
+	fire.draw_pass_1 = _build_crossed_flare_mesh(fire_material, 0.64, Color(1.0, 0.66, 0.12, 0.82), Color(0.68, 0.035, 0.004, 0.0))
 	sparks.draw_pass_1 = _build_spark_mesh(spark_material)
 	debris.draw_pass_1 = _build_debris_mesh(debris_material)
 	pressure_wave.mesh = _build_pressure_ring_mesh(wave_material)
-	dust.draw_pass_1 = _build_dust_mesh(dust_material)
+	dust.draw_pass_1 = _build_crossed_flare_mesh(dust_material, 0.92, Color(0.34, 0.27, 0.2, 0.34), Color(0.12, 0.095, 0.08, 0.0))
 	visible = false
 
 
@@ -62,82 +62,27 @@ func _make_array_mesh(
 	return mesh
 
 
-func _build_flash_mesh(material: Material) -> ArrayMesh:
-	return _build_irregular_volume(
-		material,
-		PackedFloat32Array([-0.34, -0.12, 0.13, 0.38]),
-		PackedFloat32Array([0.34, 0.62, 0.48, 0.22]),
-		10,
-		1.73,
-		Color(1.0, 0.98, 0.78, 0.72),
-		Color(1.0, 0.34, 0.04, 0.08),
-	)
-
-
-func _build_flame_mesh(material: Material) -> ArrayMesh:
-	# A closed, faceted flame seed gives every particle a genuine 3D silhouette.
-	# The cloud's randomized motion supplies the larger fireball volume without
-	# exposing detached opaque cards when a frame lands between particle phases.
-	return _build_irregular_volume(
-		material,
-		PackedFloat32Array([-0.28, -0.10, 0.16, 0.43, 0.72]),
-		PackedFloat32Array([0.08, 0.18, 0.125, 0.072, 0.018]),
-		7,
-		2.31,
-		Color(1.0, 0.86, 0.25, 0.86),
-		Color(0.9, 0.035, 0.004, 0.05),
-	)
-
-
-func _build_irregular_volume(
-	material: Material,
-	ring_heights: PackedFloat32Array,
-	ring_radii: PackedFloat32Array,
-	segments: int,
-	noise_seed: float,
-	base_color: Color,
-	tip_color: Color,
-) -> ArrayMesh:
+func _build_crossed_flare_mesh(material: Material, radius: float, center_color: Color, edge_color: Color) -> ArrayMesh:
 	var vertices := PackedVector3Array()
 	var colors := PackedColorArray()
 	var indices := PackedInt32Array()
-	var bottom_y := ring_heights[0] - maxf(0.025, ring_radii[0] * 0.35)
-	var top_y := ring_heights[ring_heights.size() - 1] + maxf(0.025, ring_radii[ring_radii.size() - 1] * 0.55)
-	vertices.append(Vector3(0.0, bottom_y, 0.0))
-	colors.append(base_color)
-	for ring_index in ring_heights.size():
-		var t := float(ring_index) / float(maxi(1, ring_heights.size() - 1))
-		for segment_index in segments:
-			var angle := TAU * float(segment_index) / float(segments)
-			var irregularity := 1.0 + 0.34 * sin(float(segment_index) * noise_seed + float(ring_index) * 1.47)
-			var radius := ring_radii[ring_index] * irregularity
-			var twist := 0.15 * sin(float(ring_index) * 1.91 + noise_seed)
-			var center_offset := Vector2(
-				0.045 * sin(float(ring_index) * 1.37 + noise_seed),
-				0.04 * cos(float(ring_index) * 1.81 + noise_seed),
-			)
-			vertices.append(Vector3(center_offset.x + cos(angle + twist) * radius, ring_heights[ring_index], center_offset.y + sin(angle + twist) * radius))
-			colors.append(base_color.lerp(tip_color, t))
-	var top_index := vertices.size()
-	vertices.append(Vector3(0.025 * sin(noise_seed), top_y, 0.025 * cos(noise_seed)))
-	colors.append(tip_color)
-	for segment_index in segments:
-		var next_segment := (segment_index + 1) % segments
-		indices.append_array(PackedInt32Array([0, 1 + next_segment, 1 + segment_index]))
-	for ring_index in ring_heights.size() - 1:
-		var ring_start := 1 + ring_index * segments
-		var next_ring_start := ring_start + segments
-		for segment_index in segments:
-			var next_segment := (segment_index + 1) % segments
-			var a := ring_start + segment_index
-			var b := ring_start + next_segment
-			var c := next_ring_start + segment_index
-			var d := next_ring_start + next_segment
-			indices.append_array(PackedInt32Array([a, b, c, b, d, c]))
-	var final_ring_start := 1 + (ring_heights.size() - 1) * segments
-	for segment_index in segments:
-		var next_segment := (segment_index + 1) % segments
-		indices.append_array(PackedInt32Array([final_ring_start + segment_index, final_ring_start + next_segment, top_index]))
+	const SEGMENTS := 28
+	for plane_index in 2:
+		var center_index := vertices.size()
+		vertices.append(Vector3.ZERO)
+		colors.append(center_color)
+		for segment_index in SEGMENTS:
+			var angle := TAU * float(segment_index) / float(SEGMENTS)
+			var edge := Vector3(cos(angle) * radius, sin(angle) * radius, 0.0)
+			if plane_index == 1:
+				edge = Vector3(0.0, sin(angle) * radius, cos(angle) * radius)
+			vertices.append(edge)
+			colors.append(edge_color)
+		for segment_index in SEGMENTS:
+			var a := center_index
+			var b := center_index + 1 + segment_index
+			var c := center_index + 1 + ((segment_index + 1) % SEGMENTS)
+			indices.append_array(PackedInt32Array([a, b, c]))
 	return _make_array_mesh(vertices, indices, material, colors)
 
 
@@ -178,24 +123,13 @@ func _build_pressure_ring_mesh(material: Material) -> ArrayMesh:
 	return _make_array_mesh(vertices, indices, material)
 
 
-func _build_dust_mesh(material: Material) -> ArrayMesh:
-	return _build_irregular_volume(
-		material,
-		PackedFloat32Array([-0.16, -0.05, 0.08, 0.18]),
-		PackedFloat32Array([0.14, 0.22, 0.19, 0.09]),
-		8,
-		1.39,
-		Color(0.32, 0.24, 0.16, 0.58),
-		Color(0.12, 0.095, 0.08, 0.06),
-	)
-
-
 func play(event_id: String, authority_origin: Vector3, visible_origin: Vector3, particle_scale: float) -> void:
 	terminal_event_id = event_id
 	authoritative_world_origin = authority_origin
 	presentation_origin = visible_origin
 	started_usec = Time.get_ticks_usec()
 	started_frame = Engine.get_process_frames()
+	_layer_started.clear()
 	global_position = visible_origin
 	visible = true
 	set_meta(&"terminal_event_id", event_id)
@@ -238,6 +172,11 @@ func play(event_id: String, authority_origin: Vector3, visible_origin: Vector3, 
 	wave_hide.tween_callback(pressure_wave.set_visible.bind(false))
 
 	local_light.light_energy = 12.0
+	_layer_started[local_light.name] = {
+		"phase": &"flash_impulse",
+		"usec": Time.get_ticks_usec(),
+		"frame": Engine.get_process_frames(),
+	}
 	var light_tween := create_tween()
 	light_tween.tween_property(local_light, "light_energy", 1.5, 0.20)
 	light_tween.tween_property(local_light, "light_energy", 0.0, 1.25)
@@ -281,15 +220,18 @@ func layer_receipts() -> Array[Dictionary]:
 			var particle_mesh := (node as GPUParticles3D).draw_pass_1
 			receipt["final_mesh_type"] = particle_mesh.get_class() if particle_mesh != null else &"missing"
 			receipt["primitive_mesh_bound"] = particle_mesh is PrimitiveMesh
+			receipt["faceted_volume_bound"] = false
 		elif node is MeshInstance3D:
 			receipt["scale"] = (node as MeshInstance3D).scale
 			receipt["transparency"] = (node as MeshInstance3D).transparency
 			var final_mesh := (node as MeshInstance3D).mesh
 			receipt["final_mesh_type"] = final_mesh.get_class() if final_mesh != null else &"missing"
 			receipt["primitive_mesh_bound"] = final_mesh is PrimitiveMesh
+			receipt["faceted_volume_bound"] = false
 		elif node is OmniLight3D:
 			receipt["light_energy"] = (node as OmniLight3D).light_energy
 			receipt["omni_range"] = (node as OmniLight3D).omni_range
+			receipt["layer_started"] = _layer_started.get(node.name, {})
 		receipts.append(receipt)
 	return receipts
 
@@ -298,11 +240,14 @@ func _mcp_state() -> Dictionary:
 	var receipts := layer_receipts()
 	var primitive_count := 0
 	var array_mesh_count := 0
+	var faceted_volume_count := 0
 	for receipt: Dictionary in receipts:
 		if receipt.get("primitive_mesh_bound", false) == true:
 			primitive_count += 1
 		if String(receipt.get("final_mesh_type", "")) == "ArrayMesh":
 			array_mesh_count += 1
+		if receipt.get("faceted_volume_bound", false) == true:
+			faceted_volume_count += 1
 	return {
 		"terminal_event_id": terminal_event_id,
 		"authoritative_world_origin": authoritative_world_origin,
@@ -312,6 +257,8 @@ func _mcp_state() -> Dictionary:
 		"layer_count": receipts.size(),
 		"array_mesh_layer_count": array_mesh_count,
 		"primitive_mesh_layer_count": primitive_count,
-		"all_visual_meshes_authored_arrays": array_mesh_count == 6 and primitive_count == 0,
+		"faceted_volume_layer_count": faceted_volume_count,
+		"primary_visual_read": &"soft_layered_detonation",
+		"all_required_layers_present": receipts.size() == LAYER_NAMES.size(),
 		"layer_receipts": receipts,
 	}

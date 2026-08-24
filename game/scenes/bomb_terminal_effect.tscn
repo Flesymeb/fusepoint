@@ -6,6 +6,7 @@
 transparency = 1
 shading_mode = 0
 blend_mode = 1
+vertex_color_use_as_albedo = true
 albedo_color = Color(1, 0.88, 0.48, 0.12)
 emission_enabled = true
 emission = Color(1, 0.78, 0.22, 1)

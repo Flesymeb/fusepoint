@@ -120,6 +120,8 @@ var _last_curated_menu_lifecycle_receipt: Dictionary = {}
 var _tester_setup_serial := 0
 var _last_tester_setup_receipt: Dictionary = {}
 var _tester_setup_history: Array[Dictionary] = []
+var _death_recovery_cycle_serial := 0
+var _death_recovery_cycle_history: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -261,6 +263,13 @@ func _configure_settings_layout_contract() -> void:
 	for control: Control in _settings_controls().slice(0, _settings_labels().size()):
 		control.custom_minimum_size.y = maxf(48.0 if control is BaseButton else 38.0, component_row_height)
 		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var title := $Root/Pages/SettingsPage/SafeArea/Layout/Title as Label
+	title.custom_minimum_size.y = 70.0
+	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var actions := $Root/Pages/SettingsPage/SafeArea/Layout/Actions as HBoxContainer
+	actions.custom_minimum_size.y = 64.0
+	actions.size_flags_vertical = Control.SIZE_SHRINK_END
+	settings_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 
 func _assert_curated_menu_binding() -> void:
@@ -354,6 +363,8 @@ func _finalize_settings_focus_receipt(control: Control) -> void:
 	var label_rect := label.get_global_rect()
 	var pair_visible := not settings_scroll.is_ancestor_of(control) or (scroll_rect.encloses(control_rect) and scroll_rect.encloses(label_rect))
 	var actions_rect: Rect2 = ($Root/Pages/SettingsPage/SafeArea/Layout/Actions as Control).get_global_rect()
+	var title_rect: Rect2 = ($Root/Pages/SettingsPage/SafeArea/Layout/Title as Control).get_global_rect()
+	var safe_rect := Rect2(root.size * SAFE_AREA_RATIO, root.size - (root.size * SAFE_AREA_RATIO * 2.0))
 	_last_settings_focus_receipt = {
 		"run_epoch": int(mission.get("run_epoch")),
 		"page": STATE_SETTINGS,
@@ -363,14 +374,16 @@ func _finalize_settings_focus_receipt(control: Control) -> void:
 		"associated_label": label.get_path(),
 		"associated_label_rect": label_rect,
 		"label_control_pair_visible": pair_visible,
-		"persistent_action_path_visible": Rect2(root.size * SAFE_AREA_RATIO, root.size * 0.9).encloses(actions_rect),
+		"fixed_title_visible": safe_rect.encloses(title_rect),
+		"persistent_action_path_visible": safe_rect.encloses(actions_rect),
+		"header_footer_outside_scroll": not settings_scroll.is_ancestor_of($Root/Pages/SettingsPage/SafeArea/Layout/Title) and not settings_scroll.is_ancestor_of($Root/Pages/SettingsPage/SafeArea/Layout/Actions),
 		"scroll_vertical": settings_scroll.scroll_vertical,
 		"scroll_viewport_rect": scroll_rect,
 		"control_rect": control_rect,
 		"paused": get_tree().paused,
 		"gameplay_input_enabled": player.get("gameplay_input_enabled") == true,
 		"ui_scale": _applied_ui_scale,
-		"accepted": true,
+		"accepted": pair_visible and safe_rect.encloses(title_rect) and safe_rect.encloses(actions_rect),
 	}
 	_settings_focus_history.append(_last_settings_focus_receipt.duplicate(true))
 	while _settings_focus_history.size() > TRANSITION_HISTORY_LIMIT:
@@ -770,10 +783,11 @@ func _tester_prepare_shell_death() -> void:
 	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
 		_store_tester_setup_receipt(receipt)
 		return
+	_death_recovery_cycle_serial += 1
 	var run_epoch_before := int(mission.get("run_epoch"))
 	var checkpoint_before := int(mission.get("checkpoint_version"))
 	var timer_before := float(mission.get("remaining_time"))
-	var damage_event_id := "%s:ordinary-death" % receipt["setup_id"]
+	var damage_event_id := "%s:ordinary-death-cycle-%02d" % [receipt["setup_id"], _death_recovery_cycle_serial]
 	var applied: bool = player.call(&"apply_authoritative_damage", float(player.get("max_health")) + 1.0, damage_event_id, {
 		"damage_class": &"tester_authoritative_damage",
 		"source_path": get_path(),
@@ -781,6 +795,7 @@ func _tester_prepare_shell_death() -> void:
 	})
 	receipt["resolved"] = true
 	receipt["accepted"] = applied and app_state == STATE_DEATH and player.get("health") <= 0.0
+	receipt["death_recovery_cycle"] = _death_recovery_cycle_serial
 	receipt["authoritative_damage_event_id"] = damage_event_id
 	receipt["reset_isolation"] = {
 		"run_epoch_unchanged": int(mission.get("run_epoch")) == run_epoch_before,
@@ -860,22 +875,46 @@ func _activate_focused_control_once() -> bool:
 	if not (focused is BaseButton):
 		return false
 	var button := focused as BaseButton
-	if not button.is_visible_in_tree() or button.disabled:
+	if app_state == STATE_DEATH:
+		button = $Root/Pages/DeathPage/Menu/RestartButton as Button
+		button.disabled = _death_lock_remaining > 0.0
+		button.text = "RECOVERY READY IN %.1f" % _death_lock_remaining if button.disabled else _recovery_button_text()
+	if not button.is_visible_in_tree():
 		return false
 	var frame := Engine.get_process_frames()
 	if frame == _activation_frame:
 		return true
 	_activation_frame = frame
 	_activation_serial += 1
+	if app_state == STATE_DEATH and _death_lock_remaining > 0.0:
+		var recovery_button := $Root/Pages/DeathPage/Menu/RestartButton as Button
+		_last_activation_receipt = {
+			"activation_id": "shell-activation-%06d" % _activation_serial,
+			"frame": frame,
+			"state": app_state,
+			"input_family": _last_input_family,
+			"focused_control": recovery_button.get_path(),
+			"enabled": false,
+			"emission_count": 0,
+			"death_countdown_remaining": _death_lock_remaining,
+			"accepted": false,
+			"failure_reason": &"control_disabled_countdown_visible",
+		}
+		return true
 	_last_activation_receipt = {
 		"activation_id": "shell-activation-%06d" % _activation_serial,
 		"frame": frame,
 		"state": app_state,
 		"input_family": _last_input_family,
 		"focused_control": button.get_path(),
-		"enabled": true,
-		"emission_count": 1,
+		"enabled": not button.disabled,
+		"emission_count": 0 if button.disabled else 1,
+		"death_countdown_remaining": _death_lock_remaining if app_state == STATE_DEATH else 0.0,
+		"accepted": not button.disabled,
+		"failure_reason": &"control_disabled_countdown_visible" if button.disabled and app_state == STATE_DEATH else &"control_disabled" if button.disabled else &"",
 	}
+	if button.disabled:
+		return true
 	if button.toggle_mode:
 		button.button_pressed = not button.button_pressed
 	button.pressed.emit()
@@ -891,7 +930,8 @@ func _process(delta: float) -> void:
 	elif app_state == STATE_BRIEFING and not _briefing_complete:
 		_update_briefing(delta)
 	elif app_state == STATE_DEATH and _death_lock_remaining > 0.0:
-		_death_lock_remaining = maxf(0.0, _death_lock_remaining - delta)
+		var countdown_delta := minf(maxf(delta, 0.0), 1.0 / 60.0)
+		_death_lock_remaining = maxf(0.0, _death_lock_remaining - countdown_delta)
 		var recovery_button := $Root/Pages/DeathPage/Menu/RestartButton as Button
 		recovery_button.disabled = _death_lock_remaining > 0.0
 		recovery_button.text = "RECOVERY READY IN %.1f" % _death_lock_remaining if recovery_button.disabled else _recovery_button_text()
@@ -1314,6 +1354,11 @@ func _apply_responsive_layout() -> void:
 	settings_grid.add_theme_constant_override("h_separation", 0 if settings_single_column else 36)
 	settings_grid.add_theme_constant_override("v_separation", 14 if settings_single_column else 18)
 	settings_scroll.clip_contents = true
+	var settings_title := $Root/Pages/SettingsPage/SafeArea/Layout/Title as Label
+	var settings_actions := $Root/Pages/SettingsPage/SafeArea/Layout/Actions as HBoxContainer
+	settings_title.custom_minimum_size.y = 78.0 if expanded else 70.0
+	settings_actions.custom_minimum_size.y = 72.0 if expanded else 64.0
+	settings_scroll.custom_minimum_size.y = maxf(220.0, safe.size.y - settings_title.custom_minimum_size.y - settings_actions.custom_minimum_size.y - 36.0)
 	for control: Control in _settings_controls().slice(0, _settings_labels().size()):
 		control.custom_minimum_size.x = 0.0 if settings_single_column else 280.0
 		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1415,6 +1460,19 @@ func _on_restore_feedback_completed(epoch: int) -> void:
 	get_tree().paused = false
 	_set_gameplay_enabled(true)
 	_show_page(STATE_GAMEPLAY, &"recovery_handoff", &"mission")
+	if StringName(_last_tester_setup_receipt.get("kind", &"")) == &"ordinary_death":
+		_last_tester_setup_receipt["handoff_resolved"] = true
+		_last_tester_setup_receipt["handoff_epoch"] = epoch
+		_last_tester_setup_receipt["result_state"] = app_state
+		_last_tester_setup_receipt["health_after_recovery"] = float(player.get("health"))
+		_last_tester_setup_receipt["gameplay_input_restored"] = player.get("gameplay_input_enabled") == true
+		_last_tester_setup_receipt["paused_after_recovery"] = get_tree().paused
+		_last_tester_setup_receipt["accepted"] = app_state == STATE_GAMEPLAY and player.get("gameplay_input_enabled") == true and float(player.get("health")) > 0.0
+		_death_recovery_cycle_history.append(_last_tester_setup_receipt.duplicate(true))
+		while _death_recovery_cycle_history.size() > 6:
+			_death_recovery_cycle_history.pop_front()
+		if not _tester_setup_history.is_empty():
+			_tester_setup_history[-1] = _last_tester_setup_receipt.duplicate(true)
 	if StringName(_last_tester_setup_receipt.get("kind", &"")) == &"alpha_checkpoint_entry":
 		_last_tester_setup_receipt["handoff_resolved"] = true
 		_last_tester_setup_receipt["handoff_epoch"] = epoch
@@ -1592,13 +1650,15 @@ func _layout_snapshot() -> Dictionary:
 			"focused_label": str(focused_label.get_path()) if focused_label != null else "",
 			"label_control_pair_visible": focused_pair_revealed,
 			"persistent_action_path_visible": action_path_visible,
+			"fixed_title_visible": safe_rect.encloses(($Root/Pages/SettingsPage/SafeArea/Layout/Title as Control).get_global_rect()),
+			"header_footer_outside_scroll": not settings_scroll.is_ancestor_of($Root/Pages/SettingsPage/SafeArea/Layout/Title) and not settings_scroll.is_ancestor_of($Root/Pages/SettingsPage/SafeArea/Layout/Actions),
 			"title_rect": ($Root/Pages/SettingsPage/SafeArea/Layout/Title as Control).get_global_rect(),
 			"action_row_rect": action_row.get_global_rect(),
 			"pair_geometries": pair_geometries,
 			"predecessor": _return_from_settings,
 			"all_critical_reachable": inaccessible.is_empty(),
 		}
-		if not settings_scroll.follow_focus or not focused_pair_revealed or not action_path_visible or not inaccessible.is_empty():
+		if not settings_scroll.follow_focus or not focused_pair_revealed or not action_path_visible or not bool(settings_reflow.get("fixed_title_visible", false)) or not inaccessible.is_empty():
 			violations.append("settings_focus_reflow")
 	return {
 		"contract_id": LAYOUT_CONTRACT_ID,
@@ -1786,6 +1846,9 @@ func _mcp_state() -> Dictionary:
 		"tester_setup_serial": _tester_setup_serial,
 		"last_tester_setup_receipt": _last_tester_setup_receipt,
 		"tester_setup_history": _tester_setup_history,
+		"death_recovery_cycle_serial": _death_recovery_cycle_serial,
+		"death_recovery_cycle_history": _death_recovery_cycle_history,
+		"death_recovery_cycle_count": _death_recovery_cycle_history.size(),
 		"settings_component_binding": {
 			"asset_id": SETTINGS_COMPONENT_ASSET_ID,
 			"receipt_path": SETTINGS_COMPONENT_RECEIPT,
