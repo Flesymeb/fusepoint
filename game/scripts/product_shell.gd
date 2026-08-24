@@ -172,6 +172,7 @@ func _connect_controls() -> void:
 	]:
 		slider.value_changed.connect(func(_value: float) -> void: _sync_settings_value_copy())
 	for toggle: BaseButton in [
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/Fullscreen,
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ReducedMotion,
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ScreenShake,
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/HoldADS,
@@ -184,6 +185,7 @@ func _connect_controls() -> void:
 func _settings_controls() -> Array[Control]:
 	return [
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/Fullscreen,
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScale,
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOV,
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleSize,
@@ -198,6 +200,7 @@ func _settings_controls() -> Array[Control]:
 func _settings_labels() -> Array[Control]:
 	return [
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterLabel,
+		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/DisplayLabel,
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScaleLabel,
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOVLabel,
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleLabel,
@@ -210,7 +213,7 @@ func _settings_labels() -> Array[Control]:
 func _setting_label_for(control: Control) -> Control:
 	var controls := _settings_controls()
 	var index := controls.find(control)
-	return _settings_labels()[index] if index >= 0 and index < 7 else control
+	return _settings_labels()[index] if index >= 0 and index < _settings_labels().size() else control
 
 
 func _settings_critical_nodes() -> Array[Control]:
@@ -222,18 +225,19 @@ func _settings_critical_nodes() -> Array[Control]:
 
 func _configure_settings_navigation() -> void:
 	var controls := _settings_controls()
+	var setting_count := _settings_labels().size()
 	for control: Control in controls:
 		control.focus_mode = Control.FOCUS_ALL
 		if not control.focus_entered.is_connected(_on_settings_focus_entered.bind(control)):
 			control.focus_entered.connect(_on_settings_focus_entered.bind(control))
 	var first := controls[0]
-	var last_setting := controls[6]
-	var apply_button := controls[7]
-	var cancel_button := controls[8]
-	for index in 7:
+	var last_setting := controls[setting_count - 1]
+	var apply_button := controls[setting_count]
+	var cancel_button := controls[setting_count + 1]
+	for index in setting_count:
 		var control := controls[index]
 		var above: Control = apply_button if index == 0 else controls[index - 1]
-		var below: Control = apply_button if index == 6 else controls[index + 1]
+		var below: Control = apply_button if index == setting_count - 1 else controls[index + 1]
 		control.focus_neighbor_top = control.get_path_to(above)
 		control.focus_neighbor_bottom = control.get_path_to(below)
 	apply_button.focus_neighbor_top = apply_button.get_path_to(last_setting)
@@ -254,7 +258,7 @@ func _configure_settings_layout_contract() -> void:
 		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		label.clip_text = false
-	for control: Control in _settings_controls().slice(0, 7):
+	for control: Control in _settings_controls().slice(0, _settings_labels().size()):
 		control.custom_minimum_size.y = maxf(48.0 if control is BaseButton else 38.0, component_row_height)
 		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
@@ -955,6 +959,12 @@ func _focus_first_button() -> void:
 			curated_start.grab_focus()
 			_finalize_transition_focus()
 			return
+	if app_state == STATE_FAILURE_RESULT:
+		var legal_retry := $Root/Pages/ResultPage/Menu/RestartButton as Button
+		if legal_retry.visible and not legal_retry.disabled:
+			legal_retry.grab_focus()
+			_finalize_transition_focus()
+			return
 	var page := pages.get_node_or_null(_page_name(app_state))
 	if page == null:
 		return
@@ -1193,6 +1203,7 @@ func _open_settings_from(return_state: StringName) -> void:
 func _load_settings_controls() -> void:
 	var values := settings_store.snapshot()
 	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume.value = float(values["master_volume"]) * 100.0
+	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/Fullscreen.button_pressed = bool(values.get("fullscreen_enabled", false))
 	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScale.value = float(values["ui_scale"]) * 100.0
 	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOV.value = float(values["fov"])
 	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleSize.value = float(values["subtitle_size"])
@@ -1211,9 +1222,11 @@ func _sync_settings_value_copy() -> void:
 	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScaleLabel.text = "UI SCALE   %d%%" % int(round(ui.value))
 	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOVLabel.text = "FIELD OF VIEW   %d°" % int(round(fov.value))
 	$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleLabel.text = "SUBTITLE SIZE  •  OUTLINE   %d PX" % int(round(subtitle.value))
+	var fullscreen := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/Fullscreen as BaseButton
 	var reduced := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ReducedMotion as BaseButton
 	var shake := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/ScreenShake as BaseButton
 	var ads := $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/HoldADS as BaseButton
+	fullscreen.text = "EXCLUSIVE FULLSCREEN  •  NATIVE" if fullscreen.button_pressed else "WINDOWED  •  1280 × 720"
 	reduced.text = "ENABLED" if reduced.button_pressed else "DISABLED"
 	shake.text = "ENABLED" if shake.button_pressed else "DISABLED"
 	ads.text = "HOLD" if ads.button_pressed else "TOGGLE"
@@ -1222,6 +1235,7 @@ func _sync_settings_value_copy() -> void:
 func _apply_settings() -> void:
 	settings_store.save_settings({
 		"master_volume": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume.value / 100.0,
+		"fullscreen_enabled": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/Fullscreen.button_pressed,
 		"ui_scale": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/UIScale.value / 100.0,
 		"fov": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/FOV.value,
 		"subtitle_size": $Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/SubtitleSize.value,
@@ -1286,7 +1300,7 @@ func _apply_responsive_layout() -> void:
 	settings_grid.custom_minimum_size.x = 0.0
 	settings_grid.add_theme_constant_override("h_separation", 0 if settings_single_column else 36)
 	settings_grid.add_theme_constant_override("v_separation", 14 if settings_single_column else 18)
-	for control: Control in _settings_controls().slice(0, 7):
+	for control: Control in _settings_controls().slice(0, _settings_labels().size()):
 		control.custom_minimum_size.x = 0.0 if settings_single_column else 280.0
 		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	for label: Control in _settings_labels():
@@ -1315,8 +1329,14 @@ func _apply_responsive_layout() -> void:
 	_set_rect(^"Root/Pages/DeathPage/Title", Rect2(safe.position + Vector2(16.0, 108.0), Vector2(safe.size.x - 32.0, 86.0)))
 	_set_rect(^"Root/Pages/DeathPage/Copy", Rect2(safe.position + Vector2(16.0, 222.0), Vector2(safe.size.x - 32.0, 100.0)))
 	_set_rect(^"Root/Pages/DeathPage/Menu", Rect2(Vector2(safe.position.x + 16.0, safe.end.y - 120.0), Vector2(720.0, 72.0)))
-	_set_rect(^"Root/Pages/ResultPage/Outcome", Rect2(safe.position + Vector2(16.0, 28.0), Vector2(safe.size.x - 32.0, 74.0)))
-	_set_rect(^"Root/Pages/ResultPage/Metrics", Rect2(safe.position + Vector2(16.0, 118.0), Vector2(safe.size.x - 32.0, safe.size.y - 244.0)))
+	var result_origin := safe.position + Vector2(16.0, 10.0)
+	var result_width := minf(safe.size.x - 32.0, 1440.0)
+	_set_rect(^"Root/Pages/ResultPage/Outcome", Rect2(result_origin, Vector2(result_width, 64.0)))
+	_set_rect(^"Root/Pages/ResultPage/Reason", Rect2(result_origin + Vector2(0.0, 66.0), Vector2(result_width, 30.0)))
+	_set_rect(^"Root/Pages/ResultPage/Primary", Rect2(result_origin + Vector2(0.0, 116.0), Vector2(result_width, 106.0)))
+	_set_rect(^"Root/Pages/ResultPage/MissionMetrics", Rect2(result_origin + Vector2(0.0, 242.0), Vector2(result_width, 92.0)))
+	_set_rect(^"Root/Pages/ResultPage/BreakdownTitle", Rect2(result_origin + Vector2(0.0, 354.0), Vector2(result_width, 26.0)))
+	_set_rect(^"Root/Pages/ResultPage/Breakdown", Rect2(result_origin + Vector2(0.0, 386.0), Vector2(result_width, maxf(88.0, safe.size.y - 512.0))))
 	_set_rect(^"Root/Pages/ResultPage/Menu", Rect2(Vector2(safe.position.x + 16.0, safe.end.y - 94.0), Vector2(820.0, 70.0)))
 
 
@@ -1514,7 +1534,7 @@ func _layout_snapshot() -> Dictionary:
 		var pair_geometries: Array[Dictionary] = []
 		var setting_controls := _settings_controls()
 		var setting_labels := _settings_labels()
-		for index in 7:
+		for index in _settings_labels().size():
 			var pair_label := setting_labels[index]
 			var pair_control := setting_controls[index]
 			var label_rect := pair_label.get_global_rect()
@@ -1542,7 +1562,7 @@ func _layout_snapshot() -> Dictionary:
 			"scroll_required": settings_grid.get_combined_minimum_size().y > settings_scroll.size.y,
 			"critical_node_count": critical_controls.size(),
 			"setting_label_count": _settings_labels().size(),
-			"setting_control_count": 7,
+			"setting_control_count": _settings_labels().size(),
 			"inaccessible_controls": inaccessible,
 			"focused_control": str(focus_owner.get_path()) if focus_owner != null else "",
 			"focused_revealed": focused_pair_revealed,
@@ -1636,7 +1656,11 @@ func _on_terminal_presentation_completed(event_id: String, result: StringName) -
 	_show_result(result)
 	receipt["result_state"] = app_state
 	receipt["transition_receipt"] = _last_transition_receipt.duplicate(true)
-	receipt["actions"] = [&"replay", &"home"]
+	var result_actions: Array[StringName] = [&"replay"]
+	if $Root/Pages/ResultPage/Menu/RestartButton.visible:
+		result_actions.append(&"restart_checkpoint")
+	result_actions.append(&"home")
+	receipt["actions"] = result_actions
 	_terminal_result_receipts.append(receipt)
 	while _terminal_result_receipts.size() > TERMINAL_RESULT_RECEIPT_LIMIT:
 		_terminal_result_receipts.pop_front()
@@ -1654,22 +1678,42 @@ func _show_result(result: StringName) -> void:
 	var completion := int(snapshot.get("completion_seconds", 0))
 	var rank := int(snapshot.get("leaderboard_rank", 0))
 	var rank_text := "—" if rank <= 0 else "#%d" % rank
-	$Root/Pages/ResultPage/Metrics.text = "RESULT  %s    SCORE  %d\nCOMPLETION  %02d:%02d    REMAINING  %02d:%02d\nALPHA  %s    BRAVO  %s\nELIMINATIONS  %d    DEATHS  %d    RESTARTS  %d\n\nSCORE COMPONENTS\nTIME %+d  •  A %+d  •  B %+d  •  ELIMS %+d\nDIAGNOSIS %+d  •  ISOLATION %+d  •  DETONATOR %+d\nDEATHS %+d  •  RESTARTS %+d\n\nFASTEST-SUCCESS DELTA  %+.1fs    LEADERBOARD  %s" % [
-		String(result).replace("_", " ").to_upper(), int(snapshot.get("score", 0)),
-		completion / 60, completion % 60, remaining / 60, remaining % 60,
-		"SECURED" if snapshot.get("alpha_captured", false) else "HOSTILE",
-		"SECURED" if snapshot.get("bravo_captured", false) else "HOSTILE",
-		int(snapshot.get("eliminations", 0)), int(snapshot.get("deaths", 0)), int(snapshot.get("restart_count", 0)),
-		int(components.get("time", 0)), int(components.get("alpha", 0)), int(components.get("bravo", 0)), int(components.get("eliminations", 0)),
-		int(components.get("diagnosis", 0)), int(components.get("power_isolation", 0)), int(components.get("detonator_removal", 0)),
-		int(components.get("deaths", 0)), int(components.get("checkpoint_restarts", 0)),
-		float(snapshot.get("fastest_success_delta", 0.0)), rank_text,
-	]
-	$Root/Pages/ResultPage/Menu/RestartButton.visible = not success and remaining > 0 and (not (mission.get("deployment_snapshot") as Dictionary).is_empty() or int(mission.get("checkpoint_version")) > 0)
+	$Root/Pages/ResultPage/Reason.text = "ROCKET BAY PRESERVED  •  DETONATOR REMOVED" if success else "DETONATION CONFIRMED  •  KESTREL RIDGE LOST"
+	$Root/Pages/ResultPage/Primary/TimeGroup/Value.text = "%02d:%02d" % [completion / 60, completion % 60]
+	$Root/Pages/ResultPage/Primary/TimeGroup/Caption.text = "COMPLETION TIME" if success else "TIME ELAPSED"
+	$Root/Pages/ResultPage/Primary/ScoreGroup/Value.text = "%d" % int(snapshot.get("score", 0))
+	$Root/Pages/ResultPage/Primary/RankGroup/Value.text = rank_text
+	$Root/Pages/ResultPage/Primary/RankGroup/Caption.text = "LOCAL RANK" if success else "FAILED RUN"
+	$Root/Pages/ResultPage/MissionMetrics/Remaining.text = "%02d:%02d  REMAINING" % [remaining / 60, remaining % 60]
+	$Root/Pages/ResultPage/MissionMetrics/Eliminations.text = "%d  ELIMINATIONS" % int(snapshot.get("eliminations", 0))
+	$Root/Pages/ResultPage/MissionMetrics/Deaths.text = "%d  DEATHS" % int(snapshot.get("deaths", 0))
+	$Root/Pages/ResultPage/MissionMetrics/Restarts.text = "%d  RESTARTS" % int(snapshot.get("restart_count", 0))
+	$Root/Pages/ResultPage/MissionMetrics/Alpha.text = "A  •  ALPHA  %s" % ("SECURED" if snapshot.get("alpha_captured", false) else "HOSTILE")
+	$Root/Pages/ResultPage/MissionMetrics/Bravo.text = "B  •  BRAVO  %s" % ("SECURED" if snapshot.get("bravo_captured", false) else "HOSTILE")
+	var completed_stages := 0
+	for stage_key: String in ["diagnosis", "power_isolation", "detonator_removal"]:
+		if int(components.get(stage_key, 0)) > 0:
+			completed_stages += 1
+	$Root/Pages/ResultPage/MissionMetrics/Charlie.text = "C  •  %d / 3 DEFUSAL" % completed_stages
+	$Root/Pages/ResultPage/MissionMetrics/Loadout.text = "%s  LOADOUT" % String(snapshot.get("selected_loadout", &"ak74m")).to_upper()
+	$Root/Pages/ResultPage/Breakdown/TimeValue.text = "%+d" % int(components.get("time", 0))
+	$Root/Pages/ResultPage/Breakdown/AlphaValue.text = "%+d" % int(components.get("alpha", 0))
+	$Root/Pages/ResultPage/Breakdown/BravoValue.text = "%+d" % int(components.get("bravo", 0))
+	$Root/Pages/ResultPage/Breakdown/ElimsValue.text = "%+d" % int(components.get("eliminations", 0))
+	$Root/Pages/ResultPage/Breakdown/DiagnosisValue.text = "%+d" % int(components.get("diagnosis", 0))
+	$Root/Pages/ResultPage/Breakdown/IsolationValue.text = "%+d" % int(components.get("power_isolation", 0))
+	$Root/Pages/ResultPage/Breakdown/DetonatorValue.text = "%+d" % int(components.get("detonator_removal", 0))
+	$Root/Pages/ResultPage/Breakdown/DeathsValue.text = "%+d" % int(components.get("deaths", 0))
+	$Root/Pages/ResultPage/Breakdown/RestartsValue.text = "%+d" % int(components.get("checkpoint_restarts", 0))
+	$Root/Pages/ResultPage/Breakdown/RecordValue.text = "%+.1fs" % float(snapshot.get("fastest_success_delta", 0.0)) if success and rank > 1 else "NEW BEST" if success else "—"
+	var retry_button := $Root/Pages/ResultPage/Menu/RestartButton as Button
+	retry_button.visible = not success and remaining > 0 and (not (mission.get("deployment_snapshot") as Dictionary).is_empty() or int(mission.get("checkpoint_version")) > 0)
 	_show_page(STATE_SUCCESS_RESULT if success else STATE_FAILURE_RESULT, &"terminal_presentation_completed", &"terminal")
 
 
 func _mcp_state() -> Dictionary:
+	var window := get_window()
+	var focused := get_viewport().gui_get_focus_owner()
 	return {
 		"run_epoch": int(mission.get("run_epoch")),
 		"app_state": app_state,
@@ -1678,8 +1722,28 @@ func _mcp_state() -> Dictionary:
 		"route_plate_visible": $Root/Pages/LoadoutPage/RoutePlate.is_visible_in_tree(),
 		"gameplay_surface_clear": app_state != STATE_GAMEPLAY or (not root.visible and not pages.visible),
 		"selected_weapon": _selected_weapon,
-		"focused_control": str(get_viewport().gui_get_focus_owner().get_path()) if get_viewport().gui_get_focus_owner() != null else "",
+		"focused_control": str(focused.get_path()) if focused != null else "",
 		"applied_ui_scale": _applied_ui_scale,
+		"display": {
+			"persisted_fullscreen": bool(settings_store.snapshot().get("fullscreen_enabled", false)),
+			"window_mode": window.mode,
+			"window_size": window.size,
+			"viewport_size": window.get_visible_rect().size,
+			"content_scale_size": window.content_scale_size,
+			"content_scale_factor": window.content_scale_factor,
+			"render_scale_3d": window.scaling_3d_scale,
+		},
+		"result_page": {
+			"visible": app_state in [STATE_SUCCESS_RESULT, STATE_FAILURE_RESULT],
+			"outcome": $Root/Pages/ResultPage/Outcome.text,
+			"reason": $Root/Pages/ResultPage/Reason.text,
+			"time": $Root/Pages/ResultPage/Primary/TimeGroup/Value.text,
+			"score": $Root/Pages/ResultPage/Primary/ScoreGroup/Value.text,
+			"rank": $Root/Pages/ResultPage/Primary/RankGroup/Value.text,
+			"authoritative_snapshot": mission.call(&"result_snapshot"),
+			"retry_visible": $Root/Pages/ResultPage/Menu/RestartButton.visible,
+			"focused_primary_action": str(focused.get_path()) if focused != null and $Root/Pages/ResultPage/Menu.is_ancestor_of(focused) else "",
+		},
 		"paused": get_tree().paused,
 		"gameplay_input_enabled": player.get("gameplay_input_enabled"),
 		"last_input_family": _last_input_family,

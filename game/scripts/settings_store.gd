@@ -5,6 +5,7 @@ signal settings_applied(values: Dictionary)
 
 const CONFIG_PATH := "user://fusepoint_settings.cfg"
 const SECTION := "accessibility"
+const WINDOWED_SIZE := Vector2i(1280, 720)
 
 var values := {
 	"master_volume": 0.85,
@@ -15,6 +16,7 @@ var values := {
 	"screen_shake": true,
 	"hold_ads": true,
 	"hold_sprint": true,
+	"fullscreen_enabled": false,
 }
 
 
@@ -46,6 +48,15 @@ func save_settings(next_values: Dictionary) -> void:
 
 
 func apply_runtime() -> void:
+	var window := get_window()
+	var fullscreen_enabled := bool(values.get("fullscreen_enabled", false))
+	# Retain the registered Maaack menu helper as the single window-mode
+	# mechanism while FusepointSettingsStore remains the product-owned value.
+	AppSettings.set_fullscreen_enabled(fullscreen_enabled, window)
+	if not fullscreen_enabled:
+		AppSettings.set_resolution(WINDOWED_SIZE, window, false)
+	window.content_scale_factor = 1.0
+	window.scaling_3d_scale = 1.0
 	AudioServer.set_bus_volume_db(0, linear_to_db(clampf(float(values["master_volume"]), 0.001, 1.0)))
 	var player := get_tree().get_first_node_in_group(&"player")
 	if player != null:
@@ -68,4 +79,18 @@ func snapshot() -> Dictionary:
 
 
 func _mcp_state() -> Dictionary:
-	return {"config_path": CONFIG_PATH, "values": values, "persisted": FileAccess.file_exists(CONFIG_PATH)}
+	var window := get_window()
+	return {
+		"config_path": CONFIG_PATH,
+		"values": values,
+		"persisted": FileAccess.file_exists(CONFIG_PATH),
+		"display": {
+			"fullscreen_enabled": bool(values.get("fullscreen_enabled", false)),
+			"window_mode": window.mode,
+			"window_size": window.size,
+			"viewport_size": window.get_visible_rect().size,
+			"content_scale_size": window.content_scale_size,
+			"content_scale_factor": window.content_scale_factor,
+			"render_scale_3d": window.scaling_3d_scale,
+		},
+	}
