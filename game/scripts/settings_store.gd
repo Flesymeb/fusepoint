@@ -6,6 +6,7 @@ signal settings_applied(values: Dictionary)
 const CONFIG_PATH := "user://fusepoint_settings.cfg"
 const SECTION := "accessibility"
 const WINDOWED_SIZE := Vector2i(1280, 720)
+const FULLSCREEN_SIZE := Vector2i(1920, 1080)
 
 var values := {
 	"master_volume": 0.85,
@@ -52,8 +53,14 @@ func apply_runtime() -> void:
 	var fullscreen_enabled := bool(values.get("fullscreen_enabled", false))
 	# Retain the registered Maaack menu helper as the single window-mode
 	# mechanism while FusepointSettingsStore remains the product-owned value.
-	AppSettings.set_fullscreen_enabled(fullscreen_enabled, window)
-	if not fullscreen_enabled:
+	if fullscreen_enabled:
+		# A window launched with the 1280x720 debug override otherwise carries
+		# that backing size into fullscreen on some display servers.
+		AppSettings.set_fullscreen_enabled(false, window)
+		AppSettings.set_resolution(FULLSCREEN_SIZE, window, false)
+		AppSettings.set_fullscreen_enabled(true, window)
+	else:
+		AppSettings.set_fullscreen_enabled(false, window)
 		AppSettings.set_resolution(WINDOWED_SIZE, window, false)
 	window.content_scale_factor = 1.0
 	window.scaling_3d_scale = 1.0
@@ -86,6 +93,7 @@ func _mcp_state() -> Dictionary:
 		"persisted": FileAccess.file_exists(CONFIG_PATH),
 		"display": {
 			"fullscreen_enabled": bool(values.get("fullscreen_enabled", false)),
+			"requested_size": FULLSCREEN_SIZE if bool(values.get("fullscreen_enabled", false)) else WINDOWED_SIZE,
 			"window_mode": window.mode,
 			"window_size": window.size,
 			"viewport_size": window.get_visible_rect().size,
