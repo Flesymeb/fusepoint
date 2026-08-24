@@ -8,6 +8,13 @@ const LAYER_NAMES: Array[StringName] = [
 	&"flash", &"fire", &"sparks", &"debris", &"pressure_wave", &"dust", &"local_light",
 ]
 
+@export var flash_material: Material
+@export var fire_material: Material
+@export var spark_material: Material
+@export var debris_material: Material
+@export var wave_material: Material
+@export var dust_material: Material
+
 @onready var flash_core: MeshInstance3D = $FlashCore
 @onready var fire: GPUParticles3D = $Fire
 @onready var sparks: GPUParticles3D = $Sparks
@@ -25,7 +32,101 @@ var _layer_started: Dictionary = {}
 
 
 func _ready() -> void:
+	# Every visible layer uses authored ArrayMesh topology. This keeps the terminal
+	# stack free of PrimitiveMesh silhouettes while retaining the original,
+	# bounded particle timings and transparent materials.
+	flash_core.mesh = _build_flash_mesh(flash_material)
+	fire.draw_pass_1 = _build_flame_mesh(fire_material)
+	sparks.draw_pass_1 = _build_spark_mesh(spark_material)
+	debris.draw_pass_1 = _build_debris_mesh(debris_material)
+	pressure_wave.mesh = _build_pressure_ring_mesh(wave_material)
+	dust.draw_pass_1 = _build_dust_mesh(dust_material)
 	visible = false
+
+
+func _make_array_mesh(vertices: PackedVector3Array, indices: PackedInt32Array, material: Material) -> ArrayMesh:
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, material)
+	return mesh
+
+
+func _build_flash_mesh(material: Material) -> ArrayMesh:
+	var vertices := PackedVector3Array([Vector3.ZERO])
+	var indices := PackedInt32Array()
+	const RAY_COUNT := 18
+	for ray_index in RAY_COUNT:
+		var angle := TAU * float(ray_index) / float(RAY_COUNT)
+		var next_angle := TAU * float(ray_index + 1) / float(RAY_COUNT)
+		var radius := 0.52 + 0.24 * sin(float(ray_index) * 2.17)
+		var next_radius := 0.52 + 0.24 * sin(float(ray_index + 1) * 2.17)
+		vertices.append(Vector3(cos(angle) * radius, sin(float(ray_index) * 1.73) * 0.18, sin(angle) * radius))
+		vertices.append(Vector3(cos(next_angle) * next_radius, sin(float(ray_index + 1) * 1.73) * 0.18, sin(next_angle) * next_radius))
+		var base := 1 + ray_index * 2
+		indices.append_array(PackedInt32Array([0, base, base + 1]))
+	return _make_array_mesh(vertices, indices, material)
+
+
+func _build_flame_mesh(material: Material) -> ArrayMesh:
+	var vertices := PackedVector3Array([
+		Vector3(-0.11, -0.18, 0.0), Vector3(0.13, -0.16, 0.0), Vector3(0.18, 0.02, 0.0),
+		Vector3(0.045, 0.28, 0.0), Vector3(-0.09, 0.12, 0.0),
+		Vector3(0.0, -0.17, -0.1), Vector3(0.0, -0.15, 0.13), Vector3(0.0, 0.03, 0.17),
+		Vector3(0.0, 0.3, 0.035), Vector3(0.0, 0.11, -0.08),
+	])
+	return _make_array_mesh(vertices, PackedInt32Array([
+		0, 1, 2, 0, 2, 3, 0, 3, 4,
+		5, 6, 7, 5, 7, 8, 5, 8, 9,
+	]), material)
+
+
+func _build_spark_mesh(material: Material) -> ArrayMesh:
+	var vertices := PackedVector3Array([
+		Vector3(-0.012, -0.17, 0.0), Vector3(0.014, -0.17, 0.0), Vector3(0.0, 0.2, 0.0),
+		Vector3(0.0, -0.15, -0.012), Vector3(0.0, -0.15, 0.014), Vector3(0.0, 0.21, 0.0),
+	])
+	return _make_array_mesh(vertices, PackedInt32Array([0, 1, 2, 3, 4, 5]), material)
+
+
+func _build_debris_mesh(material: Material) -> ArrayMesh:
+	var vertices := PackedVector3Array([
+		Vector3(-0.07, -0.035, -0.045), Vector3(0.065, -0.028, -0.035),
+		Vector3(0.018, 0.075, -0.018), Vector3(-0.025, 0.012, 0.085),
+	])
+	return _make_array_mesh(vertices, PackedInt32Array([0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2]), material)
+
+
+func _build_pressure_ring_mesh(material: Material) -> ArrayMesh:
+	var vertices := PackedVector3Array()
+	var indices := PackedInt32Array()
+	const SEGMENTS := 72
+	for segment_index in SEGMENTS:
+		var angle := TAU * float(segment_index) / float(SEGMENTS)
+		var irregularity := 0.035 * sin(float(segment_index) * 2.43)
+		var inner_radius := 0.82 + irregularity
+		var outer_radius := 1.0 + irregularity * 0.5
+		vertices.append(Vector3(cos(angle) * inner_radius, 0.0, sin(angle) * inner_radius))
+		vertices.append(Vector3(cos(angle) * outer_radius, 0.018 * sin(float(segment_index) * 1.31), sin(angle) * outer_radius))
+	for segment_index in SEGMENTS:
+		var next := (segment_index + 1) % SEGMENTS
+		var a := segment_index * 2
+		var b := a + 1
+		var c := next * 2
+		var d := c + 1
+		indices.append_array(PackedInt32Array([a, b, c, b, d, c]))
+	return _make_array_mesh(vertices, indices, material)
+
+
+func _build_dust_mesh(material: Material) -> ArrayMesh:
+	var vertices := PackedVector3Array([
+		Vector3(-0.16, -0.1, 0.0), Vector3(0.2, -0.08, 0.0), Vector3(0.14, 0.14, 0.0), Vector3(-0.2, 0.11, 0.0),
+		Vector3(0.0, -0.09, -0.17), Vector3(0.0, -0.07, 0.2), Vector3(0.0, 0.15, 0.13), Vector3(0.0, 0.12, -0.19),
+	])
+	return _make_array_mesh(vertices, PackedInt32Array([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]), material)
 
 
 func play(event_id: String, authority_origin: Vector3, visible_origin: Vector3, particle_scale: float) -> void:
@@ -60,7 +161,7 @@ func play(event_id: String, authority_origin: Vector3, visible_origin: Vector3, 
 	var flash_tween := create_tween().set_parallel(true)
 	# The screen-space flash and local light carry the impact. Keep this world-space
 	# core small and translucent so a slow render frame can never expose an opaque
-	# sphere that obscures the authored scene.
+	# globe that obscures the authored scene.
 	flash_tween.tween_property(flash_core, "scale", Vector3.ONE * 0.72, 0.10).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
 	flash_tween.tween_property(flash_core, "transparency", 1.0, 0.10)
 	flash_tween.chain().tween_callback(flash_core.set_visible.bind(false)).set_delay(0.02)
@@ -116,11 +217,40 @@ func layer_receipts() -> Array[Dictionary]:
 		if node is GPUParticles3D:
 			receipt["emitting"] = (node as GPUParticles3D).emitting
 			receipt["amount_ratio"] = (node as GPUParticles3D).amount_ratio
+			var particle_mesh := (node as GPUParticles3D).draw_pass_1
+			receipt["final_mesh_type"] = particle_mesh.get_class() if particle_mesh != null else &"missing"
+			receipt["primitive_mesh_bound"] = particle_mesh is PrimitiveMesh
 		elif node is MeshInstance3D:
 			receipt["scale"] = (node as MeshInstance3D).scale
 			receipt["transparency"] = (node as MeshInstance3D).transparency
+			var final_mesh := (node as MeshInstance3D).mesh
+			receipt["final_mesh_type"] = final_mesh.get_class() if final_mesh != null else &"missing"
+			receipt["primitive_mesh_bound"] = final_mesh is PrimitiveMesh
 		elif node is OmniLight3D:
 			receipt["light_energy"] = (node as OmniLight3D).light_energy
 			receipt["omni_range"] = (node as OmniLight3D).omni_range
 		receipts.append(receipt)
 	return receipts
+
+
+func _mcp_state() -> Dictionary:
+	var receipts := layer_receipts()
+	var primitive_count := 0
+	var array_mesh_count := 0
+	for receipt: Dictionary in receipts:
+		if receipt.get("primitive_mesh_bound", false) == true:
+			primitive_count += 1
+		if String(receipt.get("final_mesh_type", "")) == "ArrayMesh":
+			array_mesh_count += 1
+	return {
+		"terminal_event_id": terminal_event_id,
+		"authoritative_world_origin": authoritative_world_origin,
+		"presentation_origin": presentation_origin,
+		"started_usec": started_usec,
+		"started_frame": started_frame,
+		"layer_count": receipts.size(),
+		"array_mesh_layer_count": array_mesh_count,
+		"primitive_mesh_layer_count": primitive_count,
+		"all_visual_meshes_authored_arrays": array_mesh_count == 6 and primitive_count == 0,
+		"layer_receipts": receipts,
+	}
