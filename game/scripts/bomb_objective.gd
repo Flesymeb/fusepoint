@@ -10,10 +10,11 @@ extends Area3D
 @onready var core: MeshInstance3D = $BombCore
 @onready var interaction_ring: MeshInstance3D = $InteractionRing
 @onready var assembly: Node3D = $RocketBombAssembly
-@onready var diagnosis_module: MeshInstance3D = $RocketBombAssembly/DiagnosisModule
-@onready var power_bus: MeshInstance3D = $RocketBombAssembly/PowerIsolationBus
-@onready var detonator_lock: MeshInstance3D = $RocketBombAssembly/DetonatorLock
+@onready var source_model: Node3D = $RocketBombAssembly/SourceModel
 @onready var armed_light: OmniLight3D = $RocketBombAssembly/ArmedLight
+var diagnosis_module: MeshInstance3D
+var power_bus: MeshInstance3D
+var detonator_lock: MeshInstance3D
 var _core_material: StandardMaterial3D
 var _module_materials: Array[StandardMaterial3D] = []
 
@@ -26,11 +27,34 @@ func _ready() -> void:
 		core.material_override = _core_material
 	core.visible = false
 	interaction_ring.visible = false
+	_bind_imported_stage_parts()
 	for module: MeshInstance3D in [diagnosis_module, power_bus, detonator_lock]:
 		if module != null and module.get_active_material(0) is StandardMaterial3D:
 			var material := module.get_active_material(0).duplicate() as StandardMaterial3D
 			module.material_override = material
 			_module_materials.append(material)
+
+
+func _bind_imported_stage_parts() -> void:
+	var fallback: Array[MeshInstance3D] = []
+	for child in source_model.find_children("*", "MeshInstance3D", true, false):
+		var mesh := child as MeshInstance3D
+		if mesh == null:
+			continue
+		fallback.append(mesh)
+		var mesh_name := String(mesh.name).to_lower()
+		if mesh_name.begins_with("gold1"):
+			diagnosis_module = mesh
+		elif mesh_name.begins_with("green"):
+			power_bus = mesh
+		elif mesh_name.begins_with("red"):
+			detonator_lock = mesh
+	if diagnosis_module == null and fallback.size() > 0:
+		diagnosis_module = fallback[0]
+	if power_bus == null and fallback.size() > 1:
+		power_bus = fallback[1]
+	if detonator_lock == null and fallback.size() > 2:
+		detonator_lock = fallback[2]
 
 
 func _process(_delta: float) -> void:
@@ -65,10 +89,8 @@ func _update_assembly_presentation(state: Dictionary) -> void:
 		if bomb_state == &"detonated":
 			color = Color(0.5, 0.018, 0.004)
 		var material := _module_materials[index]
-		material.albedo_color = Color(color.r * 0.28, color.g * 0.28, color.b * 0.28, 1.0)
 		material.emission = color
-		material.emission_energy_multiplier = 2.6 if completed else (1.5 + active_progress * 1.2 if current else 0.95)
-		module.scale = Vector3.ONE * (1.0 + 0.06 * active_progress) if current else Vector3.ONE
+		material.emission_energy_multiplier = 0.55 if completed else (0.22 + active_progress * 0.26 if current else 0.08)
 	if detonator_lock != null:
 		detonator_lock.visible = bomb_state != &"defused" and completed_count < 3
 	if armed_light != null:
@@ -109,7 +131,8 @@ func _mcp_state() -> Dictionary:
 		"primitive_ring_visible": interaction_ring.visible,
 		"stage_count": 3,
 		"completed_stage_count": int(mission_controller.get("bomb_stage_index")),
-		"stage_parts": [String(diagnosis_module.get_path()), String(power_bus.get_path()), String(detonator_lock.get_path())],
+		"stage_parts": [String(diagnosis_module.get_path()) if diagnosis_module != null else "", String(power_bus.get_path()) if power_bus != null else "", String(detonator_lock.get_path()) if detonator_lock != null else ""],
+		"stage_binding": &"intact_imported_rocket_submeshes",
 		"terminal_state": StringName(state.get("state", &"armed")),
 	}
 	return state

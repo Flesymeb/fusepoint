@@ -247,7 +247,12 @@ func _instantiate_roster() -> bool:
 		agent.configure_roster_entry(entry, player)
 		agent.set_run_epoch(run_epoch)
 		var objective := _objective_for(StringName(entry["region"]))
-		agent.global_position = projected + Vector3.UP * 0.04
+		agent.global_position = projected
+		var floor_support: Dictionary = agent.resolve_floor_support(&"initial_spawn")
+		if floor_support.get("accepted", false) != true:
+			reservation_transaction_state = &"rejected"
+			reservation_failure = {"id": agent.stable_id, "reason": &"initial_floor_support_rejected", "receipt": floor_support}
+			return false
 		var objective_direction := agent.global_position.direction_to(objective.global_position)
 		objective_direction.y = 0.0
 		if objective_direction.length_squared() > 0.0001:
@@ -719,7 +724,9 @@ func validate_restore_occupancy(player_position: Vector3, require_active_layout 
 			actor_rids,
 		)
 		ground_query.collide_with_areas = false
-		var grounded := not space_state.intersect_ray(ground_query).is_empty()
+		var ray_support := not space_state.intersect_ray(ground_query).is_empty()
+		var direct_support: Dictionary = enemy.get("_last_floor_support_receipt") as Dictionary
+		var grounded: bool = ray_support and direct_support.get("accepted", false) == true
 		# Query the complete standing body volume, slightly inset from the authored
 		# floor contact so floor support is not mistaken for wall occupancy.
 		var clearance_shape := CapsuleShape3D.new()
@@ -740,6 +747,7 @@ func validate_restore_occupancy(player_position: Vector3, require_active_layout 
 			"position": position,
 			"grounded": grounded,
 			"floor_support": grounded,
+			"direct_floor_support": direct_support,
 			"navigation_error": navigation_error,
 			"capsule_clear": static_blockers.is_empty(),
 			"static_blocker_count": static_blockers.size(),

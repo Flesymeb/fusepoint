@@ -1,31 +1,6 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="PackedScene" path="res://assets/objectives/bravo_control_panel.glb" id="1_source"]
-
-[sub_resource type="StandardMaterial3D" id="Material_beacon"]
-albedo_color = Color(0.08, 0.13, 0.16, 1)
-metallic = 0.62
-roughness = 0.24
-emission_enabled = true
-emission = Color(0.9, 0.07, 0.015, 1)
-emission_energy_multiplier = 2.5
-
-[sub_resource type="BoxMesh" id="Mesh_beacon"]
-material = SubResource("Material_beacon")
-size = Vector3(0.16, 0.72, 0.16)
-
-[sub_resource type="BoxMesh" id="Mesh_lens"]
-material = SubResource("Material_beacon")
-size = Vector3(1.15, 0.08, 0.08)
-
-[sub_resource type="StandardMaterial3D" id="Material_frame"]
-albedo_color = Color(0.08, 0.075, 0.06, 1)
-metallic = 0.78
-roughness = 0.31
-
-[sub_resource type="BoxMesh" id="Mesh_guard"]
-material = SubResource("Material_frame")
-size = Vector3(1.75, 0.12, 0.82)
 
 [sub_resource type="BoxShape3D" id="Shape_device"]
 size = Vector3(1.7, 1.55, 0.86)
@@ -36,18 +11,6 @@ metadata/license = "CC-BY-4.0"
 metadata/mechanism = "isolation_frequency_console"
 
 [node name="SourceModel" parent="." instance=ExtResource("1_source")]
-
-[node name="GroundGuard" type="MeshInstance3D" parent="."]
-position = Vector3(0, 0.05, 0)
-mesh = SubResource("Mesh_guard")
-
-[node name="StateBeacon" type="MeshInstance3D" parent="."]
-position = Vector3(0.9, 1.35, 0)
-mesh = SubResource("Mesh_beacon")
-
-[node name="ProgressLens" type="MeshInstance3D" parent="."]
-position = Vector3(0, 1.15, -0.46)
-mesh = SubResource("Mesh_lens")
 
 [node name="DeviceLight" type="OmniLight3D" parent="."]
 position = Vector3(0, 1.35, -0.38)

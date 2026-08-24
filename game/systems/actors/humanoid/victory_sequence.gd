@@ -83,6 +83,7 @@ func reset_sequence(restore_camera := true) -> void:
 func _pull_camera_back(weight: float) -> void:
 	_pullback_weight = weight
 	var position := _safe_camera_position(_start_transform.origin.lerp(_rear_position, weight))
+	_face_avatar_to_camera(position)
 	_camera.global_transform = _look_transform(position)
 
 
@@ -93,7 +94,19 @@ func _orbit_camera(weight: float) -> void:
 	var angle := lerpf(rear_angle, front_angle, weight)
 	var radius := lerpf(rear_distance, reveal_distance, weight)
 	var position := _safe_camera_position(_avatar.global_position + Vector3(cos(angle) * radius, 1.32, sin(angle) * radius))
+	_face_avatar_to_camera(position)
 	_camera.global_transform = _look_transform(position)
+
+
+func _face_avatar_to_camera(camera_position: Vector3) -> void:
+	if _avatar == null:
+		return
+	var direction := camera_position - _avatar.global_position
+	direction.y = 0.0
+	if direction.length_squared() <= 0.0001:
+		return
+	# The retained humanoid mesh authors its visual forward along +Z.
+	_avatar.rotation.y = atan2(-direction.x, -direction.z) + PI
 
 
 func _safe_camera_position(desired: Vector3) -> Vector3:
@@ -159,6 +172,8 @@ func _build_overlay() -> void:
 	_headline.add_theme_font_override("font", FONT)
 	_headline.add_theme_font_size_override("font_size", 54)
 	_headline.add_theme_color_override("font_color", Color("eefaff"))
+	_headline.add_theme_color_override("font_outline_color", Color(0.02, 0.04, 0.05, 0.92))
+	_headline.add_theme_constant_override("outline_size", 5)
 	_headline.modulate.a = 0.0
 	add_child(_headline)
 	_summary = Label.new()
@@ -168,6 +183,8 @@ func _build_overlay() -> void:
 	_summary.add_theme_font_override("font", FONT)
 	_summary.add_theme_font_size_override("font_size", 20)
 	_summary.add_theme_color_override("font_color", Color("58d8ff"))
+	_summary.add_theme_color_override("font_outline_color", Color(0.02, 0.04, 0.05, 0.94))
+	_summary.add_theme_constant_override("outline_size", 4)
 	_summary.modulate.a = 0.0
 	add_child(_summary)
 	_accent = ColorRect.new()

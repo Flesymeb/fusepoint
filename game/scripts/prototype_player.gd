@@ -371,24 +371,38 @@ func _apply_look_delta(yaw_delta: float, pitch_delta: float, source: StringName,
 	head.rotation.x = _pitch
 	_look_input_serial += 1
 	_look_generation_sequence += 1
+	var yaw_change_degrees := rad_to_deg(angle_difference(yaw_before, rotation.y))
+	var pitch_change_degrees := rad_to_deg(_pitch - pitch_before)
+	var requested_horizontal := absf(float(raw_input.x)) > 0.001 or absf(yaw_delta) > 0.000001
+	var requested_vertical := absf(float(raw_input.y)) > 0.001 or absf(pitch_delta) > 0.000001
+	var horizontal_verified := not requested_horizontal or absf(yaw_change_degrees) > 0.0001
+	var vertical_verified := not requested_vertical or absf(pitch_change_degrees) > 0.0001
+	var axis_change_verified := (requested_horizontal or requested_vertical) and horizontal_verified and vertical_verified
 	_last_look_receipt = {
 		"event_id": "look-g%04d-%04d" % [_deployment_generation, _look_generation_sequence],
 		"receipt_id": "look-input-%06d" % _look_input_serial,
 		"edge_id": "look-input-%06d" % _look_input_serial,
 		"deployment_generation": _deployment_generation,
+		"input_generation": _deployment_generation,
 		"generation_sequence": _look_generation_sequence,
+		"actual_player_path": String(get_path()),
+		"actual_player_instance_id": get_instance_id(),
 		"source": source,
 		"raw_input": raw_input,
+		"requested_axes": {"horizontal": requested_horizontal, "vertical": requested_vertical},
 		"delta_seconds": delta_seconds,
 		"yaw_before_degrees": rad_to_deg(yaw_before),
 		"pitch_before_degrees": rad_to_deg(pitch_before),
-		"yaw_delta_degrees": rad_to_deg(angle_difference(yaw_before, rotation.y)),
-		"pitch_delta_degrees": rad_to_deg(_pitch - pitch_before),
+		"yaw_delta_degrees": yaw_change_degrees,
+		"pitch_delta_degrees": pitch_change_degrees,
 		"yaw_after_degrees": rotation_degrees.y,
 		"pitch_after_degrees": head.rotation_degrees.x,
-		"accepted": true,
+		"accepted": axis_change_verified,
+		"axis_change_verified": axis_change_verified,
+		"failure_reason": &"" if axis_change_verified else &"requested_axis_unchanged",
 		"gameplay_enabled": gameplay_input_enabled,
 		"mouse_captured": _mouse_captured,
+		"engine_mouse_mode": Input.mouse_mode,
 		"capture_eligible": gameplay_input_enabled and _mouse_captured,
 	}
 	_look_history.append(_last_look_receipt.duplicate(true))
@@ -1143,6 +1157,7 @@ func _mcp_state() -> Dictionary:
 	var camera_ready := camera != null
 	var collision_ready := collision_shape != null and collision_shape.shape is CapsuleShape3D
 	return {
+		"axis_change_receipt": _last_look_receipt,
 		"position": global_position,
 		"velocity": velocity,
 		"yaw_degrees": rotation_degrees.y,

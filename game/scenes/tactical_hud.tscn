@@ -294,10 +294,10 @@ color = Color(0.93, 0.97, 0.96, 0.9)
 
 [node name="ObjectiveBand" type="PanelContainer" parent="Root"]
 visible = false
-offset_left = 410.0
-offset_top = 548.0
-offset_right = 870.0
-offset_bottom = 624.0
+offset_left = 470.0
+offset_top = 530.0
+offset_right = 810.0
+offset_bottom = 590.0
 theme_override_styles/panel = SubResource("BandStyle")
 
 [node name="Layout" type="VBoxContainer" parent="Root/ObjectiveBand"]
@@ -308,11 +308,11 @@ layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.79, 0.3, 1)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 0.82)
 theme_override_constants/outline_size = 4
-theme_override_font_sizes/font_size = 17
+theme_override_font_sizes/font_size = 15
 text = "ALPHA • RETAKE FOUNDRY GATE"
 horizontal_alignment = 1
 [node name="Progress" type="ProgressBar" parent="Root/ObjectiveBand/Layout"]
-custom_minimum_size = Vector2(430, 5)
+custom_minimum_size = Vector2(320, 3)
 layout_mode = 2
 theme_override_styles/background = SubResource("ProgressBackground")
 theme_override_styles/fill = SubResource("ProgressFill")
@@ -320,7 +320,7 @@ show_percentage = false
 [node name="Detail" type="Label" parent="Root/ObjectiveBand/Layout"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.78, 0.84, 0.83, 0.94)
-theme_override_font_sizes/font_size = 13
+theme_override_font_sizes/font_size = 11
 text = "HELD RIFT • 8m • THREATS 0"
 horizontal_alignment = 1
 

@@ -495,15 +495,19 @@ func ground_contact_report() -> Dictionary:
 		return {"mode": grounding_mode, "applicable": false}
 	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
 	var minimum_y := INF
+	var world_minimum_y := INF
 	for canonical in _contact_bones(grounding_mode):
 		if not mapping.has(canonical):
 			continue
 		var pose_origin := _target_skeleton.get_bone_global_pose(mapping[canonical]).origin
-		minimum_y = minf(minimum_y, to_local(_target_skeleton.to_global(pose_origin)).y)
+		var world_origin := _target_skeleton.to_global(pose_origin)
+		minimum_y = minf(minimum_y, to_local(world_origin).y)
+		world_minimum_y = minf(world_minimum_y, world_origin.y)
 	return {
 		"mode": grounding_mode,
 		"applicable": is_finite(minimum_y),
 		"minimum_contact_y": minimum_y,
+		"world_minimum_contact_y": world_minimum_y,
 		"target_contact_y": ground_contact_height,
 		"absolute_error": absf(minimum_y - ground_contact_height),
 	}

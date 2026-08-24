@@ -65,6 +65,7 @@ var _bound_silhouette_identity := &""
 var _bound_silhouette_path := ""
 var _silhouette_update_serial := 0
 var _last_authoritative_signature := ""
+var _applied_ui_scale := 1.0
 
 
 func _ready() -> void:
@@ -91,6 +92,16 @@ func set_weapon_icon(texture: Texture2D) -> void:
 		await ready
 	_weapon_icon.texture = texture
 	_weapon_icon.visible = texture != null
+
+
+func apply_accessibility_scale(ui_scale: float) -> void:
+	_applied_ui_scale = clampf(ui_scale, 1.0, 2.0)
+	if not is_node_ready():
+		call_deferred(&"apply_accessibility_scale", _applied_ui_scale)
+		return
+	var expanded := _applied_ui_scale > 1.5
+	_weapon_icon.custom_minimum_size = Vector2(88.0, 40.0) if expanded else Vector2(52.0, 24.0)
+	($Layout/Header as HBoxContainer).add_theme_constant_override("separation", 10 if expanded else 8)
 
 
 func set_authoritative_weapon_state(
@@ -159,6 +170,8 @@ func _mcp_state() -> Dictionary:
 			"background": &"native_transparent_rgba",
 		},
 		"slot_size": _weapon_icon.size,
+		"applied_ui_scale": _applied_ui_scale,
+		"responsive_slot_target": _weapon_icon.custom_minimum_size,
 		"reload_visible": _reload_row.visible,
 		"reload_progress": _reload_progress.value / 100.0,
 	}

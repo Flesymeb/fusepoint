@@ -145,6 +145,8 @@ func apply_accessibility_settings(values: Dictionary) -> void:
 		if base_size > 0 and base_size < 34:
 			control.add_theme_font_size_override("font_size", int(round(base_size * multiplier)))
 	narrative.add_theme_font_size_override("font_size", clampi(int(round((_applied_subtitle_size + 2) * multiplier)), 20, 32))
+	if weapon_hud.has_method(&"apply_accessibility_scale"):
+		weapon_hud.call(&"apply_accessibility_scale", _applied_ui_scale)
 	_apply_responsive_layout.call_deferred()
 
 
@@ -182,16 +184,17 @@ func _apply_responsive_layout() -> void:
 	var narrative_width := minf(760.0, viewport_size.x - safe.x * 2.0 - 8.0)
 	narrative.position = Vector2(center.x - narrative_width * 0.5, safe.y + (156.0 if expanded else 138.0))
 	narrative.size = Vector2(narrative_width, 132.0 if expanded else 112.0)
-	var objective_width := minf(500.0 if expanded else 620.0, viewport_size.x - safe.x * 2.0 - 8.0)
-	objective_band.position = Vector2(center.x - objective_width * 0.5, viewport_size.y - safe.y - (122.0 if expanded else 138.0))
-	objective_band.size = Vector2(objective_width, 100.0 if expanded else 86.0)
+	var objective_width := minf(460.0 if expanded else 360.0, viewport_size.x - safe.x * 2.0 - 8.0)
+	objective_band.position = Vector2(center.x - objective_width * 0.5, viewport_size.y - safe.y - (106.0 if expanded else 96.0))
+	objective_band.size = Vector2(objective_width, 82.0 if expanded else 60.0)
 	objective_progress.custom_minimum_size.x = maxf(objective_width - 30.0, 120.0)
 	vitals.position = Vector2(safe.x + 2.0, viewport_size.y - safe.y - 56.0)
 	vitals.size = Vector2(280.0, 54.0)
 	stance_label.position = Vector2(safe.x + 2.0, viewport_size.y - safe.y - 84.0)
 	stance_label.size = Vector2(300.0, 24.0)
-	weapon_hud.position = Vector2(viewport_size.x - safe.x - 322.0, viewport_size.y - safe.y - 110.0)
-	weapon_hud.size = Vector2(320.0, 108.0)
+	var weapon_size := Vector2(360.0, 132.0) if expanded else Vector2(320.0, 108.0)
+	weapon_hud.position = Vector2(viewport_size.x - safe.x - weapon_size.x, viewport_size.y - safe.y - weapon_size.y)
+	weapon_hud.size = weapon_size
 
 
 func _layout_snapshot() -> Dictionary:
@@ -395,6 +398,7 @@ func _update_mission_state() -> void:
 			_update_bomb_interaction_band(point_state, distance)
 		else:
 			objective_label.text = _objective_title(point_id)
+			objective_progress.visible = active_capture
 			objective_progress.value = float(point_state.get("progress", 0.0)) * 100.0
 			var threat_count := int(point_state.get("contest_enemy_count", 0))
 			objective_detail.text = "%s   •   %dm   •   THREATS %d" % [String(point_state.get("state", &"unknown")).replace("_", " ").to_upper(), int(distance), threat_count]
@@ -408,7 +412,11 @@ func _update_bomb_interaction_band(state: Dictionary, distance: float) -> void:
 	var active: bool = state.get("active", false) == true
 	var progress := clampf(float(state.get("progress", 0.0)), 0.0, 1.0)
 	var stage_name := String(state.get("stage_id", &"complete")).replace("_", " ").to_upper()
-	objective_label.text = "CHARLIE • DEFUSAL %d/3" % completed
+	var segments: Array[String] = []
+	for index in 3:
+		segments.append("◆" if index < completed or bomb_state == &"defused" else "◇")
+	objective_label.text = "C  %s  %s" % [" ".join(segments), stage_name]
+	objective_progress.visible = active
 	objective_progress.value = 100.0 if bomb_state == &"defused" else progress * 100.0
 	if bomb_state == &"defused":
 		objective_detail.text = "DEVICE SAFE   •   ALL THREE STAGES LATCHED"

@@ -413,6 +413,14 @@ func _input(event: InputEvent) -> void:
 		_tester_advance_defusal_stage()
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed(&"tester_ui_scale_200_prepare"):
+		_tester_apply_ui_scale(2.0, &"ui_scale_200_prepare")
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_ui_scale_restore"):
+		_tester_apply_ui_scale(1.0, &"ui_scale_restore")
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed(&"tester_shell_death"):
 		_tester_prepare_shell_death()
 		get_viewport().set_input_as_handled()
@@ -710,6 +718,32 @@ func _tester_advance_defusal_stage() -> void:
 	receipt["reset_isolation"] = mission_advance.get("reset_isolation", {})
 	receipt["route_acceptance_claimed"] = false
 	receipt["failure_reason"] = mission_advance.get("failure_reason", &"")
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_apply_ui_scale(scale: float, kind: StringName) -> void:
+	var receipt := _new_tester_setup_receipt(kind)
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var values := settings_store.snapshot()
+	var persisted_scale := float(values.get("ui_scale", 1.0))
+	var weapon_state: Dictionary = weapon.call(&"_mcp_state")
+	values["ui_scale"] = clampf(scale, 1.0, 2.0)
+	apply_accessibility_settings(values)
+	receipt.merge({
+		"resolved": true,
+		"accepted": is_equal_approx(_applied_ui_scale, float(values["ui_scale"])),
+		"requested_scale": float(values["ui_scale"]),
+		"applied_scale": _applied_ui_scale,
+		"persisted_scale_unchanged": is_equal_approx(float(settings_store.snapshot().get("ui_scale", 1.0)), persisted_scale),
+		"reset_isolation": {
+			"mission_state_unchanged": StringName(mission.get("mission_state")) == &"active_gameplay",
+			"weapon_identity_unchanged": StringName(weapon_state.get("equipped_id", &"")),
+			"transient_only": true,
+		},
+		"failure_reason": &"" if is_equal_approx(_applied_ui_scale, float(values["ui_scale"])) else &"responsive_scale_not_applied",
+	}, true)
 	_store_tester_setup_receipt(receipt)
 
 

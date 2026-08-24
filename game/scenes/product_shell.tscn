@@ -428,7 +428,7 @@ offset_bottom = 536.0
 theme_override_colors/font_color = Color(0.95, 0.93, 0.82, 0.98)
 theme_override_colors/font_outline_color = Color(0.22, 0.12, 0.01, 0.9)
 theme_override_constants/outline_size = 5
-theme_override_font_sizes/font_size = 30
+theme_override_font_sizes/font_size = 36
 text = "11:40 — KESTREL RIDGE MILITARY BASE\nRIFT FRONT SIGNALS CONFIRMED INSIDE THE PERIMETER."
 autowrap_mode = 2
 [node name="Actions" type="HBoxContainer" parent="Root/Pages/BriefingPage"]

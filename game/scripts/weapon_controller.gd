@@ -10,8 +10,6 @@ const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
 const AK74_PRODUCT_FRAME_OFFSET := Vector3(0.0, 0.12, 0.0)
 const AK74_PRODUCT_FRAME_SCALE := Vector3.ONE * 0.88
-const PLAYER_REPORT_TRANSIENT_BUS := &"PlayerReportTransient"
-const PLAYER_REPORT_TRANSIENT_SECONDS := 0.12
 const AUTO_SUSTAIN_ARM_SECONDS := 0.24
 
 @export_node_path("Camera3D") var camera_path: NodePath
@@ -108,19 +106,7 @@ var _single_report_generation := 0
 var _single_report_deadline := -1.0
 var _single_report_shot_id := ""
 var _single_report_source_path := ""
-var _bounded_single_report_bound := false
-var _bounded_single_report_bytes := 0
 var _bounded_single_report_duration := 0.0
-var _report_gate_thread: Thread
-var _report_gate_mutex := Mutex.new()
-var _report_gate_semaphore := Semaphore.new()
-var _report_gate_shutdown := false
-var _report_gate_deadline_usec := 0
-var _report_gate_generation := 0
-var _report_gate_bus_index := -1
-var _report_gate_last_open_usec := 0
-var _report_gate_last_close_usec := 0
-var _report_gate_last_close_generation := 0
 var _tester_audio_generation := 0
 var _last_tester_audio_receipt: Dictionary = {}
 var _tester_audio_history: Array[Dictionary] = []
@@ -133,7 +119,6 @@ func _ready() -> void:
 	viewmodel.set("handle_mouse_wheel", false)
 	_configure_component_feedback_boundary()
 	_capture_retained_component_report_identity()
-	_configure_realtime_report_gate()
 	if viewmodel.has_signal(&"weapon_changed"):
 		viewmodel.connect(&"weapon_changed", _on_viewmodel_weapon_changed)
 	if viewmodel.has_signal(&"aiming_changed"):
@@ -142,10 +127,6 @@ func _ready() -> void:
 	if player != null and player.has_signal(&"spawn_reset"):
 		player.connect(&"spawn_reset", _on_spawn_reset)
 	call_deferred(&"_finish_ready")
-
-
-func _exit_tree() -> void:
-	_shutdown_realtime_report_gate()
 
 
 func _finish_ready() -> void:
@@ -431,7 +412,6 @@ func _try_submit_shot() -> Dictionary:
 	_action_state = &"fire"
 	_action_until = _now() + 0.07
 	_recovery_until = _now() + float(weapon["recovery_seconds"])
-	_open_realtime_report_gate(shot_id)
 	feedback.call(&"trigger_fire", sustained_authorized)
 	_record_report_request(receipt, playback_class, sustained_authorized)
 	_trigger_product_recoil(weapon["fire_mode"] == FIRE_MODE_AUTO)
@@ -749,97 +729,7 @@ func _capture_retained_component_report_identity() -> void:
 	# accepted streams. The product adapter authorizes shot playback and lifecycle
 	# cleanup, but must never substitute, derive, or rewrite either source.
 	_single_report_source_path = single_player.stream.resource_path
-	_bounded_single_report_bound = false
-	_bounded_single_report_bytes = 0
-	_bounded_single_report_duration = single_player.stream.get_length()
-
-
-func _configure_realtime_report_gate() -> void:
-	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
-	_report_gate_bus_index = AudioServer.get_bus_index(PLAYER_REPORT_TRANSIENT_BUS)
-	if single_player == null or single_player.stream == null or _report_gate_bus_index < 0:
-		_bounded_single_report_bound = false
-		return
-	# The accepted retained source and FireAudio owner stay untouched. Only their
-	# candidate-owned output route is isolated so a real-time worker can close the
-	# mixed output even while the render/game thread is stalled.
-	single_player.bus = PLAYER_REPORT_TRANSIENT_BUS
-	AudioServer.set_bus_mute(_report_gate_bus_index, true)
-	_bounded_single_report_bound = single_player.stream.resource_path == _single_report_source_path
-	_bounded_single_report_bytes = int(round(PLAYER_REPORT_TRANSIENT_SECONDS * AudioServer.get_mix_rate())) * 2
-	_report_gate_shutdown = false
-	_report_gate_thread = Thread.new()
-	var start_error := _report_gate_thread.start(_report_gate_worker)
-	if start_error != OK:
-		_bounded_single_report_bound = false
-		_report_gate_thread = null
-
-
-func _open_realtime_report_gate(_shot_id: String) -> void:
-	if not _bounded_single_report_bound or _report_gate_bus_index < 0:
-		return
-	var opened_usec := Time.get_ticks_usec()
-	_report_gate_mutex.lock()
-	_report_gate_generation += 1
-	_report_gate_deadline_usec = opened_usec + int(PLAYER_REPORT_TRANSIENT_SECONDS * 1000000.0)
-	_report_gate_last_open_usec = opened_usec
-	_report_gate_mutex.unlock()
-	AudioServer.set_bus_mute(_report_gate_bus_index, false)
-	_report_gate_semaphore.post()
-
-
-func _close_realtime_report_gate_immediately() -> void:
-	if _report_gate_bus_index < 0:
-		return
-	_report_gate_mutex.lock()
-	_report_gate_generation += 1
-	_report_gate_deadline_usec = 0
-	_report_gate_last_close_usec = Time.get_ticks_usec()
-	_report_gate_last_close_generation = _report_gate_generation
-	_report_gate_mutex.unlock()
-	AudioServer.set_bus_mute(_report_gate_bus_index, true)
-
-
-func _report_gate_worker() -> void:
-	while true:
-		_report_gate_semaphore.wait()
-		while true:
-			_report_gate_mutex.lock()
-			var shutdown := _report_gate_shutdown
-			var generation := _report_gate_generation
-			var deadline_usec := _report_gate_deadline_usec
-			_report_gate_mutex.unlock()
-			if shutdown:
-				return
-			if deadline_usec <= 0:
-				break
-			var remaining_usec := deadline_usec - Time.get_ticks_usec()
-			if remaining_usec > 0:
-				OS.delay_usec(remaining_usec)
-			_report_gate_mutex.lock()
-			var still_current := generation == _report_gate_generation and deadline_usec == _report_gate_deadline_usec
-			if still_current:
-				_report_gate_deadline_usec = 0
-				_report_gate_last_close_usec = Time.get_ticks_usec()
-				_report_gate_last_close_generation = generation
-			_report_gate_mutex.unlock()
-			if still_current:
-				# Global server singletons are thread-safe; this closes the mixed bus
-				# without waiting for a frame/tween callback.
-				AudioServer.set_bus_mute(_report_gate_bus_index, true)
-				break
-
-
-func _shutdown_realtime_report_gate() -> void:
-	_close_realtime_report_gate_immediately()
-	if _report_gate_thread == null:
-		return
-	_report_gate_mutex.lock()
-	_report_gate_shutdown = true
-	_report_gate_mutex.unlock()
-	_report_gate_semaphore.post()
-	_report_gate_thread.wait_to_finish()
-	_report_gate_thread = null
+	_bounded_single_report_duration = float(feedback.get("semi_fire_audio_seconds"))
 
 
 func set_run_epoch(epoch: int, reset_transients := true) -> bool:
@@ -1285,7 +1175,7 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 		receipt["failure_reason"] = &"release_build_forbidden"
 		return _store_tester_audio_receipt(receipt)
 	_stop_tester_audio_fixture(&"new_prepare")
-	if stem_id == &"component_report" or stem_id == &"product_adapter_report":
+	if stem_id == &"component_report":
 		var component_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
 		receipt.merge({
 			"resolved": component_player != null and component_player.stream != null,
@@ -1300,6 +1190,19 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 			"normal_fire_path_used": false,
 			"reset_isolation": {"authoritative_shot_committed": false, "diagnostic_owner_separate": false, "voice_started": false},
 			"failure_reason": &"" if component_player != null and component_player.stream != null else &"component_player_unavailable",
+		}, true)
+	elif stem_id == &"product_adapter_report":
+		receipt.merge({
+			"resolved": true,
+			"accepted": true,
+			"branch_id": &"audio_stem:product_adapter_report",
+			"source_path": "",
+			"owner_path": NodePath(),
+			"adapter_absent": true,
+			"normal_player_report_owner_count": 1,
+			"prepared_silent": true,
+			"reset_isolation": {"authoritative_shot_committed": false, "voice_started": false},
+			"failure_reason": &"",
 		}, true)
 	else:
 		var delegated: Dictionary
@@ -1339,10 +1242,10 @@ func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) ->
 	if int(prepared.get("setup_generation", -1)) != expected_generation or StringName(prepared.get("stem_id", &"")) != stem_id or prepared.get("accepted", false) != true:
 		receipt["failure_reason"] = &"prepared_generation_mismatch"
 		return _store_tester_audio_receipt(receipt)
-	if stem_id == &"component_report" or stem_id == &"product_adapter_report":
+	if stem_id == &"component_report":
 		var component_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
 		if component_player != null and component_player.stream != null:
-			component_player.play()
+			feedback.call(&"trigger_fire", false)
 			receipt.merge({
 				"resolved": true,
 				"accepted": component_player.playing,
@@ -1352,11 +1255,24 @@ func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) ->
 				"onset_usec": Time.get_ticks_usec(),
 				"onset_frame": Engine.get_process_frames(),
 				"physical_eof_seconds": component_player.stream.get_length(),
+				"component_timeout_seconds": _bounded_single_report_duration,
+				"component_timeout_method": &"_play_audio_with_timeout",
 				"retained_component_owner": true,
 				"normal_player_report_owner_count": 1,
 				"reset_isolation": {"authoritative_shot_committed": false, "diagnostic_owner_separate": false},
 				"failure_reason": &"" if component_player.playing else &"playback_did_not_start",
 			}, true)
+	elif stem_id == &"product_adapter_report":
+		receipt.merge({
+			"resolved": true,
+			"accepted": true,
+			"branch_id": prepared.get("branch_id", &""),
+			"adapter_absent": true,
+			"voice_started": false,
+			"normal_player_report_owner_count": 1,
+			"reset_isolation": {"authoritative_shot_committed": false, "voice_started": false},
+			"failure_reason": &"",
+		}, true)
 	else:
 		var delegated: Dictionary = shot_feedback.tester_advance_audio_stem(stem_id, expected_generation)
 		receipt.merge({
@@ -1545,7 +1461,6 @@ func _stop_fire_report(reason: StringName, stop_single_transient: bool) -> void:
 	var auto_player := feedback.get_node_or_null("AutoFireAudio") as AudioStreamPlayer
 	if stop_single_transient and single_player != null:
 		single_player.stop()
-		_close_realtime_report_gate_immediately()
 		_single_report_generation += 1
 		_single_report_deadline = -1.0
 		_single_report_shot_id = ""
@@ -1578,10 +1493,9 @@ func _record_report_request(receipt: Dictionary, playback_class: StringName, sus
 		"press_shot_ordinal": receipt.get("press_shot_ordinal", 0),
 		"requested_playback_class": playback_class,
 		"sustained_report_authorized": sustained_authorized,
-		"physical_eof_seconds": _bounded_single_report_duration,
-		"physical_eof_owner": &"retained_component_fire_audio",
-		"mixed_output_boundary_seconds": PLAYER_REPORT_TRANSIENT_SECONDS,
-		"mixed_output_gate_generation": _report_gate_generation,
+		"component_timeout_seconds": _bounded_single_report_duration,
+		"timeout_owner": &"retained_component_play_audio_with_timeout",
+		"product_output_gate_used": false,
 		"single_player_playing": single_player.playing if single_player != null else false,
 		"auto_player_playing": auto_player.playing if auto_player != null else false,
 		"timestamp_seconds": _now(),
@@ -1709,9 +1623,8 @@ func _mcp_state() -> Dictionary:
 			"shot_id": _single_report_shot_id,
 			"deadline_seconds": _single_report_deadline,
 			"owner": &"retained_component_fire_audio",
-			"audio_server_bounded_stream": _bounded_single_report_bound,
+			"component_timeout_bound": true,
 			"source_stream_path": _single_report_source_path,
-			"bounded_stream_bytes": _bounded_single_report_bytes,
 			"bounded_stream_duration_seconds": _bounded_single_report_duration,
 			"source_identity_policy": &"retained_component_stream_unchanged",
 			"adapter_source_substitution_used": false,
@@ -1827,16 +1740,9 @@ func _fire_audio_player_state() -> Dictionary:
 			"source_stream_path": _single_report_source_path,
 			"playback_stream_class": single_player.stream.get_class() if single_player != null and single_player.stream != null else "",
 			"playback_stream_length": single_player.stream.get_length() if single_player != null and single_player.stream != null else 0.0,
-			"audio_server_bounded": _bounded_single_report_bound,
-			"mixed_output_bus": PLAYER_REPORT_TRANSIENT_BUS,
-			"mixed_output_bus_muted": AudioServer.is_bus_mute(_report_gate_bus_index) if _report_gate_bus_index >= 0 else true,
-			"mixed_output_boundary_seconds": PLAYER_REPORT_TRANSIENT_SECONDS,
-			"gate_generation": _report_gate_generation,
-			"gate_deadline_usec": _report_gate_deadline_usec,
-			"gate_last_open_usec": _report_gate_last_open_usec,
-			"gate_last_close_usec": _report_gate_last_close_usec,
-			"gate_last_close_generation": _report_gate_last_close_generation,
-			"render_stall_independent": _report_gate_thread != null,
+			"component_timeout_seconds": _bounded_single_report_duration,
+			"component_timeout_method": &"_play_audio_with_timeout",
+			"product_output_gate_used": false,
 			"retained_stream_unchanged": single_player != null and single_player.stream != null and single_player.stream.resource_path == _single_report_source_path,
 			"adapter_source_substitution_used": false,
 		},

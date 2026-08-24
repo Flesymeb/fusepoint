@@ -63,6 +63,7 @@ var _progress_watchdog_count := 0
 var _combat_profile: Dictionary = {}
 var _tester_prepared_hold := false
 var _tester_prepared_generation := 0
+var _last_floor_support_receipt: Dictionary = {}
 
 
 func _ready() -> void:
@@ -168,6 +169,12 @@ func set_mission_active(active: bool, sequence := 0) -> void:
 	if active:
 		activation_sequence = sequence
 		_ensure_presentation()
+		var floor_support := resolve_floor_support(&"region_activation")
+		if floor_support.get("accepted", false) != true:
+			mission_active = false
+			_apply_activation_state()
+			_commit_enemy_event(&"activation_rejected", {"activation_sequence": activation_sequence, "floor_support": floor_support})
+			return
 		acquire_candidate_if_visible(_mission_target)
 	else:
 		_release_route_reservation()
@@ -220,6 +227,11 @@ func set_tester_prepared_hold(enabled: bool, setup_generation: int) -> Dictionar
 	if not enabled and (not _tester_prepared_hold or setup_generation != _tester_prepared_generation):
 		receipt["failure_reason"] = &"prepared_generation_mismatch"
 		return receipt
+	var floor_support := resolve_floor_support(&"tester_prepare" if enabled else &"tester_release")
+	if enabled and floor_support.get("accepted", false) != true:
+		receipt["failure_reason"] = floor_support.get("failure_reason", &"floor_support_rejected")
+		receipt["floor_support"] = floor_support
+		return receipt
 	_tester_prepared_hold = enabled
 	# Retain the released generation so paged inspection can correlate ordinary
 	# perception/combat samples with the preparation that selected this actor.
@@ -239,8 +251,83 @@ func set_tester_prepared_hold(enabled: bool, setup_generation: int) -> Dictionar
 		"physics_held": _tester_prepared_hold,
 		"visible": _presentation_actor != null and _presentation_actor.visible,
 		"collision_active": _collision_shape != null and not _collision_shape.disabled,
+		"floor_support": floor_support,
 	}, true)
 	return receipt
+
+
+func resolve_floor_support(context: StringName) -> Dictionary:
+	var receipt := {
+		"context": context,
+		"actor_id": stable_id,
+		"requested_root": global_position,
+		"accepted": false,
+		"failure_reason": &"world_unavailable",
+	}
+	if not is_inside_tree() or get_world_3d() == null:
+		_last_floor_support_receipt = receipt
+		return receipt.duplicate(true)
+	var excluded: Array[RID] = [get_rid()]
+	for peer: Node in get_tree().get_nodes_in_group(&"fps_enemy"):
+		if peer is CollisionObject3D and peer != self:
+			excluded.append((peer as CollisionObject3D).get_rid())
+	var sample_offsets: Array[Vector3] = [
+		Vector3.ZERO,
+		Vector3(0.28, 0.0, 0.0), Vector3(-0.28, 0.0, 0.0),
+		Vector3(0.0, 0.0, 0.28), Vector3(0.0, 0.0, -0.28),
+	]
+	var supports: Array[Dictionary] = []
+	var center_support := false
+	var support_y := -INF
+	var space_state := get_world_3d().direct_space_state
+	for index in sample_offsets.size():
+		var origin := global_position + sample_offsets[index]
+		var query := PhysicsRayQueryParameters3D.create(
+			origin + Vector3.UP * 1.25,
+			origin + Vector3.DOWN * 1.5,
+			sight_collision_mask,
+			excluded,
+		)
+		query.collide_with_areas = false
+		var hit := space_state.intersect_ray(query)
+		if hit.is_empty() or (hit.get("normal", Vector3.ZERO) as Vector3).dot(Vector3.UP) < 0.55:
+			continue
+		var hit_position: Vector3 = hit.get("position", origin)
+		support_y = maxf(support_y, hit_position.y)
+		center_support = center_support or index == 0
+		supports.append({"sample": index, "position": hit_position, "normal": hit.get("normal", Vector3.UP), "collider": String((hit.get("collider") as Node).get_path()) if hit.get("collider") is Node else ""})
+	if not center_support or not is_finite(support_y):
+		receipt["failure_reason"] = &"static_floor_missing_under_capsule"
+		receipt["support_samples"] = supports
+		_last_floor_support_receipt = receipt
+		return receipt.duplicate(true)
+	var previous_position := global_position
+	global_position.y = support_y + 0.005
+	reserved_position.y = support_y
+	var capsule := _capsule_occupancy_snapshot()
+	var visual_contact := _presentation_actor.ground_contact_report() if _presentation_actor != null else {"applicable": false}
+	var world_contact_y := float(visual_contact.get("world_minimum_contact_y", support_y + 0.075))
+	var target_contact_y := float(visual_contact.get("target_contact_y", 0.075))
+	var visual_gap_error := absf((world_contact_y - support_y) - target_contact_y)
+	var visual_required := _presentation_actor != null and _presentation_actor.visible
+	var accepted: bool = capsule.get("capsule_clear", false) == true and (not visual_required or (visual_contact.get("applicable", false) == true and visual_gap_error <= 0.025))
+	receipt.merge({
+		"accepted": accepted,
+		"failure_reason": &"" if accepted else &"capsule_or_visual_contact_invalid",
+		"previous_root": previous_position,
+		"resolved_root": global_position,
+		"floor_y": support_y,
+		"root_floor_gap": global_position.y - support_y,
+		"support_sample_count": supports.size(),
+		"support_samples": supports,
+		"full_capsule": capsule,
+		"visual_contact": visual_contact,
+		"visual_contact_gap_error": visual_gap_error,
+		"visual_contact_required": visual_required,
+		"settled_physics_frame": Engine.get_physics_frames(),
+	}, true)
+	_last_floor_support_receipt = receipt.duplicate(true)
+	return receipt.duplicate(true)
 
 
 func clear_tester_prepared_hold() -> void:
@@ -314,6 +401,7 @@ func authoritative_snapshot() -> Dictionary:
 			"reservation_key": _route_reservation.get("key", ""),
 			"reservation_state": _route_reservation.get("state", &"none"),
 			"grounded": is_on_floor(),
+			"floor_support": _last_floor_support_receipt,
 			"capsule_clear": capsule_occupancy.get("capsule_clear", false),
 			"capsule_static_blockers": capsule_occupancy.get("static_blocker_count", -1),
 			"perception_target_visible": combat.get("target_visible", false),
@@ -362,7 +450,7 @@ func authoritative_snapshot() -> Dictionary:
 		"reservation": _route_reservation.duplicate(true),
 		"stalled_seconds": _stalled_seconds,
 		"progress_watchdog_count": _progress_watchdog_count,
-		"grounded_occupancy": is_on_floor(),
+		"grounded_occupancy": is_on_floor() or _last_floor_support_receipt.get("accepted", false) == true,
 		"full_capsule_occupancy": capsule_occupancy,
 		"avoidance_enabled": _navigation_agent != null and _navigation_agent.avoidance_enabled,
 		"ammo": combat.get("rounds_remaining", 0),
@@ -550,6 +638,10 @@ func apply_checkpoint_snapshot(saved: Dictionary, epoch: int) -> bool:
 		else:
 			ai_state = AIState.IDLE
 			_presentation_actor.reset_enemy()
+	var floor_support := resolve_floor_support(&"checkpoint_snapshot_applied")
+	if floor_support.get("accepted", false) != true:
+		push_error("Restore floor support rejected for %s: %s" % [stable_id, floor_support])
+		return false
 	_restored_epoch = epoch
 	_restore_readiness = &"snapshot_applied"
 	return true
@@ -867,4 +959,23 @@ func _commit_enemy_event(kind: StringName, payload: Dictionary) -> void:
 
 
 func _mcp_state() -> Dictionary:
-	return authoritative_snapshot()
+	var snapshot := authoritative_snapshot()
+	var inspection: Dictionary = snapshot.get("inspection_state", {})
+	return {
+		"actor_id": stable_id,
+		"active": mission_active,
+		"alive": is_alive(),
+		"region": region_id,
+		"route_slot": route_slot,
+		"position": global_position,
+		"grounded_physics": is_on_floor(),
+		"grounded_occupancy": snapshot.get("grounded_occupancy", false),
+		"direct_floor_support": _last_floor_support_receipt,
+		"capsule_clear": inspection.get("capsule_clear", false),
+		"capsule_static_blockers": inspection.get("capsule_static_blockers", -1),
+		"visible_contact": _last_floor_support_receipt.get("visual_contact", {}),
+		"tester_prepared_hold": _tester_prepared_hold,
+		"setup_generation": _tester_prepared_generation,
+		"restore_epoch": _restore_epoch,
+		"run_epoch": run_epoch,
+	}

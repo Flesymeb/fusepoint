@@ -18,8 +18,7 @@ const NOTICE_RETICLE_CLEARANCE := Vector2(120.0, 96.0)
 @onready var progress_lens: MeshInstance3D = get_node_or_null("DeviceRoot/ProgressLens") as MeshInstance3D
 @onready var device_light: OmniLight3D = get_node_or_null("DeviceRoot/DeviceLight") as OmniLight3D
 var _marker_material: StandardMaterial3D
-var _beacon_material: StandardMaterial3D
-var _progress_material: StandardMaterial3D
+var _source_state_materials: Array[StandardMaterial3D] = []
 var _notice_budget: Dictionary = {}
 var _hud_handoff_visible := false
 
@@ -32,8 +31,23 @@ func _ready() -> void:
 		marker.material_override = _marker_material
 	if marker != null:
 		marker.visible = false
-	_beacon_material = _unique_material(state_beacon)
-	_progress_material = _unique_material(progress_lens)
+	_bind_source_state_materials()
+
+
+func _bind_source_state_materials() -> void:
+	if device_root == null:
+		return
+	var source_root := device_root.get_node_or_null("SourceModel")
+	if source_root == null:
+		return
+	for child in source_root.find_children("*", "MeshInstance3D", true, false):
+		var source_mesh := child as MeshInstance3D
+		if source_mesh == null or not source_mesh.get_active_material(0) is StandardMaterial3D:
+			continue
+		var material := source_mesh.get_active_material(0).duplicate() as StandardMaterial3D
+		material.emission_enabled = true
+		source_mesh.material_override = material
+		_source_state_materials.append(material)
 
 
 func _process(_delta: float) -> void:
@@ -69,15 +83,9 @@ func _update_device_presentation(state: Dictionary) -> void:
 		&"recapturing_rift": color = Color(0.95, 0.19, 0.02)
 		&"secured_aegis": color = Color(0.04, 0.92, 0.68)
 	var pulse := 0.82 + sin(Time.get_ticks_msec() * 0.012) * 0.18 if point_state == &"contested" else 1.0
-	for material in [_beacon_material, _progress_material]:
-		if material == null:
-			continue
-		var state_material := material as StandardMaterial3D
-		state_material.albedo_color = Color(color.r * 0.32, color.g * 0.32, color.b * 0.32, 1.0)
+	for state_material in _source_state_materials:
 		state_material.emission = color
-		state_material.emission_energy_multiplier = 1.65 * pulse
-	if progress_lens != null:
-		progress_lens.scale.x = maxf(progress, 0.08) if point_state in [&"capturing_aegis", &"contested", &"recapturing_rift"] else 1.0
+		state_material.emission_energy_multiplier = (0.18 + progress * 0.22) * pulse
 	if device_light != null:
 		device_light.light_color = color
 		device_light.light_energy = (1.2 if point_state in [&"capturing_aegis", &"contested"] else 0.42) * pulse
@@ -183,6 +191,8 @@ func _mcp_state() -> Dictionary:
 		"production_source": String(device_root.get_meta(&"production_source", "")) if device_root != null else "",
 		"mechanism": StringName(device_root.get_meta(&"mechanism", &"")) if device_root != null else &"",
 		"state_beacon_path": String(state_beacon.get_path()) if state_beacon != null else "",
+		"state_binding": &"intact_source_materials_and_device_light",
+		"source_material_binding_count": _source_state_materials.size(),
 		"collision_footprint_path": String(get_node("DeviceRoot/DeviceCollision/CollisionShape3D").get_path()) if has_node("DeviceRoot/DeviceCollision/CollisionShape3D") else "",
 		"primitive_surface_ring_visible": marker.visible if marker != null else false,
 		"presentation_state": StringName(state.get("state", &"held_rift")),
