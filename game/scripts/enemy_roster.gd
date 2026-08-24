@@ -78,6 +78,9 @@ var _tester_advanced_region: StringName = &""
 var _tester_advanced_generation := 0
 var observation_skip_count := 0
 var observation_skip_history: Array[Dictionary] = []
+var _ordered_peer_cache: Array[Node] = []
+var _peer_cache_physics_frame := -1
+var _peer_cache_generation := 0
 
 @onready var player: Node3D = get_node(player_path) as Node3D
 @onready var mission_controller: Node = get_node(mission_controller_path)
@@ -100,6 +103,7 @@ func _ready() -> void:
 		and last_spawn_occupancy_receipt.get("accepted", false) == true
 	)
 	if roster_initialized:
+		_rebuild_ordered_peer_cache()
 		_initialize_qualification_ledger()
 		_update_region_activation()
 	var summary := _summary()
@@ -111,6 +115,46 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if roster_initialized and not restore_in_progress and _tester_prepared_region.is_empty() and _tester_advanced_region.is_empty():
 		_update_region_activation()
+
+
+func _physics_process(_delta: float) -> void:
+	# Actor identity and ordering are roster-owned and immutable during a run.
+	# Publish one shared physics-cycle generation without enumerating or sorting
+	# the scene tree from every enemy avoidance callback.
+	if not roster_initialized:
+		return
+	var physics_frame := Engine.get_physics_frames()
+	if physics_frame == _peer_cache_physics_frame:
+		return
+	_peer_cache_physics_frame = physics_frame
+	_peer_cache_generation += 1
+
+
+func _rebuild_ordered_peer_cache() -> void:
+	_ordered_peer_cache.clear()
+	for entry: Dictionary in ROSTER:
+		var actor_id := StringName(entry["id"])
+		var enemy := enemies.get(actor_id) as FusepointEnemyAgent
+		if enemy != null and is_instance_valid(enemy):
+			_ordered_peer_cache.append(enemy)
+	_peer_cache_physics_frame = Engine.get_physics_frames()
+	_peer_cache_generation += 1
+
+
+func ordered_peer_cache() -> Array[Node]:
+	return _ordered_peer_cache
+
+
+func peer_cache_receipt() -> Dictionary:
+	return {
+		"owner_path": String(get_path()) if is_inside_tree() else "",
+		"physics_frame": _peer_cache_physics_frame,
+		"generation": _peer_cache_generation,
+		"stable_peer_count": _ordered_peer_cache.size(),
+		"ordering": &"authored_roster_order",
+		"scene_tree_enumeration_per_actor": false,
+		"sort_per_actor": false,
+	}
 
 
 func reset_transient_feedback() -> void:
@@ -873,6 +917,7 @@ func _summary() -> Dictionary:
 	var active_actor_page := combat_actor_page(_active_region(), 0, ACTOR_PAGE_LIMIT)
 	return {
 		"run_epoch": run_epoch,
+		"peer_cache": peer_cache_receipt(),
 		"last_run_epoch_receipt": last_run_epoch_receipt,
 		"tester_setup_request_count": tester_setup_request_count,
 		"tester_fixture_state": {

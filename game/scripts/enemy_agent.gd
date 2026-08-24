@@ -30,9 +30,6 @@ const REGION_COMBAT_PROFILES := {
 }
 
 static var _route_reservations: Dictionary = {}
-static var _ordered_peer_cache_frame := -1
-static var _ordered_peer_cache: Array[Node] = []
-
 @export var stable_id: StringName = &"enemy-unconfigured"
 @export var region_id: StringName = &"alpha"
 @export var tactical_role: StringName = &"defender"
@@ -66,6 +63,8 @@ var _combat_profile: Dictionary = {}
 var _tester_prepared_hold := false
 var _tester_prepared_generation := 0
 var _last_floor_support_receipt: Dictionary = {}
+var _safe_velocity_callback_count := 0
+var _safe_velocity_duplicate_callback_count := 0
 
 
 func _ready() -> void:
@@ -449,6 +448,12 @@ func authoritative_snapshot() -> Dictionary:
 		"desired_navigation_velocity": combat.get("navigation_desired_velocity", Vector3.ZERO),
 		"safe_navigation_velocity": combat.get("navigation_safe_velocity", Vector3.ZERO),
 		"safe_velocity_ready": combat.get("navigation_safe_velocity_ready", false),
+		"safe_velocity_receipt_frame": combat.get("navigation_safe_velocity_receipt_frame", -1),
+		"safe_velocity_consumed_frame": combat.get("navigation_safe_velocity_consumed_frame", -1),
+		"safe_velocity_consumption_count": combat.get("navigation_safe_velocity_consumption_count", 0),
+		"safe_velocity_callback_count": _safe_velocity_callback_count,
+		"safe_velocity_duplicate_callback_count": _safe_velocity_duplicate_callback_count,
+		"peer_cache": get_parent().call(&"peer_cache_receipt") if get_parent() != null and get_parent().has_method(&"peer_cache_receipt") else {},
 		"reservation": _route_reservation.duplicate(true),
 		"stalled_seconds": _stalled_seconds,
 		"progress_watchdog_count": _progress_watchdog_count,
@@ -736,8 +741,14 @@ func _submit_navigation_velocity(desired_velocity: Vector3) -> void:
 
 func _on_navigation_velocity_computed(safe_velocity: Vector3) -> void:
 	# Exactly one separation pass is consumed for each server avoidance receipt.
+	var physics_frame := Engine.get_physics_frames()
+	if _navigation_safe_velocity_ready and _navigation_safe_velocity_receipt_frame == physics_frame:
+		_safe_velocity_duplicate_callback_count += 1
+		return
 	_navigation_safe_velocity = _separation_safe_velocity(safe_velocity)
 	_navigation_safe_velocity_ready = true
+	_navigation_safe_velocity_receipt_frame = physics_frame
+	_safe_velocity_callback_count += 1
 	_reserve_route_window(_navigation_safe_velocity)
 
 
@@ -774,15 +785,10 @@ func _separation_safe_velocity(candidate: Vector3) -> Vector3:
 
 
 func _ordered_active_peers() -> Array[Node]:
-	var physics_frame := Engine.get_physics_frames()
-	if _ordered_peer_cache_frame != physics_frame:
-		_ordered_peer_cache_frame = physics_frame
-		_ordered_peer_cache = get_tree().get_nodes_in_group(&"fusepoint_enemy")
-		_ordered_peer_cache.sort_custom(
-			func(a: Node, b: Node) -> bool:
-				return String(a.get("stable_id")) < String(b.get("stable_id"))
-		)
-	return _ordered_peer_cache
+	var roster := get_parent()
+	if roster != null and roster.has_method(&"ordered_peer_cache"):
+		return roster.call(&"ordered_peer_cache") as Array[Node]
+	return []
 
 
 func _deterministic_separation_axis(peer: FusepointEnemyAgent) -> Vector3:
@@ -972,6 +978,53 @@ func _mcp_state() -> Dictionary:
 	var inspection: Dictionary = snapshot.get("inspection_state", {})
 	return {
 		"actor_id": stable_id,
+		"presentation_state": {
+			"skin": (snapshot.get("presentation", {}) as Dictionary).get("skin_id", ""),
+			"library": (snapshot.get("presentation", {}) as Dictionary).get("animation_library", ""),
+			"clip": snapshot.get("animation_name", ""),
+			"semantic": snapshot.get("animation_semantic", &""),
+			"playback_time": snapshot.get("animation_position_seconds", 0.0),
+			"normalized_time": snapshot.get("animation_normalized_time", 0.0),
+			"playing": snapshot.get("animation_playing", false),
+			"weapon_family": snapshot.get("weapon_family", &"unbound"),
+			"weapon_family_compatible": snapshot.get("weapon_family_compatible", false),
+			"weapon_socket_bound": snapshot.get("weapon_socket_bound", false),
+			"weapon_attached": snapshot.get("weapon_attached", false),
+			"root_upright": snapshot.get("root_upright", false),
+			"action_progress": snapshot.get("rifle_action_progress", 0.0),
+		},
+		"combat_correlation": {
+			"action": snapshot.get("action", &"idle"),
+			"velocity": snapshot.get("velocity", Vector3.ZERO),
+			"safe_velocity_ready": snapshot.get("safe_velocity_ready", false),
+			"safe_velocity_receipt_frame": snapshot.get("safe_velocity_receipt_frame", -1),
+			"safe_velocity_consumed_frame": snapshot.get("safe_velocity_consumed_frame", -1),
+			"safe_velocity_consumption_count": snapshot.get("safe_velocity_consumption_count", 0),
+			"safe_velocity_callback_count": snapshot.get("safe_velocity_callback_count", 0),
+			"safe_velocity_duplicate_callback_count": snapshot.get("safe_velocity_duplicate_callback_count", 0),
+			"peer_cache": snapshot.get("peer_cache", {}),
+			"shot_id": snapshot.get("shot_event_id", ""),
+			"shot_result": (snapshot.get("last_event", {}) as Dictionary).get("payload", {}).get("result", &"none") if snapshot.get("last_event", {}) is Dictionary else &"none",
+			"ammo": snapshot.get("ammo", 0),
+			"last_attack": (snapshot.get("shot_causality", {}) as Dictionary).duplicate(true),
+		},
+		"presentation_correlation": {
+			"skin": (snapshot.get("presentation", {}) as Dictionary).get("skin_id", ""),
+			"library": (snapshot.get("presentation", {}) as Dictionary).get("animation_library", ""),
+			"clip": snapshot.get("animation_name", ""),
+			"semantic": snapshot.get("animation_semantic", &""),
+			"playback_time": snapshot.get("animation_position_seconds", 0.0),
+			"normalized_time": snapshot.get("animation_normalized_time", 0.0),
+			"playing": snapshot.get("animation_playing", false),
+			"weapon_family": snapshot.get("weapon_family", &"unbound"),
+			"weapon_family_compatible": snapshot.get("weapon_family_compatible", false),
+			"weapon_socket_bound": snapshot.get("weapon_socket_bound", false),
+			"weapon_attached": snapshot.get("weapon_attached", false),
+			"root_upright": snapshot.get("root_upright", false),
+			"root_pitch_degrees": snapshot.get("root_pitch_degrees", 0.0),
+			"root_roll_degrees": snapshot.get("root_roll_degrees", 0.0),
+			"action_progress": snapshot.get("rifle_action_progress", 0.0),
+		},
 		"active": mission_active,
 		"alive": is_alive(),
 		"region": region_id,

@@ -166,6 +166,14 @@ tester_countdown_zero={
 "deadzone": 0.5,
 "events": []
 }
+tester_qualification_start={
+"deadzone": 0.5,
+"events": []
+}
+tester_qualification_stop={
+"deadzone": 0.5,
+"events": []
+}
 tester_alpha_checkpoint={
 "deadzone": 0.5,
 "events": []

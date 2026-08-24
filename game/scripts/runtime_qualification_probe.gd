@@ -61,6 +61,10 @@ var _combat_animation_history: Array[Dictionary] = []
 var _last_mission_state := &"unknown"
 var _last_mission_event_sequence := -1
 var _deep_observation_count := 0
+var _qualification_enabled := false
+var _observation_mode := &"ordinary_bounded"
+var _observation_epoch := 0
+var _last_observation_receipt: Dictionary = {}
 
 
 func _ready() -> void:
@@ -71,10 +75,46 @@ func _ready() -> void:
 	# in the scene-ready traversal. The first process tick observes them only
 	# after that traversal is complete.
 	_counter_refresh_remaining = 0.0
+	set_process(false)
+	set_process_input(true)
+
+
+func _input(event: InputEvent) -> void:
+	if not OS.is_debug_build():
+		return
+	if event.is_action_pressed(&"tester_qualification_start"):
+		set_qualification_enabled(true, &"tester_input")
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed(&"tester_qualification_stop"):
+		set_qualification_enabled(false, &"tester_input")
+		get_viewport().set_input_as_handled()
+
+
+func set_qualification_enabled(enabled: bool, source: StringName = &"tester_control") -> Dictionary:
+	_observation_epoch += 1
+	_qualification_enabled = enabled
+	_observation_mode = &"deep_qualification" if enabled else &"ordinary_bounded"
+	if enabled:
+		_counter_refresh_remaining = 0.0
+		_combat_sample_remaining = 0.0
+	set_process(enabled)
+	_last_observation_receipt = {
+		"event_id": "qualification-observation-%06d" % _observation_epoch,
+		"requested": true,
+		"resolved": true,
+		"accepted": OS.is_debug_build(),
+		"enabled": enabled,
+		"mode": _observation_mode,
+		"source": source,
+		"release_guard": &"OS.is_debug_build",
+		"process_frame": Engine.get_process_frames(),
+		"physics_frame": Engine.get_physics_frames(),
+	}
+	return _last_observation_receipt.duplicate(true)
 
 
 func _process(delta: float) -> void:
-	if delta <= 0.0:
+	if not _qualification_enabled or delta <= 0.0:
 		return
 	var mission_state: Dictionary = mission.call(&"_mcp_state")
 	var observed_epoch := int(mission_state.get("run_epoch", 0))
@@ -605,6 +645,17 @@ func qualification_snapshot() -> Dictionary:
 		"schema_version": 4,
 		"presentation_neutral": true,
 		"mutates_gameplay_authority": false,
+		"observation_control": {
+			"enabled": _qualification_enabled,
+			"mode": _observation_mode,
+			"epoch": _observation_epoch,
+			"last_receipt": _last_observation_receipt,
+			"ordinary_process_enabled": is_processing() and not _qualification_enabled,
+			"deep_inspection_per_frame_in_ordinary_play": false,
+			"start_action": &"tester_qualification_start",
+			"stop_action": &"tester_qualification_stop",
+			"release_guard": &"OS.is_debug_build",
+		},
 		"target_resolution": TARGET_RESOLUTION,
 		"target_resolution_source": &"configured_qualification_target",
 		"observed_viewport": _observed_viewport,

@@ -42,10 +42,11 @@ const SKINS := {
 	},
 }
 const STATE_CLIPS := {
-	# UAL does not contain third-person rifle-named actions. AIM/FIRE/RELOAD use
-	# one neutral two-hand rail base pose and product-owned rifle overlays below;
-	# no pistol, spell, interaction, prone, hit, or death clip is relabeled.
-	MotionState.IDLE: {"library": "ual1", "clip": "Idle", "loop": true},
+	# Restore the component's last stable authored combat presentation. The UAL
+	# package has no rifle-authored state set, so these retain their truthful
+	# pistol source identity and keep the rifle-binding issue open instead of
+	# relabeling one neutral rail loop as aim, fire, and reload.
+	MotionState.IDLE: {"library": "ual1", "clip": "Pistol_Idle", "loop": true},
 	MotionState.WALK: {"library": "ual1", "clip": "Walk", "loop": true},
 	MotionState.RUN: {"library": "ual1", "clip": "Jog_Fwd", "loop": true},
 	MotionState.CROUCH_IDLE: {"library": "ual1", "clip": "Crouch_Idle", "loop": true},
@@ -53,9 +54,9 @@ const STATE_CLIPS := {
 	MotionState.JUMP_START: {"library": "ual1", "clip": "Jump_Start", "loop": false},
 	MotionState.AIRBORNE: {"library": "ual1", "clip": "Jump", "loop": true},
 	MotionState.LAND: {"library": "ual1", "clip": "Jump_Land", "loop": false},
-	MotionState.AIM: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
-	MotionState.FIRE: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
-	MotionState.RELOAD: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
+	MotionState.AIM: {"library": "ual1", "clip": "Pistol_Aim_Neutral", "loop": true},
+	MotionState.FIRE: {"library": "ual1", "clip": "Pistol_Shoot", "loop": false},
+	MotionState.RELOAD: {"library": "ual1", "clip": "Pistol_Reload", "loop": false},
 	# A regular bullet hit should read as a short flinch, not a full-body
 	# knockback. Hit_Head gives the requested small head snap while preserving
 	# the actor's planted combat stance.
@@ -403,8 +404,6 @@ func _hips_translation_mode() -> String:
 
 func _apply_pose_and_ground() -> void:
 	_retargeter.apply_pose(_hips_translation_mode())
-	_apply_rifle_aim_overlay()
-	_apply_rifle_action_overlay()
 	_apply_ground_contact()
 
 
@@ -575,13 +574,8 @@ func get_component_state() -> Dictionary:
 		"animation_library": _active_library,
 		"mode": "clip_browser" if _custom_preview else "semantic_state",
 		"animation": _custom_clip if _custom_preview else String(STATE_CLIPS[current_state]["clip"]),
-		"animation_semantic": (
-			&"rifle_fire_overlay" if current_state == MotionState.FIRE
-			else &"rifle_reload_overlay" if current_state == MotionState.RELOAD
-			else &"rifle_two_hand_aim" if current_state == MotionState.AIM
-			else StringName(state_name())
-		),
-		"rifle_semantic_procedural": current_state in [MotionState.AIM, MotionState.FIRE, MotionState.RELOAD],
+		"animation_semantic": StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case()),
+		"rifle_semantic_procedural": false,
 		"rifle_action_progress": clampf(_rifle_action_elapsed / maxf(_rifle_action_duration, 0.001), 0.0, 1.0) if _rifle_action_duration > 0.0 else 0.0,
 		"rifle_action_duration_seconds": _rifle_action_duration,
 		"rifle_action_elapsed_seconds": _rifle_action_elapsed,
@@ -592,6 +586,7 @@ func get_component_state() -> Dictionary:
 		"animation_playing": player != null and player.is_playing(),
 		"weapon_family": WEAPON_FAMILY,
 		"weapon_family_compatible": "pistol" not in String(STATE_CLIPS[current_state]["clip"]).to_lower(),
+		"compatibility_disposition": &"pistol_source_restored_rifle_set_unavailable" if "pistol" in String(STATE_CLIPS[current_state]["clip"]).to_lower() else &"compatible_noncombat_source",
 		"aim_pitch_degrees": _aim_pitch_degrees,
 		"aim_pitch_serial": _aim_pitch_serial,
 		"presentation_adapter_rotation_degrees": rotation_degrees,

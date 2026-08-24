@@ -118,6 +118,9 @@ var _reload_remaining := 0.0
 var _attack_sequence := 0
 var _navigation_safe_velocity := Vector3.ZERO
 var _navigation_safe_velocity_ready := false
+var _navigation_safe_velocity_receipt_frame := -1
+var _navigation_safe_velocity_consumed_frame := -1
+var _navigation_safe_velocity_consumption_count := 0
 var _navigation_desired_velocity := Vector3.ZERO
 var _navigation_default_target_desired_distance := 0.0
 var _peer_observation_skip_count := 0
@@ -415,6 +418,9 @@ func snapshot() -> Dictionary:
 		"navigation_safe_velocity": _navigation_safe_velocity,
 		"navigation_desired_velocity": _navigation_desired_velocity,
 		"navigation_safe_velocity_ready": _navigation_safe_velocity_ready,
+		"navigation_safe_velocity_receipt_frame": _navigation_safe_velocity_receipt_frame,
+		"navigation_safe_velocity_consumed_frame": _navigation_safe_velocity_consumed_frame,
+		"navigation_safe_velocity_consumption_count": _navigation_safe_velocity_consumption_count,
 		"engagement_slot_index": _engagement_slot_index,
 		"engagement_slot_position": _engagement_destination(),
 		"engagement_projection_rejection": _engagement_projection_rejection,
@@ -455,6 +461,8 @@ func reset_volatile_combat_state_for_restore() -> void:
 	_navigation_safe_velocity = Vector3.ZERO
 	_navigation_desired_velocity = Vector3.ZERO
 	_navigation_safe_velocity_ready = false
+	_navigation_safe_velocity_receipt_frame = -1
+	_navigation_safe_velocity_consumed_frame = -1
 	_release_cover()
 	_evade_remaining = 0.0
 	_evade_destination = Vector3.ZERO
@@ -890,6 +898,9 @@ func _submit_navigation_velocity(desired_velocity: Vector3) -> void:
 	if _navigation_safe_velocity_ready:
 		velocity.x = _navigation_safe_velocity.x
 		velocity.z = _navigation_safe_velocity.z
+		_navigation_safe_velocity_ready = false
+		_navigation_safe_velocity_consumed_frame = Engine.get_physics_frames()
+		_navigation_safe_velocity_consumption_count += 1
 	else:
 		velocity.x = 0.0
 		velocity.z = 0.0
@@ -1226,7 +1237,13 @@ func _perform_attack() -> Dictionary:
 	var shot_direction := shot_origin.direction_to(shot_endpoint)
 	var trace := _resolve_attack_trace(shot_origin, shot_endpoint)
 	var result := StringName(trace.get("result", &"miss"))
+	var receiver_path := String(_target_health.get_path()) if _target_health != null and is_instance_valid(_target_health) and _target_health.is_inside_tree() else ""
+	var receiver_type := StringName(_target_health.get_class()) if _target_health != null and is_instance_valid(_target_health) else &"none"
+	if _target_health != null and _target_health.has_method(&"apply_damage") and not _target_health is FPSHealth:
+		receiver_type = &"PrototypePlayer"
+	var receiver_health_before := float(_target_health.get("current_health")) if _target_health is FPSHealth else float(_target_health.get("health")) if _target_health != null and "health" in _target_health else -1.0
 	var report := {
+		"event_id": shot_id,
 		"shot_id": shot_id,
 		"run_epoch": run_epoch,
 		"source_team": attack_team,
@@ -1245,6 +1262,10 @@ func _perform_attack() -> Dictionary:
 		"ammo_after": rounds_remaining,
 		"ammo_commit": 1,
 		"target_path": String(target.get_path()) if target != null else "",
+		"receiver_path": receiver_path,
+		"receiver_type": receiver_type,
+		"health_before": receiver_health_before,
+		"health_authority": &"FPSHealth" if _target_health is FPSHealth else &"PrototypePlayer.health" if receiver_type == &"PrototypePlayer" else &"none",
 		"applied": false,
 		"reason": "resolved_%s" % String(result),
 	}
@@ -1262,6 +1283,11 @@ func _perform_attack() -> Dictionary:
 		report["ammo_before"] = rounds_remaining + 1
 		report["ammo_after"] = rounds_remaining
 		report["ammo_commit"] = 1
+		report["event_id"] = shot_id
+		report["shot_id"] = shot_id
+		report["receiver_path"] = receiver_path
+		report["receiver_type"] = receiver_type
+		report["health_authority"] = &"FPSHealth" if _target_health is FPSHealth else &"PrototypePlayer.health"
 	last_attack_report = report
 	attack_resolved.emit(report)
 	return report
@@ -1375,6 +1401,7 @@ func _face_target(delta: float) -> void:
 func _on_navigation_velocity_computed(safe_velocity: Vector3) -> void:
 	_navigation_safe_velocity = safe_velocity
 	_navigation_safe_velocity_ready = true
+	_navigation_safe_velocity_receipt_frame = Engine.get_physics_frames()
 
 
 func _face_direction(direction: Vector3, delta: float) -> void:

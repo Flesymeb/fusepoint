@@ -66,6 +66,9 @@ var health := 100.0
 var _damage_serial := 0
 var _damage_commits: Dictionary = {}
 var _last_damage_event: Dictionary = {}
+var _damage_attempt_serial := 0
+var _last_damage_attempt: Dictionary = {}
+var _damage_attempt_history: Array[Dictionary] = []
 var gameplay_input_enabled := true
 var terminal_locked := false
 var terminal_event_id := ""
@@ -791,6 +794,8 @@ func _reset_to_spawn(source: StringName = &"mission_setup") -> void:
 	health = max_health
 	_damage_commits.clear()
 	_last_damage_event.clear()
+	_last_damage_attempt.clear()
+	_damage_attempt_history.clear()
 	_last_stuck_diagnostic.clear()
 	_blocked_seconds = 0.0
 	_set_stance(false)
@@ -876,6 +881,8 @@ func tester_relocate_for_fixture(target_transform: Transform3D, fixture_id: Stri
 func reset_transient_state_for_restore() -> void:
 	_damage_commits.clear()
 	_last_damage_event.clear()
+	_last_damage_attempt.clear()
+	_damage_attempt_history.clear()
 	terminal_locked = false
 	terminal_event_id = ""
 	velocity = Vector3.ZERO
@@ -1007,16 +1014,32 @@ func apply_authoritative_damage(amount: float, damage_event_id := "", metadata: 
 func apply_damage(amount: float, event: Dictionary = {}) -> Dictionary:
 	var report := event.duplicate(true)
 	var damage_event_id := String(report.get("event_id", report.get("shot_id", "")))
+	var health_before := health
+	var duplicate_before := _damage_commits.has(damage_event_id) if not damage_event_id.is_empty() else false
 	var applied := apply_authoritative_damage(amount, damage_event_id, report)
 	if applied:
 		report.merge(_last_damage_event, true)
+	_damage_attempt_serial += 1
+	report["event_id"] = damage_event_id if not damage_event_id.is_empty() else String(_last_damage_event.get("event_id", ""))
+	report["shot_id"] = String(report.get("shot_id", report["event_id"]))
 	report["amount"] = amount
+	report["health_before"] = health_before
 	report["health_after"] = health
 	report["max_health"] = max_health
 	report["applied"] = applied
 	report["hit"] = applied
 	report["killed"] = health <= 0.0
-	report["reason"] = "applied" if applied else "duplicate_or_dead"
+	report["reason"] = "applied" if applied else "duplicate_event" if duplicate_before else "dead_or_rejected"
+	report["receiver_path"] = String(get_path()) if is_inside_tree() else ""
+	report["receiver_type"] = &"PrototypePlayer"
+	report["health_authority"] = &"PrototypePlayer.health"
+	report["damage_commit_count"] = _damage_commits.size()
+	report["restore_epoch"] = restore_epoch
+	report["attempt_serial"] = _damage_attempt_serial
+	_last_damage_attempt = report.duplicate(true)
+	_damage_attempt_history.append(_last_damage_attempt)
+	while _damage_attempt_history.size() > 12:
+		_damage_attempt_history.pop_front()
 	return report
 
 
@@ -1088,6 +1111,19 @@ func _mcp_state() -> Dictionary:
 	var camera_ready := camera != null
 	var collision_ready := collision_shape != null and collision_shape.shape is CapsuleShape3D
 	return {
+		"damage_state": {
+			"health": health,
+			"max_health": max_health,
+			"commit_count": _damage_commits.size(),
+			"last_event": _last_damage_event,
+			"last_attempt": _last_damage_attempt,
+			"receiver_path": String(get_path()) if is_inside_tree() else "",
+			"receiver_type": &"PrototypePlayer",
+			"health_authority": &"PrototypePlayer.health",
+			"event_id_deduplication": true,
+			"restore_epoch": restore_epoch,
+			"combat_death_locked": combat_death_locked,
+		},
 		"axis_change_receipt": _last_look_receipt,
 		"position": global_position,
 		"velocity": velocity,
@@ -1144,6 +1180,16 @@ func _mcp_state() -> Dictionary:
 		"max_health": max_health,
 		"damage_commit_count": _damage_commits.size(),
 		"last_damage_event": _last_damage_event,
+		"last_damage_attempt": _last_damage_attempt,
+		"damage_attempt_history": _damage_attempt_history.duplicate(true),
+		"damage_receiver_contract": {
+			"receiver_path": String(get_path()) if is_inside_tree() else "",
+			"receiver_type": &"PrototypePlayer",
+			"method": &"apply_damage",
+			"health_authority": &"PrototypePlayer.health",
+			"event_id_deduplication": true,
+			"restore_epoch": restore_epoch,
+		},
 		"gameplay_input_enabled": gameplay_input_enabled,
 		"terminal_locked": terminal_locked,
 		"terminal_event_id": terminal_event_id,
