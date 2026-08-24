@@ -30,6 +30,8 @@ const REGION_COMBAT_PROFILES := {
 }
 
 static var _route_reservations: Dictionary = {}
+static var _ordered_peer_cache_frame := -1
+static var _ordered_peer_cache: Array[Node] = []
 
 @export var stable_id: StringName = &"enemy-unconfigured"
 @export var region_id: StringName = &"alpha"
@@ -726,17 +728,14 @@ func _on_enemy_died(event: Dictionary) -> void:
 func _submit_navigation_velocity(desired_velocity: Vector3) -> void:
 	_cleanup_route_reservations()
 	_navigation_desired_velocity = Vector3(desired_velocity.x, 0.0, desired_velocity.z)
-	var admitted_velocity := _separation_safe_velocity(desired_velocity)
-	_reserve_route_window(admitted_velocity)
-	super._submit_navigation_velocity(admitted_velocity)
-	# The parent consumes the last NavigationServer receipt. Apply the same
-	# admission rule to that receipt before CharacterBody3D moves this frame.
-	var admitted_safe := _separation_safe_velocity(Vector3(velocity.x, 0.0, velocity.z))
-	velocity.x = admitted_safe.x
-	velocity.z = admitted_safe.z
+	# The NavigationServer callback is the single avoidance/separation admission
+	# point. The parent consumes the previously admitted receipt while this
+	# desired velocity is evaluated for the next physics boundary.
+	super._submit_navigation_velocity(_navigation_desired_velocity)
 
 
 func _on_navigation_velocity_computed(safe_velocity: Vector3) -> void:
+	# Exactly one separation pass is consumed for each server avoidance receipt.
 	_navigation_safe_velocity = _separation_safe_velocity(safe_velocity)
 	_navigation_safe_velocity_ready = true
 	_reserve_route_window(_navigation_safe_velocity)
@@ -744,9 +743,7 @@ func _on_navigation_velocity_computed(safe_velocity: Vector3) -> void:
 
 func _separation_safe_velocity(candidate: Vector3) -> Vector3:
 	var admitted := Vector3(candidate.x, 0.0, candidate.z)
-	var peers: Array[Node] = get_tree().get_nodes_in_group(&"fusepoint_enemy")
-	peers.sort_custom(func(a: Node, b: Node) -> bool: return String(a.get("stable_id")) < String(b.get("stable_id")))
-	for peer_node: Node in peers:
+	for peer_node: Node in _ordered_active_peers():
 		if peer_node == self or not peer_node is FusepointEnemyAgent:
 			continue
 		var peer := peer_node as FusepointEnemyAgent
@@ -774,6 +771,18 @@ func _separation_safe_velocity(candidate: Vector3) -> Vector3:
 			admitted += away * recovery_speed
 	admitted.y = 0.0
 	return admitted.limit_length(move_speed)
+
+
+func _ordered_active_peers() -> Array[Node]:
+	var physics_frame := Engine.get_physics_frames()
+	if _ordered_peer_cache_frame != physics_frame:
+		_ordered_peer_cache_frame = physics_frame
+		_ordered_peer_cache = get_tree().get_nodes_in_group(&"fusepoint_enemy")
+		_ordered_peer_cache.sort_custom(
+			func(a: Node, b: Node) -> bool:
+				return String(a.get("stable_id")) < String(b.get("stable_id"))
+		)
+	return _ordered_peer_cache
 
 
 func _deterministic_separation_axis(peer: FusepointEnemyAgent) -> Vector3:

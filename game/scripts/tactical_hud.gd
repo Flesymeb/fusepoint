@@ -4,9 +4,10 @@ extends CanvasLayer
 signal combat_row_presented(receipt: Dictionary)
 
 const DEPLOYMENT_STORY_CUES: Array[String] = [
-	"11:40 — Kestrel Ridge. Rift Front signals are active inside the perimeter.",
-	"A timed device is armed in the Sector C rocket bay. Support is not coming.",
-	"Retake Alpha, secure Bravo, then use both keys to breach Charlie.",
+	"11:40 — Kestrel Ridge. Rift Front inside.",
+	"Sector C bomb armed. Support unavailable.",
+	"You are the only EOD operator on site.",
+	"Retake Alpha. Secure Bravo. Defuse Charlie.",
 ]
 const SAFE_AREA_RATIO := 0.05
 const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v3_priority_lanes"
@@ -494,9 +495,9 @@ func _on_mission_event(event: Dictionary) -> void:
 		var payload: Dictionary = event.get("payload", {})
 		var objective_id := StringName(payload.get("objective_id", &""))
 		if objective_id == &"alpha":
-			_begin_story_cues(["Alpha is secure. Defusal key one is live — move to Bravo."], String(event.get("event_id", "alpha_handoff")))
+			_begin_story_cues(["Alpha secure. Key one live. Move to Bravo."], String(event.get("event_id", "alpha_handoff")))
 		elif objective_id == &"bravo":
-			_begin_story_cues(["Bravo is secure. Both keys are live — breach the Charlie rocket bay."], String(event.get("event_id", "bravo_handoff")))
+			_begin_story_cues(["Bravo secure. Both keys live. Breach Charlie."], String(event.get("event_id", "bravo_handoff")))
 	var important := kind in COMBAT_FEED_ALLOWED_KINDS
 	if important:
 		_push_combat_row(_row_receipt(event))

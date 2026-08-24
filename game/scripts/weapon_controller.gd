@@ -8,9 +8,6 @@ const WEAPON_ORDER: Array[StringName] = [&"ak74m", &"saiga12"]
 const FIRE_MODE_SEMI := &"SEMI"
 const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
-const AK74_PRODUCT_FRAME_OFFSET := Vector3(0.0, 0.12, 0.0)
-const AK74_PRODUCT_FRAME_SCALE := Vector3.ONE * 0.88
-const AUTO_SUSTAIN_ARM_SECONDS := 0.24
 
 @export_node_path("Camera3D") var camera_path: NodePath
 @export_node_path("Node3D") var viewmodel_path: NodePath
@@ -71,10 +68,12 @@ var _active_fire_press_time_usec := 0
 var _active_fire_press_started_combat_seconds := 0.0
 var _active_fire_press_shot_count := 0
 var _active_fire_continuation_authorized := false
+var _auto_continuation_confirmation_pending := false
 var _input_edge_serial := 0
 var _last_input_receipt: Dictionary = {}
 var _input_history: Array[Dictionary] = []
 var _combat_clock_seconds := 0.0
+var _last_input_pump_delta_seconds := 0.0
 var _restore_epoch := 0
 var _transient_reset_complete := false
 var _last_restore_receipt: Dictionary = {}
@@ -94,8 +93,6 @@ var _product_recoil_phase := &"settled"
 var _product_recoil_shot_serial := 0
 var _product_recoil_peak_serial := 0
 var _product_recoil_recovery_complete := true
-var _product_framing_position := Vector3.ZERO
-var _product_framing_scale := Vector3.ONE
 var _run_epoch := 0
 var _last_run_epoch_receipt: Dictionary = {}
 var _report_serial := 0
@@ -131,7 +128,6 @@ func _ready() -> void:
 
 func _finish_ready() -> void:
 	await get_tree().process_frame
-	_apply_product_framing()
 	_capture_product_recoil_baseline(true)
 	_ready_for_combat = true
 	_sync_hud()
@@ -207,15 +203,17 @@ func _record_ads_edge(source: StringName, edge: StringName, accepted: bool, reas
 		_ads_history.pop_front()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if not _ready_for_combat:
 		return
+	_last_input_pump_delta_seconds = maxf(delta, 0.0)
 	_drain_fire_edges()
 	if not gameplay_input_enabled:
 		_sync_hud()
 		return
 	var now := _now()
 	_authorize_auto_continuation_after_input_pump(now)
+	_schedule_auto_continuation()
 	if _action_state == &"reload" and now >= _action_until:
 		_commit_reload()
 	elif _action_state == &"inspect" and now >= _action_until:
@@ -238,8 +236,39 @@ func _physics_process(delta: float) -> void:
 	if gameplay_input_enabled:
 		_combat_clock_seconds += maxf(delta, 0.0)
 	_drain_fire_edges()
-	if gameplay_input_enabled:
-		_schedule_auto_continuation()
+
+
+func _authorize_auto_continuation_after_input_pump(now: float) -> void:
+	if _active_fire_continuation_authorized or _auto_continuation_confirmation_pending:
+		return
+	if not _trigger_held or not _observed_fire_down or _active_fire_press_edge_id.is_empty():
+		return
+	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or now < _next_shot_time:
+		return
+	var adaptive_confirmation_seconds := maxf(
+		_fire_interval(),
+		_last_input_pump_delta_seconds * 1.25,
+	)
+	if now - _active_fire_press_started_combat_seconds < adaptive_confirmation_seconds:
+		return
+	# Defer the final level check to the end of this input pump. The MCP bridge
+	# and native window backend may deliver a scheduled release later in the same
+	# process frame on a slow renderer; the deferred check gives that ordered
+	# release precedence without adding a gameplay-time/audio delay to real AUTO.
+	_auto_continuation_confirmation_pending = true
+	call_deferred(&"_confirm_auto_continuation", _active_fire_press_edge_id)
+
+
+func _confirm_auto_continuation(press_edge_id: String) -> void:
+	_auto_continuation_confirmation_pending = false
+	if press_edge_id.is_empty() or press_edge_id != _active_fire_press_edge_id:
+		return
+	if not _trigger_held or not _observed_fire_down or not gameplay_input_enabled:
+		return
+	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or _now() < _next_shot_time:
+		return
+	_active_fire_continuation_authorized = true
+	_schedule_auto_continuation()
 
 
 func _schedule_auto_continuation() -> void:
@@ -252,25 +281,6 @@ func _schedule_auto_continuation() -> void:
 			break
 		_next_shot_time += _fire_interval()
 		scheduled_shots += 1
-
-
-func _authorize_auto_continuation_after_input_pump(now: float) -> void:
-	if _active_fire_continuation_authorized:
-		return
-	if not _trigger_held or not _observed_fire_down or _active_fire_press_edge_id.is_empty():
-		return
-	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or now < _next_shot_time:
-		return
-	# Keep the first shot immediate, but do not turn a short AUTO tap into a
-	# cadence stream when a slow render/input pump delivers its release late.
-	# Once armed, subsequent commits still use the authored RPM interval.
-	if now - _active_fire_press_started_combat_seconds < AUTO_SUSTAIN_ARM_SECONDS:
-		return
-	# A quick press can cross cadence inside several physics ticks before its
-	# queued release is delivered by the next render input pump. Requiring this
-	# later pump to observe the same generation still down distinguishes a real
-	# hold from a sub-cadence tap without sampling a new press authority.
-	_active_fire_continuation_authorized = true
 
 
 func _observe_fire_transition(pressed: bool, source: StringName, captured_at_usec := 0) -> void:
@@ -337,6 +347,7 @@ func _begin_fire(source := &"mapped_action", edge_id := "", captured_at_usec := 
 	_active_fire_press_started_combat_seconds = _now()
 	_active_fire_press_shot_count = 0
 	_active_fire_continuation_authorized = false
+	_auto_continuation_confirmation_pending = false
 	var receipt := _try_submit_shot()
 	_next_shot_time = _now() + _fire_interval()
 	if _current_weapon()["fire_mode"] == FIRE_MODE_SEMI:
@@ -364,6 +375,7 @@ func _end_fire(source := &"mapped_action", cancellation_reason := "release", edg
 	_active_fire_press_started_combat_seconds = 0.0
 	_active_fire_press_shot_count = 0
 	_active_fire_continuation_authorized = false
+	_auto_continuation_confirmation_pending = false
 	if cancellation_reason == "release":
 		var magazine := int(_current_weapon()["magazine"])
 		_record_input_edge(source, &"release", was_held or not _observed_fire_down, "released", "", magazine, magazine, "", edge_id)
@@ -564,7 +576,6 @@ func _commit_reload() -> void:
 	_weapons[_equipped_id] = weapon
 	_reload_kind = &"none"
 	_action_state = &"ads" if _ads_held else &"hip"
-	_apply_product_framing()
 	_request_viewmodel_aim(_ads_held)
 	viewmodel.call(&"play_clip", &"idle")
 	weapon_state_changed.emit(_mcp_state())
@@ -624,7 +635,6 @@ func _equip_weapon(weapon_id: StringName) -> void:
 func _on_viewmodel_weapon_changed(weapon_id: StringName, _weapon_index: int) -> void:
 	_cancel_product_recoil()
 	_equipped_id = weapon_id
-	_apply_product_framing()
 	_capture_product_recoil_baseline(true)
 	_pending_equipped_id = &""
 	_action_state = &"hip"
@@ -666,7 +676,6 @@ func _cancel_action(next_state: StringName) -> void:
 	_stop_weapon_feedback_only()
 	_cancel_product_recoil()
 	viewmodel.rotation_degrees = Vector3.ZERO
-	_apply_product_framing()
 	_request_viewmodel_aim(false, true)
 	_action_state = next_state
 
@@ -776,21 +785,6 @@ func _capture_product_recoil_baseline(force := false) -> bool:
 		_product_recoil_mount = mount
 		_product_recoil_baseline_position = mount.position
 		_product_recoil_baseline_rotation_degrees = mount.rotation_degrees
-	return true
-
-
-func _apply_product_framing() -> bool:
-	## Product-owned whole-package framing. The materialized profile, imported
-	## gun, hands, skeleton, meshes, animations and authored child transforms stay
-	## untouched; only their common ModelMount receives this additive crop offset.
-	var mount := viewmodel.get("model_mount") as Node3D
-	if mount == null:
-		return false
-	_product_framing_position = AK74_PRODUCT_FRAME_OFFSET if _equipped_id == &"ak74m" else Vector3.ZERO
-	_product_framing_scale = AK74_PRODUCT_FRAME_SCALE if _equipped_id == &"ak74m" else Vector3.ONE
-	mount.position = _product_framing_position
-	mount.rotation_degrees = Vector3.ZERO
-	mount.scale = _product_framing_scale
 	return true
 
 
@@ -928,7 +922,6 @@ func equip_loadout(weapon_id: StringName) -> bool:
 		return false
 	_equipped_id = weapon_id
 	_pending_equipped_id = &""
-	_apply_product_framing()
 	_capture_product_recoil_baseline(true)
 	weapon_state_changed.emit(_mcp_state())
 	return true
@@ -1138,6 +1131,7 @@ func reset_transient_state_for_restore() -> void:
 	_active_fire_press_started_combat_seconds = 0.0
 	_active_fire_press_shot_count = 0
 	_active_fire_continuation_authorized = false
+	_auto_continuation_confirmation_pending = false
 	_shot_commits.clear()
 	_shot_history.clear()
 	_last_shot.clear()
@@ -1449,6 +1443,7 @@ func _cancel_held_fire(reason: String) -> void:
 	_active_fire_press_time_usec = 0
 	_active_fire_press_shot_count = 0
 	_active_fire_continuation_authorized = false
+	_auto_continuation_confirmation_pending = false
 
 
 func _stop_fire_report(reason: StringName, stop_single_transient: bool) -> void:
@@ -1577,7 +1572,7 @@ func _mcp_state() -> Dictionary:
 			"trigger_held": _trigger_held,
 			"queued_release_precedence": true,
 			"raw_release_vetoes_continuation": true,
-			"render_confirmed_hold": _active_fire_continuation_authorized,
+			"ballistic_cadence_authorized": _active_fire_continuation_authorized,
 			"shot_count": _shot_serial,
 			"magazine": weapon.get("magazine", 0),
 			"last_shot_id": _last_shot.get("shot_id", ""),
@@ -1683,10 +1678,9 @@ func _mcp_state() -> Dictionary:
 		"recoil_baseline_position_error": recoil.get("baseline_position_error", 0.0),
 		"recoil_baseline_rotation_error_degrees": recoil.get("baseline_rotation_error_degrees", 0.0),
 		"recoil_recovery_complete": recoil.get("recovery_complete", true),
-		"product_framing": {
-			"owner": get_path(),
-			"whole_package_offset": _product_framing_position,
-			"whole_package_scale": _product_framing_scale,
+		"viewmodel_profile_authority": {
+			"owner": viewmodel.get_path(),
+			"product_mount_override_present": false,
 			"source_axis_untouched": true,
 			"profile_resource_untouched": true,
 		},
@@ -1698,6 +1692,7 @@ func _mcp_state() -> Dictionary:
 		"saiga12_state": _weapons[&"saiga12"],
 		"queued_fire_edge_count": _fire_edge_queue.size(),
 		"combat_clock_seconds": _combat_clock_seconds,
+		"last_input_pump_delta_seconds": _last_input_pump_delta_seconds,
 		"fire_edge_authority": &"normalized_raw_input_events",
 		"active_fire_source": _active_fire_source,
 		"active_fire_press_time_usec": _active_fire_press_time_usec,

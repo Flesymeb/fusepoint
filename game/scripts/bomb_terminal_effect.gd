@@ -58,9 +58,12 @@ func play(event_id: String, authority_origin: Vector3, visible_origin: Vector3, 
 	flash_core.visible = true
 	flash_core.transparency = 0.0
 	var flash_tween := create_tween().set_parallel(true)
-	flash_tween.tween_property(flash_core, "scale", Vector3.ONE * 2.35, 0.14).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-	flash_tween.tween_property(flash_core, "transparency", 1.0, 0.18).set_delay(0.04)
-	flash_tween.chain().tween_callback(flash_core.set_visible.bind(false)).set_delay(0.04)
+	# The screen-space flash and local light carry the impact. Keep this world-space
+	# core small and translucent so a slow render frame can never expose an opaque
+	# sphere that obscures the authored scene.
+	flash_tween.tween_property(flash_core, "scale", Vector3.ONE * 0.72, 0.10).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	flash_tween.tween_property(flash_core, "transparency", 1.0, 0.10)
+	flash_tween.chain().tween_callback(flash_core.set_visible.bind(false)).set_delay(0.02)
 
 	pressure_wave.scale = Vector3.ONE * 0.04
 	pressure_wave.visible = true

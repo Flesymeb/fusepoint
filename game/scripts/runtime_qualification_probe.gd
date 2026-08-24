@@ -9,7 +9,8 @@ const RAW_TAIL_SIZE := 240
 const RAW_PAGE_SIZE := 240
 const CYCLE_HISTORY_LIMIT := 3
 const LOW_FPS_FRAME_MS := 1000.0 / 45.0
-const COMBAT_SAMPLE_INTERVAL := 0.1
+const DEEP_OBSERVATION_INTERVAL := 2.0
+const COMBAT_SAMPLE_INTERVAL := 1.0
 const COMBAT_HISTORY_LIMIT := 24
 const TARGET_RESOLUTION := Vector2i(1920, 1080)
 
@@ -59,6 +60,7 @@ var _combat_sample_serial := 0
 var _combat_animation_history: Array[Dictionary] = []
 var _last_mission_state := &"unknown"
 var _last_mission_event_sequence := -1
+var _deep_observation_count := 0
 
 
 func _ready() -> void:
@@ -85,8 +87,9 @@ func _process(delta: float) -> void:
 	_record_sample(frame_ms, _phase_id(mission_state), _is_explosion_window(mission_state))
 	_counter_refresh_remaining -= delta
 	if _counter_refresh_remaining <= 0.0:
-		_counter_refresh_remaining = 0.5
+		_counter_refresh_remaining = DEEP_OBSERVATION_INTERVAL
 		_refresh_cleanup_counters()
+		_deep_observation_count += 1
 		_settle_cycle_cleanup_start()
 	_combat_sample_remaining -= delta
 	if _combat_sample_remaining <= 0.0:
@@ -641,6 +644,8 @@ func qualification_snapshot() -> Dictionary:
 			"presentation_neutral": true,
 			"production_bindings_only": true,
 			"mutates_mission_authority": false,
+			"deep_observation_interval_seconds": DEEP_OBSERVATION_INTERVAL,
+			"deep_observation_count": _deep_observation_count,
 			"sample_interval_seconds": COMBAT_SAMPLE_INTERVAL,
 			"sample_count": _combat_animation_history.size(),
 			"history": _combat_animation_history.duplicate(true),
