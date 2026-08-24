@@ -122,6 +122,13 @@ var _last_tester_setup_receipt: Dictionary = {}
 var _tester_setup_history: Array[Dictionary] = []
 var _death_recovery_cycle_serial := 0
 var _death_recovery_cycle_history: Array[Dictionary] = []
+var _queued_recovery_activation := false
+var _recovery_queue_serial := 0
+var _queued_recovery_activation_receipt: Dictionary = {}
+var _tester_opening_fallback_active := false
+var _tester_opening_fallback_generation := 0
+var _tester_opening_original_stream: VideoStream
+var _last_tester_opening_reset_receipt: Dictionary = {}
 
 
 func _ready() -> void:
@@ -139,6 +146,7 @@ func _ready() -> void:
 	settings_store.settings_applied.connect(_on_settings_applied)
 	root.resized.connect(_apply_responsive_layout)
 	briefing_video.finished.connect(_on_opening_video_finished)
+	briefing_video.loop = false
 	_assert_curated_menu_binding()
 	_set_gameplay_enabled(false)
 	_load_settings_controls()
@@ -450,6 +458,10 @@ func _input(event: InputEvent) -> void:
 		return
 	if event.is_action_pressed(&"tester_ui_scale_restore"):
 		_tester_apply_ui_scale(1.0, &"ui_scale_restore")
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_opening_fallback_prepare"):
+		_tester_prepare_opening_fallback()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed(&"tester_shell_death"):
@@ -778,6 +790,91 @@ func _tester_apply_ui_scale(scale: float, kind: StringName) -> void:
 	_store_tester_setup_receipt(receipt)
 
 
+func _tester_prepare_opening_fallback() -> void:
+	var receipt := _new_tester_setup_receipt(&"opening_missing_stream_fallback")
+	receipt["branch_id"] = &"opening_missing_stream_fallback"
+	receipt["setup_generation"] = _tester_opening_fallback_generation + 1
+	receipt["stream_bound_before"] = briefing_video.stream != null
+	receipt["source_state"] = app_state
+	receipt["mission_state_before"] = mission.get("mission_state")
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		_store_tester_setup_receipt(receipt)
+		return
+	if app_state in [STATE_GAMEPLAY, STATE_PAUSE, STATE_DEATH, STATE_RECOVERING, STATE_VICTORY, STATE_DETONATION, STATE_SUCCESS_RESULT, STATE_FAILURE_RESULT]:
+		receipt["failure_reason"] = &"blocking_predeployment_state_required"
+		_store_tester_setup_receipt(receipt)
+		return
+	if _tester_opening_fallback_active:
+		_restore_tester_opening_stream(&"superseded_prepare")
+	_tester_opening_fallback_generation += 1
+	_tester_opening_original_stream = briefing_video.stream
+	_tester_opening_fallback_active = true
+	briefing_video.stop()
+	briefing_video.stream = null
+	briefing_video.visible = false
+	var values := settings_store.snapshot()
+	values["ui_scale"] = 1.0
+	apply_accessibility_settings(values)
+	var routed := true
+	match app_state:
+		STATE_TITLE:
+			routed = _show_page(STATE_LOADOUT, &"tester_opening_fallback_route")
+			routed = routed and _show_page(STATE_LOADING, &"tester_opening_fallback_route")
+			routed = routed and _show_page(STATE_BRIEFING, &"tester_opening_fallback_route")
+		STATE_LOADOUT:
+			routed = _show_page(STATE_LOADING, &"tester_opening_fallback_route")
+			routed = routed and _show_page(STATE_BRIEFING, &"tester_opening_fallback_route")
+		STATE_LOADING:
+			_loading_remaining = 0.0
+			routed = _show_page(STATE_BRIEFING, &"tester_opening_fallback_route")
+		STATE_BRIEFING:
+			_start_briefing()
+		_:
+			routed = false
+	receipt.merge({
+		"resolved": routed and app_state == STATE_BRIEFING,
+		"accepted": routed and app_state == STATE_BRIEFING and _opening_media_status == &"matched_still_fallback" and is_equal_approx(_applied_ui_scale, 1.0),
+		"setup_generation": _tester_opening_fallback_generation,
+		"fallback_status": _opening_media_status,
+		"opening_stream_bound_after": briefing_video.stream != null,
+		"copy_visible": not ($Root/Pages/BriefingPage/Copy as Label).text.is_empty(),
+		"pause_disabled": ($Root/Pages/BriefingPage/Actions/PauseButton as Button).disabled,
+		"ui_scale_after": _applied_ui_scale,
+		"reset_isolation": {
+			"mission_state_unchanged": mission.get("mission_state") == receipt["mission_state_before"],
+			"stream_restorable": _tester_opening_original_stream != null,
+			"release_exports_unbound": true,
+			"ui_scale_restored_to_one": is_equal_approx(_applied_ui_scale, 1.0),
+		},
+		"failure_reason": &"" if routed and app_state == STATE_BRIEFING and _opening_media_status == &"matched_still_fallback" else &"fallback_route_failed",
+	}, true)
+	_store_tester_setup_receipt(receipt)
+
+
+func _restore_tester_opening_stream(reason: StringName) -> Dictionary:
+	if not _tester_opening_fallback_active:
+		return _last_tester_opening_reset_receipt.duplicate(true)
+	briefing_video.stream = _tester_opening_original_stream
+	briefing_video.loop = false
+	_tester_opening_fallback_active = false
+	_last_tester_opening_reset_receipt = {
+		"reset_id": "tester-opening-reset-%06d" % _tester_opening_fallback_generation,
+		"reason": reason,
+		"resolved": true,
+		"accepted": briefing_video.stream == _tester_opening_original_stream and is_equal_approx(_applied_ui_scale, 1.0),
+		"stream_restored": briefing_video.stream == _tester_opening_original_stream,
+		"stream_bound_after": briefing_video.stream != null,
+		"ui_scale_after": _applied_ui_scale,
+		"release_exports_unbound": true,
+	}
+	if StringName(_last_tester_setup_receipt.get("kind", &"")) == &"opening_missing_stream_fallback":
+		_last_tester_setup_receipt["reset_receipt"] = _last_tester_opening_reset_receipt.duplicate(true)
+		if not _tester_setup_history.is_empty():
+			_tester_setup_history[-1] = _last_tester_setup_receipt.duplicate(true)
+	return _last_tester_opening_reset_receipt.duplicate(true)
+
+
 func _tester_prepare_shell_death() -> void:
 	var receipt := _new_tester_setup_receipt(&"ordinary_death")
 	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
@@ -888,6 +985,7 @@ func _activate_focused_control_once() -> bool:
 	_activation_serial += 1
 	if app_state == STATE_DEATH and _death_lock_remaining > 0.0:
 		var recovery_button := $Root/Pages/DeathPage/Menu/RestartButton as Button
+		_queue_recovery_activation(&"menu_accept_countdown", recovery_button.get_path(), frame)
 		_last_activation_receipt = {
 			"activation_id": "shell-activation-%06d" % _activation_serial,
 			"frame": frame,
@@ -897,8 +995,10 @@ func _activate_focused_control_once() -> bool:
 			"enabled": false,
 			"emission_count": 0,
 			"death_countdown_remaining": _death_lock_remaining,
-			"accepted": false,
-			"failure_reason": &"control_disabled_countdown_visible",
+			"queued": true,
+			"queue_receipt": _queued_recovery_activation_receipt.duplicate(true),
+			"accepted": true,
+			"failure_reason": &"",
 		}
 		return true
 	_last_activation_receipt = {
@@ -934,8 +1034,10 @@ func _process(delta: float) -> void:
 		_death_lock_remaining = maxf(0.0, _death_lock_remaining - countdown_delta)
 		var recovery_button := $Root/Pages/DeathPage/Menu/RestartButton as Button
 		recovery_button.disabled = _death_lock_remaining > 0.0
-		recovery_button.text = "RECOVERY READY IN %.1f" % _death_lock_remaining if recovery_button.disabled else _recovery_button_text()
-		if not recovery_button.disabled:
+		recovery_button.text = "RECOVERY QUEUED  %.1f" % _death_lock_remaining if _queued_recovery_activation and recovery_button.disabled else "RECOVERY READY IN %.1f" % _death_lock_remaining if recovery_button.disabled else _recovery_button_text()
+		if not recovery_button.disabled and _queued_recovery_activation:
+			_commit_queued_recovery_activation()
+		elif not recovery_button.disabled:
 			recovery_button.grab_focus()
 
 
@@ -948,6 +1050,7 @@ func _show_page(state: StringName, reason := &"page_change", authority := &"shel
 	if previous_state == STATE_BRIEFING and state != STATE_BRIEFING:
 		briefing_video.stop()
 		briefing_video.visible = false
+		_restore_tester_opening_stream(StringName("left_briefing:%s" % String(state)))
 	var focused_before := get_viewport().gui_get_focus_owner()
 	if focused_before != null and previous_state != STATE_GAMEPLAY:
 		_focus_by_state[previous_state] = focused_before.get_path()
@@ -1083,6 +1186,7 @@ func _start_briefing() -> void:
 	deploy_button.disabled = false
 	pause_button.text = "Ⅱ  PAUSE"
 	pause_button.disabled = briefing_video.stream == null
+	briefing_video.loop = false
 	if briefing_video.stream != null:
 		_opening_media_status = &"playing"
 		briefing_video.visible = true
@@ -1201,6 +1305,7 @@ func _deploy() -> void:
 	if app_state != STATE_BRIEFING or not _briefing_complete or _deployment_requested:
 		return
 	_deployment_requested = true
+	_restore_tester_opening_stream(&"deployment_authorized")
 	if not weapon.call(&"equip_loadout", _selected_weapon):
 		_deployment_requested = false
 		$Root/Pages/BriefingPage/Error.text = "LOADOUT UNAVAILABLE — RETURN AND SELECT A VALID WEAPON"
@@ -1412,6 +1517,8 @@ func _on_player_died(_event: Dictionary) -> void:
 	weapon.call(&"set_gameplay_input_enabled", false)
 	roster.call(&"reset_transient_feedback")
 	_death_lock_remaining = DEATH_LOCK_SECONDS
+	_queued_recovery_activation = false
+	_queued_recovery_activation_receipt.clear()
 	var recovery_button := $Root/Pages/DeathPage/Menu/RestartButton as Button
 	recovery_button.visible = true
 	recovery_button.disabled = true
@@ -1425,6 +1532,7 @@ func _on_player_died(_event: Dictionary) -> void:
 
 func _restart_checkpoint() -> void:
 	if app_state == STATE_DEATH and _death_lock_remaining > 0.0:
+		_queue_recovery_activation(&"restart_requested_countdown", ^"Root/Pages/DeathPage/Menu/RestartButton", Engine.get_process_frames())
 		_record_transition_rejection(&"mission_recovery", &"death_lock_active")
 		return
 	if not _commit_lifecycle_action(&"checkpoint_restart"):
@@ -1444,10 +1552,47 @@ func _restart_checkpoint() -> void:
 	recovery_button.disabled = true
 	recovery_button.text = "RESTORING MISSION STATE"
 	_show_page(STATE_RECOVERING, &"recovery_receipt_committed", &"mission_recovery")
+	if not _queued_recovery_activation_receipt.is_empty():
+		_queued_recovery_activation_receipt["recovery_command_id"] = _last_lifecycle_action_receipt.get("action_id", "")
+		_queued_recovery_activation_receipt["committed_state"] = app_state
+		_queued_recovery_activation_receipt["committed"] = true
 
 
 func _recovery_button_text() -> String:
 	return "RECOVER DEPLOYMENT" if int(mission.get("checkpoint_version")) == 0 else "RESTART CHECKPOINT"
+
+
+func _queue_recovery_activation(source: StringName, focused_path: NodePath, frame: int) -> void:
+	if _queued_recovery_activation:
+		_queued_recovery_activation_receipt["duplicate_request_count"] = int(_queued_recovery_activation_receipt.get("duplicate_request_count", 0)) + 1
+		_queued_recovery_activation_receipt["latest_request_frame"] = frame
+		return
+	_recovery_queue_serial += 1
+	_queued_recovery_activation = true
+	_queued_recovery_activation_receipt = {
+		"queue_id": "run-%06d:recovery-queue-%06d" % [int(mission.get("run_epoch")), _recovery_queue_serial],
+		"source": source,
+		"requested": true,
+		"resolved": false,
+		"committed": false,
+		"request_frame": frame,
+		"focused_control": focused_path,
+		"source_state": app_state,
+		"death_lock_remaining_at_request": _death_lock_remaining,
+		"mission_state": mission.get("mission_state"),
+		"input_focus_preserved": get_viewport().gui_get_focus_owner() != null,
+		"visible_countdown_active": _death_lock_remaining > 0.0,
+	}
+
+
+func _commit_queued_recovery_activation() -> void:
+	if not _queued_recovery_activation:
+		return
+	_queued_recovery_activation = false
+	_queued_recovery_activation_receipt["resolved"] = true
+	_queued_recovery_activation_receipt["resolved_frame"] = Engine.get_process_frames()
+	_queued_recovery_activation_receipt["death_lock_remaining_at_commit"] = _death_lock_remaining
+	_restart_checkpoint()
 
 
 func _on_restore_feedback_completed(epoch: int) -> void:
@@ -1807,6 +1952,27 @@ func _mcp_state() -> Dictionary:
 		"selected_weapon": _selected_weapon,
 		"focused_control": str(focused.get_path()) if focused != null else "",
 		"applied_ui_scale": _applied_ui_scale,
+		"shell_lifecycle_summary": {
+			"opening_media_status": _opening_media_status,
+			"opening_stream_bound": briefing_video.stream != null,
+			"opening_video_loop": briefing_video.loop,
+			"briefing_complete": _briefing_complete,
+			"briefing_caption_index": _briefing_caption_index,
+			"briefing_visible_characters": _briefing_visible_characters,
+			"briefing_manual_advance_count": _briefing_manual_advance_count,
+			"opening_completion_count": _opening_completion_count,
+			"deployment_requested": _deployment_requested,
+			"last_tester_setup_receipt": _last_tester_setup_receipt,
+			"tester_opening_fallback_active": _tester_opening_fallback_active,
+			"tester_opening_fallback_generation": _tester_opening_fallback_generation,
+			"last_tester_opening_reset_receipt": _last_tester_opening_reset_receipt,
+			"death_lock_remaining": _death_lock_remaining,
+			"queued_recovery_activation": _queued_recovery_activation,
+			"queued_recovery_activation_receipt": _queued_recovery_activation_receipt,
+			"last_activation_receipt": _last_activation_receipt,
+			"last_lifecycle_action_receipt": _last_lifecycle_action_receipt,
+			"death_recovery_cycle_count": _death_recovery_cycle_history.size(),
+		},
 		"display": {
 			"persisted_fullscreen": bool(settings_store.snapshot().get("fullscreen_enabled", false)),
 			"window_mode": window.mode,
@@ -1849,6 +2015,11 @@ func _mcp_state() -> Dictionary:
 		"death_recovery_cycle_serial": _death_recovery_cycle_serial,
 		"death_recovery_cycle_history": _death_recovery_cycle_history,
 		"death_recovery_cycle_count": _death_recovery_cycle_history.size(),
+		"queued_recovery_activation": _queued_recovery_activation,
+		"queued_recovery_activation_receipt": _queued_recovery_activation_receipt,
+		"tester_opening_fallback_active": _tester_opening_fallback_active,
+		"tester_opening_fallback_generation": _tester_opening_fallback_generation,
+		"last_tester_opening_reset_receipt": _last_tester_opening_reset_receipt,
 		"settings_component_binding": {
 			"asset_id": SETTINGS_COMPONENT_ASSET_ID,
 			"receipt_path": SETTINGS_COMPONENT_RECEIPT,

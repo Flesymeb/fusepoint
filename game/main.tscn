@@ -61,7 +61,7 @@ hud_ammo_path = NodePath("../CombatHUD/Root/WeaponPanel/VBox/Ammo")
 hud_mode_path = NodePath("../CombatHUD/Root/WeaponPanel/VBox/StateRow/Mode")
 hud_action_path = NodePath("../CombatHUD/Root/WeaponPanel/VBox/StateRow/Action")
 hud_result_path = NodePath("../CombatHUD/Root/Result")
-hud_reticle_path = NodePath("../CombatHUD/Root/Reticle")
+hud_reticle_path = NodePath("../../../../TacticalHUD/Root/Reticle")
 
 [node name="MissionController" type="Node" parent="." groups=["mcp_watch", "mission_controller"]]
 script = ExtResource("6_mission")

@@ -8,6 +8,7 @@ const WEAPON_ORDER: Array[StringName] = [&"ak74m", &"saiga12"]
 const FIRE_MODE_SEMI := &"SEMI"
 const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
+const AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS := 0.018
 
 @export_node_path("Camera3D") var camera_path: NodePath
 @export_node_path("Node3D") var viewmodel_path: NodePath
@@ -207,6 +208,7 @@ func _process(delta: float) -> void:
 	if not _ready_for_combat:
 		return
 	_last_input_pump_delta_seconds = maxf(delta, 0.0)
+	_poll_fire_action_level()
 	_drain_fire_edges()
 	if not gameplay_input_enabled:
 		_sync_hud()
@@ -235,7 +237,19 @@ func _physics_process(delta: float) -> void:
 		return
 	if gameplay_input_enabled:
 		_combat_clock_seconds += maxf(delta, 0.0)
+	_poll_fire_action_level()
 	_drain_fire_edges()
+	if gameplay_input_enabled:
+		var now := _now()
+		_authorize_auto_continuation_after_input_pump(now)
+		_schedule_auto_continuation()
+
+
+func _poll_fire_action_level() -> void:
+	var pressed := Input.is_action_pressed(&"fire")
+	if pressed == _observed_fire_down:
+		return
+	_observe_fire_transition(pressed, &"inputmap_level", Time.get_ticks_usec())
 
 
 func _authorize_auto_continuation_after_input_pump(now: float) -> void:
@@ -243,18 +257,12 @@ func _authorize_auto_continuation_after_input_pump(now: float) -> void:
 		return
 	if not _trigger_held or not _observed_fire_down or _active_fire_press_edge_id.is_empty():
 		return
+	if not Input.is_action_pressed(&"fire"):
+		return
 	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or now < _next_shot_time:
 		return
-	var adaptive_confirmation_seconds := maxf(
-		_fire_interval(),
-		_last_input_pump_delta_seconds * 1.25,
-	)
-	if now - _active_fire_press_started_combat_seconds < adaptive_confirmation_seconds:
+	if _active_fire_press_shot_count == 1 and now < _next_shot_time + AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS:
 		return
-	# Defer the final level check to the end of this input pump. The MCP bridge
-	# and native window backend may deliver a scheduled release later in the same
-	# process frame on a slow renderer; the deferred check gives that ordered
-	# release precedence without adding a gameplay-time/audio delay to real AUTO.
 	_auto_continuation_confirmation_pending = true
 	call_deferred(&"_confirm_auto_continuation", _active_fire_press_edge_id)
 
@@ -265,7 +273,11 @@ func _confirm_auto_continuation(press_edge_id: String) -> void:
 		return
 	if not _trigger_held or not _observed_fire_down or not gameplay_input_enabled:
 		return
+	if not Input.is_action_pressed(&"fire"):
+		return
 	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or _now() < _next_shot_time:
+		return
+	if _active_fire_press_shot_count == 1 and _now() < _next_shot_time + AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS:
 		return
 	_active_fire_continuation_authorized = true
 	_schedule_auto_continuation()
@@ -275,12 +287,16 @@ func _schedule_auto_continuation() -> void:
 	# The raw event observer flips _observed_fire_down before either process loop
 	# can drain its queued release. That level is only a veto: the active press
 	# generation remains the sole authority that can schedule cadence commits.
-	var scheduled_shots := 0
-	while _active_fire_continuation_authorized and _trigger_held and _observed_fire_down and not _active_fire_press_edge_id.is_empty() and _current_weapon()["fire_mode"] == FIRE_MODE_AUTO and _now() >= _next_shot_time and scheduled_shots < 8:
-		if _try_submit_shot().is_empty():
-			break
-		_next_shot_time += _fire_interval()
-		scheduled_shots += 1
+	if not _active_fire_continuation_authorized or not _trigger_held or not _observed_fire_down or _active_fire_press_edge_id.is_empty():
+		return
+	if not Input.is_action_pressed(&"fire"):
+		return
+	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or _now() < _next_shot_time:
+		return
+	_active_fire_continuation_authorized = true
+	if _try_submit_shot().is_empty():
+		return
+	_next_shot_time = _now() + _fire_interval()
 
 
 func _observe_fire_transition(pressed: bool, source: StringName, captured_at_usec := 0) -> void:
@@ -478,6 +494,8 @@ func _resolve_ballistics(shot_id: String, weapon: Dictionary) -> Dictionary:
 			result = &"blocked"
 	var viewport_rect := camera.get_viewport().get_visible_rect()
 	var reticle_center := viewport_rect.position + viewport_rect.size * 0.5
+	var visible_reticle := _visible_reticle_receipt(viewport_rect)
+	var visible_reticle_center: Vector2 = visible_reticle.get("center", reticle_center)
 	var aim_projection := Vector2(-1.0, -1.0) if camera.is_position_behind(aim_point) else camera.unproject_position(aim_point)
 	var hit_projection := Vector2(-1.0, -1.0) if camera.is_position_behind(hit_position) else camera.unproject_position(hit_position)
 	var committed_at_usec := Time.get_ticks_usec()
@@ -499,10 +517,14 @@ func _resolve_ballistics(shot_id: String, weapon: Dictionary) -> Dictionary:
 		"screen_projection": {
 			"viewport_rect": viewport_rect,
 			"reticle_center": reticle_center,
+			"visible_reticle": visible_reticle,
+			"visible_reticle_center": visible_reticle_center,
 			"aim_endpoint": aim_projection,
 			"hit_endpoint": hit_projection,
 			"aim_pixel_delta": aim_projection.distance_to(reticle_center) if aim_projection.x >= 0.0 else -1.0,
 			"hit_pixel_delta": hit_projection.distance_to(reticle_center) if hit_projection.x >= 0.0 else -1.0,
+			"visible_aim_pixel_delta": aim_projection.distance_to(visible_reticle_center) if aim_projection.x >= 0.0 else -1.0,
+			"visible_hit_pixel_delta": hit_projection.distance_to(visible_reticle_center) if hit_projection.x >= 0.0 else -1.0,
 			"aim_visible": aim_projection.x >= 0.0,
 			"hit_visible": hit_projection.x >= 0.0,
 		},
@@ -533,6 +555,25 @@ func _excluded_rids() -> Array[RID]:
 func _muzzle_origin() -> Vector3:
 	var muzzle := feedback.get_node_or_null("MuzzleFlash") as Node3D
 	return muzzle.global_position if muzzle != null else camera.global_position
+
+
+func _visible_reticle_receipt(viewport_rect: Rect2) -> Dictionary:
+	if hud_reticle == null:
+		return {
+			"bound": false,
+			"center": viewport_rect.position + viewport_rect.size * 0.5,
+			"source": &"viewport_center_fallback",
+		}
+	var rect := hud_reticle.get_global_rect()
+	return {
+		"bound": true,
+		"path": hud_reticle.get_path(),
+		"rect": rect,
+		"center": rect.get_center(),
+		"visible": hud_reticle.visible and hud_reticle.is_visible_in_tree(),
+		"alpha": hud_reticle.modulate.a,
+		"source": &"hud_reticle_global_rect",
+	}
 
 
 func _present_dry_fire() -> void:
@@ -1163,7 +1204,8 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 		"release_guard": &"OS.is_debug_build",
 		"non_release": OS.is_debug_build(),
 		"run_epoch": _run_epoch,
-		"normal_player_report_owner_count": 1,
+		"normal_player_report_owner_count": 2,
+		"player_report_owner_state": _player_report_owner_state(),
 	}
 	if not OS.is_debug_build():
 		receipt["failure_reason"] = &"release_build_forbidden"
@@ -1182,6 +1224,8 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 			"retained_component_owner": true,
 			"prepared_silent": component_player == null or not component_player.playing,
 			"normal_fire_path_used": false,
+			"normal_player_report_owner_count": 2,
+			"player_report_owner_state": _player_report_owner_state(),
 			"reset_isolation": {"authoritative_shot_committed": false, "diagnostic_owner_separate": false, "voice_started": false},
 			"failure_reason": &"" if component_player != null and component_player.stream != null else &"component_player_unavailable",
 		}, true)
@@ -1193,7 +1237,8 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 			"source_path": "",
 			"owner_path": NodePath(),
 			"adapter_absent": true,
-			"normal_player_report_owner_count": 1,
+			"normal_player_report_owner_count": 2,
+			"player_report_owner_state": _player_report_owner_state(),
 			"prepared_silent": true,
 			"reset_isolation": {"authoritative_shot_committed": false, "voice_started": false},
 			"failure_reason": &"",
@@ -1212,6 +1257,7 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 		receipt["delegated_feedback_receipt"] = delegated
 		receipt["source_path"] = delegated.get("source_path", "")
 		receipt["owner_path"] = delegated.get("owner_path", "")
+		receipt["player_report_owner_state"] = _player_report_owner_state()
 		receipt["reset_isolation"] = delegated.get("reset_isolation", {})
 		receipt["failure_reason"] = delegated.get("failure_reason", &"")
 	return _store_tester_audio_receipt(receipt)
@@ -1252,7 +1298,8 @@ func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) ->
 				"component_timeout_seconds": _bounded_single_report_duration,
 				"component_timeout_method": &"_play_audio_with_timeout",
 				"retained_component_owner": true,
-				"normal_player_report_owner_count": 1,
+				"normal_player_report_owner_count": 2,
+				"player_report_owner_state": _player_report_owner_state(),
 				"reset_isolation": {"authoritative_shot_committed": false, "diagnostic_owner_separate": false},
 				"failure_reason": &"" if component_player.playing else &"playback_did_not_start",
 			}, true)
@@ -1263,7 +1310,8 @@ func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) ->
 			"branch_id": prepared.get("branch_id", &""),
 			"adapter_absent": true,
 			"voice_started": false,
-			"normal_player_report_owner_count": 1,
+			"normal_player_report_owner_count": 2,
+			"player_report_owner_state": _player_report_owner_state(),
 			"reset_isolation": {"authoritative_shot_committed": false, "voice_started": false},
 			"failure_reason": &"",
 		}, true)
@@ -1276,6 +1324,7 @@ func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) ->
 			"source_path": delegated.get("source_path", ""),
 			"owner_path": delegated.get("owner_path", ""),
 			"delegated_feedback_receipt": delegated,
+			"player_report_owner_state": _player_report_owner_state(),
 			"reset_isolation": delegated.get("reset_isolation", {}),
 			"failure_reason": delegated.get("failure_reason", &""),
 		}, true)
@@ -1471,6 +1520,7 @@ func _stop_fire_report(reason: StringName, stop_single_transient: bool) -> void:
 		"stop_single_transient": stop_single_transient,
 		"single_player_playing": single_player.playing if single_player != null else false,
 		"auto_player_playing": auto_player.playing if auto_player != null else false,
+		"player_report_owner_state": _player_report_owner_state(),
 		"timestamp_seconds": _now(),
 	}
 	_append_report_receipt(_last_report_receipt)
@@ -1493,6 +1543,9 @@ func _record_report_request(receipt: Dictionary, playback_class: StringName, sus
 		"product_output_gate_used": false,
 		"single_player_playing": single_player.playing if single_player != null else false,
 		"auto_player_playing": auto_player.playing if auto_player != null else false,
+		"cadence_seconds": _fire_interval(),
+		"next_shot_time_seconds": _next_shot_time,
+		"player_report_owner_state": _player_report_owner_state(),
 		"timestamp_seconds": _now(),
 	}
 	_append_report_receipt(_last_report_receipt)
@@ -1572,7 +1625,14 @@ func _mcp_state() -> Dictionary:
 			"trigger_held": _trigger_held,
 			"queued_release_precedence": true,
 			"raw_release_vetoes_continuation": true,
+			"inputmap_level_vetoes_continuation": true,
 			"ballistic_cadence_authorized": _active_fire_continuation_authorized,
+			"continuation_confirmation_pending": _auto_continuation_confirmation_pending,
+			"cadence_seconds": _fire_interval(),
+			"first_continuation_release_grace_seconds": AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS,
+			"next_shot_time_seconds": _next_shot_time,
+			"same_frame_catchup_pairs_allowed": false,
+			"continuation_gate": &"deferred_held_level_at_cadence",
 			"shot_count": _shot_serial,
 			"magazine": weapon.get("magazine", 0),
 			"last_shot_id": _last_shot.get("shot_id", ""),
@@ -1587,6 +1647,7 @@ func _mcp_state() -> Dictionary:
 			"single_report_source_path": _single_report_source_path,
 			"single_report_duration_seconds": _bounded_single_report_duration,
 			"single_report_component_owner": &"retained_component_fire_audio",
+			"player_report_owner_state": _player_report_owner_state(),
 			"product_pcm_prefix_derivative_used": false,
 			"tester_audio_summary": {
 				"stem_id": _last_tester_audio_receipt.get("stem_id", &""),
@@ -1746,4 +1807,23 @@ func _fire_audio_player_state() -> Dictionary:
 			"playing": auto_player.playing if auto_player != null else false,
 			"stream_path": auto_player.stream.resource_path if auto_player != null and auto_player.stream != null else "",
 		},
+	}
+
+
+func _player_report_owner_state() -> Dictionary:
+	var state := _fire_audio_player_state()
+	var single: Dictionary = state.get("single", {})
+	var sustained: Dictionary = state.get("sustained", {})
+	var active_count := 0
+	if single.get("playing", false) == true:
+		active_count += 1
+	if sustained.get("playing", false) == true:
+		active_count += 1
+	return {
+		"owner_count": 2,
+		"active_owner_count": active_count,
+		"single": single,
+		"sustained": sustained,
+		"retained_component_owner": true,
+		"product_adapter_report_owner_present": false,
 	}
