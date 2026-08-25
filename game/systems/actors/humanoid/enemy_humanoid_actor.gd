@@ -600,6 +600,7 @@ func get_component_state() -> Dictionary:
 	var contact_report := rifle_contact_report()
 	var visible_rifle_ready: bool = contact_report.get("accepted", false) == true
 	var family_compatible := not pistol_source_clip and visible_rifle_ready and not incompatible_fallback
+	var locomotion_source_requires_overlay := current_state in [MotionState.WALK, MotionState.RUN] and clip_name in ["Walk", "Jog_Fwd"]
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
@@ -619,20 +620,21 @@ func get_component_state() -> Dictionary:
 		"animation_playing": player != null and player.is_playing(),
 		"weapon_family": WEAPON_FAMILY,
 		"weapon_family_compatible": family_compatible,
-		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"rail_source_clip_incompatible" if incompatible_fallback else &"visible_two_hand_rifle_ready" if family_compatible else &"socket_contact_unaccepted",
+		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"incompatible_source_clip_rejected" if incompatible_fallback else &"visible_two_hand_rifle_ready_locomotion_overlay" if family_compatible and locomotion_source_requires_overlay else &"visible_two_hand_rifle_ready" if family_compatible else &"socket_contact_unaccepted",
 		"binding_strategy": {
 			"selected_strategy": &"neutral_standing_baseline_with_state_driven_rifle_socket_overlay",
 			"rifle_ready_authored_clips_available": false,
 			"authored_rifle_clip_binding_status": &"missing_required_asset",
 			"visible_rifle_ready_binding": family_compatible,
 			"source_clip_truthful": true,
+			"locomotion_source_clip_requires_overlay_proof": locomotion_source_requires_overlay,
 			"interim_issue_open": false,
 			"root_transform_tuning_primary_fix": false,
 			"actor_root_dynamic_axes": ["yaw"],
 			"model_axis_adapter_fixed": true,
 			"pistol_source_clip_rejected": pistol_source_clip,
-			"rail_source_clip_rejected": incompatible_fallback,
-			"adapter_mapping": &"idle_aim_fire_reload_use_neutral_body_plus_rifle_overlay",
+			"incompatible_source_clip_rejected": incompatible_fallback,
+			"adapter_mapping": &"idle_aim_fire_reload_walk_run_use_component_baseline_plus_rifle_contact_overlay",
 		},
 		"rifle_contact": contact_report,
 		"aim_pitch_degrees": _aim_pitch_degrees,
@@ -658,7 +660,13 @@ func _uses_procedural_rifle_semantic() -> bool:
 
 
 func _is_incompatible_rifle_fallback(state: MotionState, clip_name: String) -> bool:
-	return state in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD] and clip_name == "Idle_Rail"
+	var lower := clip_name.to_lower()
+	return (
+		"pistol" in lower
+		or lower in ["idle_rail", "spell_simple_shoot", "interact"]
+		or ("death" in lower and state != MotionState.DEATH)
+		or ("prone" in lower and state != MotionState.DEATH)
+	)
 
 
 func _resolved_animation_semantic() -> StringName:
@@ -667,6 +675,10 @@ func _resolved_animation_semantic() -> StringName:
 	match current_state:
 		MotionState.IDLE:
 			return &"rifle_idle_ready_component_baseline"
+		MotionState.WALK:
+			return &"rifle_walk_ready_component_baseline_overlay"
+		MotionState.RUN:
+			return &"rifle_run_reposition_ready_component_baseline_overlay"
 		MotionState.AIM:
 			return &"rifle_aim_ready_component_baseline"
 		MotionState.FIRE:
@@ -757,7 +769,7 @@ func rifle_contact_report() -> Dictionary:
 	var right_hand_position: Vector3 = right_hand
 	var left_hand_position: Vector3 = left_hand
 	var muzzle_world: Vector3 = _muzzle_marker.global_position
-	var actor_forward: Vector3 = -global_transform.basis.z.normalized()
+	var actor_forward: Vector3 = global_transform.basis.z.normalized()
 	var hand_to_muzzle: Vector3 = muzzle_world - right_hand_position
 	var muzzle_forward: Vector3 = hand_to_muzzle.normalized() if hand_to_muzzle.length() > 0.001 else actor_forward
 	var support_distance: float = left_hand_position.distance_to(right_hand_position)
@@ -766,16 +778,17 @@ func rifle_contact_report() -> Dictionary:
 	var forward_dot: float = muzzle_forward.dot(actor_forward)
 	var forward_alignment: float = absf(forward_dot)
 	var upright: bool = absf(rotation.x) <= 0.001 and absf(rotation.z) <= 0.001
+	var muzzle_direction_coherent := forward_dot >= 0.20
 	var accepted: bool = (
 		upright
 		and _weapon_attachment.visible
 		and support_distance >= 0.08
-		and support_distance <= 0.92
+		and support_distance <= 0.98
 		and right_muzzle_distance >= 0.28
 		and right_muzzle_distance <= 1.65
 		and muzzle_height >= 0.75
 		and muzzle_height <= 2.25
-		and forward_alignment >= 0.20
+		and muzzle_direction_coherent
 	)
 	return {
 		"accepted": accepted,
@@ -792,7 +805,8 @@ func rifle_contact_report() -> Dictionary:
 		"muzzle_height_above_actor": muzzle_height,
 		"muzzle_forward_dot_actor_forward": forward_dot,
 		"muzzle_forward_alignment_actor_axis": forward_alignment,
-		"two_hand_contact_estimated": support_distance <= 0.92,
+		"muzzle_direction_coherent": muzzle_direction_coherent,
+		"two_hand_contact_estimated": support_distance <= 0.98,
 		"grounded_upright": upright,
 	}
 

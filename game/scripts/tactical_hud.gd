@@ -143,7 +143,6 @@ func set_hud_enabled(enabled: bool) -> void:
 func apply_accessibility_settings(values: Dictionary) -> void:
 	_applied_ui_scale = clampf(float(values.get("ui_scale", 1.0)), 1.0, 2.0)
 	_applied_subtitle_size = clampi(int(values.get("subtitle_size", 18)), 14, 32)
-	narrative.add_theme_font_size_override("font_size", clampi(_applied_subtitle_size + 18, 36, 44))
 	# Accessibility scale is semantic and persistent; layout absorbs the growth
 	# by reflowing priority regions instead of scaling the whole CanvasLayer.
 	var multiplier := 1.0 + (_applied_ui_scale - 1.0) * 0.38
@@ -156,10 +155,18 @@ func apply_accessibility_settings(values: Dictionary) -> void:
 		var base_size := int(control.get_meta(&"fusepoint_hud_base_font_size"))
 		if base_size > 0 and base_size < 34:
 			control.add_theme_font_size_override("font_size", int(round(base_size * multiplier)))
-	narrative.add_theme_font_size_override("font_size", clampi(int(round((_applied_subtitle_size + 18) * multiplier)), 36, 44))
+	_apply_story_font()
 	if weapon_hud.has_method(&"apply_accessibility_scale"):
 		weapon_hud.call(&"apply_accessibility_scale", _applied_ui_scale)
 	_apply_responsive_layout.call_deferred()
+
+
+func _apply_story_font() -> void:
+	var multiplier := 1.0 + (_applied_ui_scale - 1.0) * 0.28
+	if _story_profile == &"opening":
+		narrative.add_theme_font_size_override("font_size", clampi(int(round((_applied_subtitle_size + 8) * multiplier)), 24, 34))
+	else:
+		narrative.add_theme_font_size_override("font_size", clampi(int(round((_applied_subtitle_size + 18) * multiplier)), 36, 44))
 
 
 func _apply_responsive_layout() -> void:
@@ -195,13 +202,18 @@ func _apply_responsive_layout() -> void:
 	reticle.size = Vector2(28.0, 28.0)
 	var narrative_width := minf(900.0, viewport_size.x - safe.x * 2.0 - 8.0)
 	if _story_profile == &"opening":
-		narrative.position = Vector2(center.x - narrative_width * 0.5, viewport_size.y - safe.y - (226.0 if expanded else 210.0))
-		narrative.size = Vector2(narrative_width, 86.0 if expanded else 72.0)
-		narrative.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		var left_limit := safe.x + 206.0
+		var right_limit := viewport_size.x - safe.x - 354.0
+		var opening_width := minf(660.0 if not expanded else 700.0, maxf(360.0, right_limit - left_limit))
+		var opening_x := clampf(center.x - opening_width * 0.5, left_limit, right_limit - opening_width)
+		narrative.position = Vector2(opening_x, safe.y + (174.0 if expanded else 156.0))
+		narrative.size = Vector2(opening_width, 162.0 if expanded else 150.0)
+		narrative.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	else:
-		narrative.position = Vector2(center.x - narrative_width * 0.5, viewport_size.y * (0.62 if expanded else 0.64))
-		narrative.size = Vector2(narrative_width, 96.0 if expanded else 82.0)
-		narrative.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		var cue_width := minf(720.0 if expanded else 760.0, narrative_width)
+		narrative.position = Vector2(center.x - cue_width * 0.5, safe.y + (206.0 if expanded else 188.0))
+		narrative.size = Vector2(cue_width, 96.0 if expanded else 86.0)
+		narrative.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	var objective_width := minf(460.0 if expanded else 360.0, viewport_size.x - safe.x * 2.0 - 8.0)
 	objective_band.position = Vector2(center.x - objective_width * 0.5, viewport_size.y - safe.y - (106.0 if expanded else 96.0))
 	objective_band.size = Vector2(objective_width, 82.0 if expanded else 60.0)
@@ -595,10 +607,10 @@ func _on_mission_event(event: Dictionary) -> void:
 		var payload: Dictionary = event.get("payload", {})
 		var objective_id := StringName(payload.get("objective_id", &""))
 		if objective_id == &"alpha":
-			_begin_radio_cues(["COMMAND  //  Alpha secure. Wiring topology recovered. Move to Bravo."], String(event.get("event_id", "alpha_handoff")))
+			_begin_radio_cues(["Command: Alpha secure. Wiring topology recovered.\nMove to Bravo."], String(event.get("event_id", "alpha_handoff")))
 			_update_mission_state()
 		elif objective_id == &"bravo":
-			_begin_radio_cues(["COMMAND  //  Bravo secure. Isolation frequency recovered. Breach Charlie."], String(event.get("event_id", "bravo_handoff")))
+			_begin_radio_cues(["Command: Bravo secure. Isolation frequency recovered.\nBreach Charlie."], String(event.get("event_id", "bravo_handoff")))
 			_update_mission_state()
 	var important := kind in COMBAT_FEED_ALLOWED_KINDS
 	if important:
@@ -837,15 +849,23 @@ func _update_opening_story() -> void:
 		_story_visible_characters = clampi(int(floor(float(_story_full_text.length()) * _story_elapsed / OPENING_REVEAL_SECONDS)), 0, _story_full_text.length())
 		narrative.text = _story_full_text.left(_story_visible_characters)
 		narrative.modulate.a = 1.0
-	else:
-		_story_phase = &"awaiting_confirmation"
+	elif _story_elapsed < OPENING_HOLD_END_SECONDS:
+		_story_phase = &"opening_full_hold"
 		_story_visible_characters = _story_full_text.length()
 		narrative.text = _story_full_text
 		narrative.modulate.a = 1.0
+	elif _story_elapsed < OPENING_FADE_END_SECONDS:
+		_story_phase = &"opening_fade"
+		_story_visible_characters = _story_full_text.length()
+		narrative.text = _story_full_text
+		var fade_progress := clampf((_story_elapsed - OPENING_HOLD_END_SECONDS) / maxf(OPENING_FADE_END_SECONDS - OPENING_HOLD_END_SECONDS, 0.001), 0.0, 1.0)
+		narrative.modulate.a = 1.0 - fade_progress
+	else:
+		_finish_story(&"opening_timeline_complete")
 
 
 func _begin_opening_story(event_id: String) -> void:
-	_begin_story_cues(DEPLOYMENT_STORY_CUES, event_id, &"opening")
+	_begin_story_cues([DEPLOYMENT_STORY_TEXT], event_id, &"opening")
 
 
 func _begin_radio_cues(cues: Array[String], event_id: String) -> void:
@@ -874,7 +894,7 @@ func tester_prepare_authoritative_radio_cue(authority: Dictionary) -> Dictionary
 	if event_id.is_empty():
 		_last_tester_radio_receipt["failure_reason"] = &"authoritative_event_id_required"
 		return _last_tester_radio_receipt.duplicate(true)
-	_begin_radio_cues(["COMMAND  //  Alpha secure. Wiring topology recovered. Move to Bravo."], event_id)
+	_begin_radio_cues(["Command: Alpha secure. Wiring topology recovered.\nMove to Bravo."], event_id)
 	_last_tester_radio_receipt.merge({
 		"resolved": true,
 		"accepted": _story_active and _story_profile == &"radio",
@@ -902,6 +922,7 @@ func _begin_story_cues(cues: Array[String], event_id: String, profile: StringNam
 	narrative.text = ""
 	narrative.visible = true
 	narrative.modulate.a = 1.0
+	_apply_story_font()
 	_apply_responsive_layout()
 	_set_story_weapon_lock(false)
 
@@ -911,16 +932,10 @@ func _advance_story_cue() -> void:
 		return
 	_story_advance_count += 1
 	if _story_profile == &"opening":
-		if _story_cue_index + 1 < _story_cues.size():
-			_story_cue_index += 1
-			_story_full_text = _story_cues[_story_cue_index]
-			_story_elapsed = 0.0
-			_story_phase = &"opening_reveal"
-			_story_visible_characters = 0
-			narrative.text = ""
-			narrative.modulate.a = 1.0
+		if _story_confirmation_source == &"physical_g_skip":
+			_finish_story(&"physical_g_skip")
 			return
-		_finish_story(_story_confirmation_source if not _story_confirmation_source.is_empty() else &"opening_skip")
+		_story_phase = &"opening_input_consumed_timeline_continues"
 		return
 	if _story_cue_index + 1 < _story_cues.size():
 		_story_cue_index += 1
@@ -973,6 +988,7 @@ func story_owns_primary_fire_input() -> bool:
 
 
 func _mcp_state() -> Dictionary:
+	var story_rect := narrative.get_global_rect() if is_instance_valid(narrative) else Rect2()
 	return {
 		"hud_enabled": _hud_enabled,
 		"story_active": _story_active,
@@ -985,12 +1001,12 @@ func _mcp_state() -> Dictionary:
 		"story_cue_index": _story_cue_index,
 		"story_cue_count": _story_cues.size(),
 		"story_current_text": narrative.text,
-		"story_indefinite_dwell": _story_profile in [&"opening", &"radio"],
-		"story_opening_confirm_driven": _story_profile == &"opening" or (_story_profile == &"inactive" and _last_story_profile == &"opening"),
+		"story_indefinite_dwell": _story_profile == &"radio",
+		"story_opening_confirm_driven": false,
 		"story_phase": _story_phase,
 		"story_visible_characters": _story_visible_characters,
 		"story_total_characters": _story_full_text.length(),
-		"story_timing_seconds": {"reveal": OPENING_REVEAL_SECONDS, "hold": &"until_player_confirmation", "legacy_auto_hold_end": OPENING_HOLD_END_SECONDS, "legacy_auto_fade_end": OPENING_FADE_END_SECONDS} if (_story_profile == &"opening" or (_story_profile == &"inactive" and _last_story_profile == &"opening")) else {"type": STORY_TYPE_SECONDS, "hold": &"until_player_confirmation"},
+		"story_timing_seconds": {"opening_reveal": OPENING_REVEAL_SECONDS, "opening_full_hold_start": OPENING_REVEAL_SECONDS, "opening_full_hold_end": OPENING_HOLD_END_SECONDS, "opening_fade_end": OPENING_FADE_END_SECONDS, "opening_skip": &"presentation_only"} if (_story_profile == &"opening" or (_story_profile == &"inactive" and _last_story_profile == &"opening")) else {"type": STORY_TYPE_SECONDS, "hold": &"until_player_confirmation"},
 		"story_advance_count": _story_advance_count,
 		"story_confirmation_source": _story_confirmation_source,
 		"story_presentation_serial": _story_presentation_serial,
@@ -999,7 +1015,16 @@ func _mcp_state() -> Dictionary:
 		"story_weapon_lock_active": _story_weapon_lock_active,
 		"story_font_px": narrative.get_theme_font_size("font_size"),
 		"story_non_blocking_gameplay": not _story_weapon_lock_active,
-		"story_safe_lane": &"lower_center_above_objective_band",
+		"story_safe_lane": &"upper_safe_lane_between_map_compass_feed_and_reticle",
+		"story_bounds": story_rect,
+		"story_line_count": narrative.text.count("\n") + 1 if narrative.visible else 0,
+		"story_profile_contract": {
+			"opening_lines_accumulate": true,
+			"opening_confirm_advances": false,
+			"opening_timeline_seconds": [0.0, OPENING_REVEAL_SECONDS, OPENING_HOLD_END_SECONDS, OPENING_FADE_END_SECONDS],
+			"radio_max_lines": 2,
+			"weapon_fire_suppression_receipted": true,
+		},
 		"minimap_component": minimap.get_path(),
 		"vitals_component": vitals.get_path(),
 		"weapon_component": weapon_hud.get_path(),

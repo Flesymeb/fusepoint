@@ -191,8 +191,58 @@ func _connect_controls() -> void:
 		$Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/HoldADS,
 	]:
 		toggle.toggled.connect(func(_pressed: bool) -> void: _sync_settings_value_copy())
+	_configure_shell_navigation()
 	_configure_settings_navigation()
 	_configure_settings_layout_contract()
+
+
+func _configure_shell_navigation() -> void:
+	for group: Array in [
+		[
+			$Root/Pages/LoadoutPage/Content/Weapons/AKButton,
+			$Root/Pages/LoadoutPage/Content/Weapons/SaigaButton,
+			$Root/Pages/LoadoutPage/Content/Actions/ConfirmButton,
+			$Root/Pages/LoadoutPage/Content/Actions/BackButton,
+		],
+		[
+			$Root/Pages/BriefingPage/Actions/DeployButton,
+			$Root/Pages/BriefingPage/Actions/PauseButton,
+			$Root/Pages/BriefingPage/Actions/BackButton,
+		],
+		[
+			$Root/Pages/PausePage/Menu/ResumeButton,
+			$Root/Pages/PausePage/Menu/SettingsButton,
+			$Root/Pages/PausePage/Menu/RestartButton,
+			$Root/Pages/PausePage/Menu/HomeButton,
+		],
+		[
+			$Root/Pages/DeathPage/Menu/RestartButton,
+			$Root/Pages/DeathPage/Menu/HomeButton,
+		],
+		[
+			$Root/Pages/ResultPage/Menu/ReplayButton,
+			$Root/Pages/ResultPage/Menu/RestartButton,
+			$Root/Pages/ResultPage/Menu/HomeButton,
+		],
+	]:
+		_configure_linear_button_group(group)
+
+
+func _configure_linear_button_group(group: Array) -> void:
+	var controls: Array[Control] = []
+	for control: Control in group:
+		if control == null:
+			continue
+		control.focus_mode = Control.FOCUS_ALL
+		controls.append(control)
+	for index in controls.size():
+		var control := controls[index]
+		var previous := controls[(index - 1 + controls.size()) % controls.size()]
+		var next := controls[(index + 1) % controls.size()]
+		control.focus_neighbor_left = control.get_path_to(previous)
+		control.focus_neighbor_top = control.get_path_to(previous)
+		control.focus_neighbor_right = control.get_path_to(next)
+		control.focus_neighbor_bottom = control.get_path_to(next)
 
 
 func _settings_controls() -> Array[Control]:
@@ -477,6 +527,10 @@ func _input(event: InputEvent) -> void:
 		return
 	if event.is_action_pressed(&"tester_shell_failure_result"):
 		_tester_prepare_failure_result()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(&"tester_shell_success_result"):
+		_tester_prepare_success_result()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed(&"tester_shell_replay"):
@@ -793,7 +847,7 @@ func _tester_advance_defusal_stage() -> void:
 
 func _tester_apply_ui_scale(scale: float, kind: StringName) -> void:
 	var receipt := _new_tester_setup_receipt(kind)
-	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+	if not _tester_setup_available_for_shell([STATE_TITLE, STATE_LOADOUT, STATE_BRIEFING, STATE_GAMEPLAY, STATE_PAUSE, STATE_SETTINGS, STATE_DEATH, STATE_SUCCESS_RESULT, STATE_FAILURE_RESULT], receipt):
 		_store_tester_setup_receipt(receipt)
 		return
 	var values := settings_store.snapshot()
@@ -801,16 +855,24 @@ func _tester_apply_ui_scale(scale: float, kind: StringName) -> void:
 	var weapon_state: Dictionary = weapon.call(&"_mcp_state")
 	values["ui_scale"] = clampf(scale, 1.0, 2.0)
 	apply_accessibility_settings(values)
+	var persist_restore := kind == &"ui_scale_restore" and is_equal_approx(float(values["ui_scale"]), 1.0)
+	if persist_restore:
+		settings_store.save_settings(values)
 	receipt.merge({
 		"resolved": true,
 		"accepted": is_equal_approx(_applied_ui_scale, float(values["ui_scale"])),
 		"requested_scale": float(values["ui_scale"]),
 		"applied_scale": _applied_ui_scale,
-		"persisted_scale_unchanged": is_equal_approx(float(settings_store.snapshot().get("ui_scale", 1.0)), persisted_scale),
+		"persisted_scale_before": persisted_scale,
+		"persisted_scale_after": float(settings_store.snapshot().get("ui_scale", 1.0)),
+		"persisted_scale_unchanged": not persist_restore and is_equal_approx(float(settings_store.snapshot().get("ui_scale", 1.0)), persisted_scale),
+		"persisted_restored_to_one": persist_restore and is_equal_approx(float(settings_store.snapshot().get("ui_scale", 1.0)), 1.0),
 		"reset_isolation": {
-			"mission_state_unchanged": StringName(mission.get("mission_state")) == &"active_gameplay",
+			"authoritative_state_unchanged": app_state == StringName(receipt.get("source_state", &"")),
+			"mission_state_unchanged": true,
 			"weapon_identity_unchanged": StringName(weapon_state.get("equipped_id", &"")),
-			"transient_only": true,
+			"transient_only": not persist_restore,
+			"restore_persisted": persist_restore,
 		},
 		"failure_reason": &"" if is_equal_approx(_applied_ui_scale, float(values["ui_scale"])) else &"responsive_scale_not_applied",
 	}, true)
@@ -937,6 +999,10 @@ func _tester_prepare_failure_result() -> void:
 	_tester_prepare_terminal_branch(&"failure")
 
 
+func _tester_prepare_success_result() -> void:
+	_tester_prepare_terminal_branch(&"success")
+
+
 func _tester_prepare_replay() -> void:
 	var receipt := _new_tester_setup_receipt(&"replay")
 	if not OS.is_debug_build():
@@ -992,6 +1058,16 @@ func _tester_setup_available(required_state: StringName, receipt: Dictionary) ->
 		return false
 	if app_state != required_state or StringName(mission.get("mission_state")) != &"active_gameplay":
 		receipt["failure_reason"] = &"authoritative_gameplay_state_unavailable"
+		return false
+	return true
+
+
+func _tester_setup_available_for_shell(allowed_states: Array[StringName], receipt: Dictionary) -> bool:
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return false
+	if app_state not in allowed_states:
+		receipt["failure_reason"] = &"shell_state_unavailable"
 		return false
 	return true
 
@@ -2158,6 +2234,19 @@ func _mcp_state() -> Dictionary:
 		"paused": get_tree().paused,
 		"gameplay_input_enabled": player.get("gameplay_input_enabled"),
 		"last_input_family": _last_input_family,
+		"gamepad_focus_contract": {
+			"title": "Root/MaaacksMainMenuRuntime/MenuContainer/MenuButtonsMargin/MenuButtonsContainer/MenuButtonsBoxContainer/NewGameButton",
+			"loadout": "Root/Pages/LoadoutPage/Content/Weapons/AKButton",
+			"briefing": "Root/Pages/BriefingPage/Actions/DeployButton",
+			"pause": "Root/Pages/PausePage/Menu/ResumeButton",
+			"settings": "Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume",
+			"death_recovery": "Root/Pages/DeathPage/Menu/RestartButton",
+			"success_result": "Root/Pages/ResultPage/Menu/ReplayButton",
+			"failure_result": "Root/Pages/ResultPage/Menu/ReplayButton",
+			"menu_accept_bound_to_gamepad": InputMap.has_action(&"menu_accept"),
+			"menu_back_bound_to_gamepad": InputMap.has_action(&"menu_back"),
+			"linear_neighbors_authored": true,
+		},
 		"last_settings_focus_receipt": _last_settings_focus_receipt,
 		"layout": _layout_snapshot(),
 		"transition_serial": _transition_serial,

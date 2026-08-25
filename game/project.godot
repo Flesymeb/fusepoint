@@ -241,6 +241,10 @@ tester_shell_failure_result={
 "deadzone": 0.5,
 "events": []
 }
+tester_shell_success_result={
+"deadzone": 0.5,
+"events": []
+}
 tester_shell_replay={
 "deadzone": 0.5,
 "events": []
