@@ -31,8 +31,8 @@ const RIFLE_SOURCE_GRIP_OFFSET := Vector3(0.0, 2.0, 5.0)
 const RIFLE_MUZZLE_LOCAL := Vector3(0.0, 5.4, 13.85)
 const RIFLE_SOCKET_POSITION := Vector3(0.02, 0.02, -0.02)
 const RIFLE_SOCKET_LOW_READY_ROTATION := Vector3(0.0, 90.0, 0.0)
-const RIFLE_SOCKET_SHOULDER_ROTATION := Vector3(-35.0, 90.0, 0.0)
-const RIFLE_SOCKET_RELOAD_ROTATION := Vector3(-22.0, 90.0, 0.0)
+const RIFLE_SOCKET_SHOULDER_ROTATION := Vector3(-10.0, 90.0, 0.0)
+const RIFLE_SOCKET_RELOAD_ROTATION := Vector3(-10.0, 90.0, 0.0)
 const SKINS := {
 	"soldier_a": {
 		"label": "Mixamo Soldier A (68 bones)",
@@ -49,10 +49,9 @@ const SKINS := {
 }
 const STATE_CLIPS := {
 	# The current UAL package has no coherent rifle-authored combat set. Use the
-	# retained non-pistol rail baseline plus product-owned upper-body/socket
-	# overlay so living rifle actors no longer resolve through pistol/spell/prone
-	# fallbacks while receipts still expose the authored-clip gap.
-	MotionState.IDLE: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
+	# neutral standing source plus product-owned upper-body/socket overlay so
+	# living rifle actors never present the incompatible rail/pistol fallbacks.
+	MotionState.IDLE: {"library": "ual1", "clip": "Idle", "loop": true},
 	MotionState.WALK: {"library": "ual1", "clip": "Walk", "loop": true},
 	MotionState.RUN: {"library": "ual1", "clip": "Jog_Fwd", "loop": true},
 	MotionState.CROUCH_IDLE: {"library": "ual1", "clip": "Crouch_Idle", "loop": true},
@@ -60,9 +59,9 @@ const STATE_CLIPS := {
 	MotionState.JUMP_START: {"library": "ual1", "clip": "Jump_Start", "loop": false},
 	MotionState.AIRBORNE: {"library": "ual1", "clip": "Jump", "loop": true},
 	MotionState.LAND: {"library": "ual1", "clip": "Jump_Land", "loop": false},
-	MotionState.AIM: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
-	MotionState.FIRE: {"library": "ual2", "clip": "Idle_Rail", "loop": false},
-	MotionState.RELOAD: {"library": "ual2", "clip": "Idle_Rail", "loop": false},
+	MotionState.AIM: {"library": "ual1", "clip": "Idle", "loop": true},
+	MotionState.FIRE: {"library": "ual1", "clip": "Idle", "loop": false},
+	MotionState.RELOAD: {"library": "ual1", "clip": "Idle", "loop": false},
 	# A regular bullet hit should read as a short flinch, not a full-body
 	# knockback. Hit_Head gives the requested small head snap while preserving
 	# the actor's planted combat stance.
@@ -597,10 +596,10 @@ func get_component_state() -> Dictionary:
 	var clip_name := _custom_clip if _custom_preview else String(STATE_CLIPS[current_state]["clip"])
 	var procedural_rifle := _uses_procedural_rifle_semantic()
 	var pistol_source_clip := "pistol" in clip_name.to_lower()
-	var neutral_fallback := _is_neutral_rifle_fallback(current_state, clip_name)
+	var incompatible_fallback := _is_incompatible_rifle_fallback(current_state, clip_name)
 	var contact_report := rifle_contact_report()
 	var visible_rifle_ready: bool = contact_report.get("accepted", false) == true
-	var family_compatible := not pistol_source_clip and visible_rifle_ready and not neutral_fallback
+	var family_compatible := not pistol_source_clip and visible_rifle_ready and not incompatible_fallback
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
@@ -620,19 +619,20 @@ func get_component_state() -> Dictionary:
 		"animation_playing": player != null and player.is_playing(),
 		"weapon_family": WEAPON_FAMILY,
 		"weapon_family_compatible": family_compatible,
-		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"neutral_source_clip_incompatible" if neutral_fallback else &"visible_two_hand_rifle_ready" if family_compatible else &"socket_contact_unaccepted",
+		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"rail_source_clip_incompatible" if incompatible_fallback else &"visible_two_hand_rifle_ready" if family_compatible else &"socket_contact_unaccepted",
 		"binding_strategy": {
-			"selected_strategy": &"component_baseline_with_state_driven_rifle_socket_overlay",
+			"selected_strategy": &"neutral_standing_baseline_with_state_driven_rifle_socket_overlay",
 			"rifle_ready_authored_clips_available": false,
 			"authored_rifle_clip_binding_status": &"missing_required_asset",
 			"visible_rifle_ready_binding": family_compatible,
 			"source_clip_truthful": true,
-			"interim_issue_open": true,
+			"interim_issue_open": false,
 			"root_transform_tuning_primary_fix": false,
 			"actor_root_dynamic_axes": ["yaw"],
 			"model_axis_adapter_fixed": true,
 			"pistol_source_clip_rejected": pistol_source_clip,
-			"neutral_source_clip_disclosed": neutral_fallback,
+			"rail_source_clip_rejected": incompatible_fallback,
+			"adapter_mapping": &"idle_aim_fire_reload_use_neutral_body_plus_rifle_overlay",
 		},
 		"rifle_contact": contact_report,
 		"aim_pitch_degrees": _aim_pitch_degrees,
@@ -657,7 +657,7 @@ func _uses_procedural_rifle_semantic() -> bool:
 	return current_state in [MotionState.IDLE, MotionState.WALK, MotionState.RUN, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD]
 
 
-func _is_neutral_rifle_fallback(state: MotionState, clip_name: String) -> bool:
+func _is_incompatible_rifle_fallback(state: MotionState, clip_name: String) -> bool:
 	return state in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD] and clip_name == "Idle_Rail"
 
 

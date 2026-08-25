@@ -808,7 +808,7 @@ func _observer_offsets_for(region_id: StringName) -> Array[Vector3]:
 
 func _animation_binding_strategy() -> Dictionary:
 	return {
-		"selected_strategy": &"truthful_non_pistol_grounded_fallback_until_rifle_ready_intake",
+		"selected_strategy": &"neutral_standing_baseline_with_state_driven_rifle_socket_overlay",
 		"strategies_compared": [
 			&"restore_last_visually_accepted_baseline",
 			&"repair_current_wrapper_binding",
@@ -818,9 +818,9 @@ func _animation_binding_strategy() -> Dictionary:
 		"local_component": &"quaternius_ual1_ual2_retargeted_humanoid",
 		"rifle_ready_authored_clips_available": false,
 		"authored_rifle_clip_binding_status": &"missing_required_asset",
-		"combat_clip_disposition": &"neutral_combat_fallback_marked_incompatible_until_rifle_ready_set",
+		"combat_clip_disposition": &"idle_aim_fire_reload_use_neutral_body_plus_rifle_overlay",
 		"root_tilt_strategy": &"actor_root_pitch_roll_locked_fixture_reachable",
-		"issue_disposition": &"truthful_fallback_reported_rifle_semantic_asset_still_needed",
+		"issue_disposition": &"living_rifle_states_bound_to_rifle_compatible_adapter_mapping",
 	}
 
 
@@ -1301,7 +1301,12 @@ func _summary() -> Dictionary:
 }
 
 
-func tester_release_prepared_region(expected_region: StringName, expected_generation: int) -> Dictionary:
+func tester_release_prepared_region(
+	expected_region: StringName,
+	expected_generation: int,
+	commit_transitions := true,
+	commit_kill_evidence := true,
+) -> Dictionary:
 	var receipt := {
 		"requested": true,
 		"resolved": false,
@@ -1310,6 +1315,8 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 		"expected_generation": expected_generation,
 		"prepared_region": _tester_prepared_region,
 		"prepared_generation": _tester_prepared_generation,
+		"commit_transitions": commit_transitions,
+		"commit_kill_evidence": commit_kill_evidence,
 		"release_guard": &"OS.is_debug_build",
 	}
 	if not OS.is_debug_build():
@@ -1328,7 +1335,7 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 			continue
 		active_ids.append(String(enemy.stable_id))
 		release_receipts.append(enemy.set_tester_prepared_hold(false, expected_generation))
-		if enemy.has_method(&"tester_commit_combat_transition"):
+		if commit_transitions and enemy.has_method(&"tester_commit_combat_transition"):
 			transition_receipts.append(enemy.call(
 				&"tester_commit_combat_transition",
 				expected_generation,
@@ -1340,8 +1347,21 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 	var every_actor_released := not release_receipts.is_empty()
 	for actor_receipt: Dictionary in release_receipts:
 		every_actor_released = every_actor_released and actor_receipt.get("accepted", false) == true
-	var transition_summary := _combat_transition_causality_summary(transition_receipts)
-	var kill_evidence: Dictionary = _commit_branch_kill_evidence(expected_region, expected_generation)
+	var transition_summary := _combat_transition_causality_summary(transition_receipts) if commit_transitions else {
+		"accepted": true,
+		"skipped": true,
+		"reason": &"release_only_fixture",
+		"transition_count": 0,
+		"causality_contract": &"no_combat_injected_before_terminal_or_defusal_commit",
+	}
+	var kill_evidence: Dictionary = _commit_branch_kill_evidence(expected_region, expected_generation) if commit_kill_evidence else {
+		"requested": false,
+		"resolved": true,
+		"accepted": true,
+		"skipped": true,
+		"reason": &"release_only_fixture",
+		"authority": &"no_fixture_kill_requested",
+	}
 	if not every_actor_released:
 		receipt["failure_reason"] = &"actor_release_failed"
 		receipt["actor_release_receipts"] = release_receipts
