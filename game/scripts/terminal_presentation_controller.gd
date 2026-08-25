@@ -109,7 +109,7 @@ var _native_victory_reveal_complete := false
 
 
 func _ready() -> void:
-	process_mode = Node.PROCESS_MODE_PAUSABLE
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	mission.mission_event_committed.connect(_on_mission_event)
 	_tactical_hud = get_tree().get_first_node_in_group(&"tactical_hud")
 	victory_avatar.visible = false

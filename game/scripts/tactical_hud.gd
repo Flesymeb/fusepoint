@@ -632,6 +632,15 @@ func _on_weapon_shot(event: Dictionary) -> void:
 
 
 func _on_player_damage(event: Dictionary) -> void:
+	if StringName(event.get("damage_class", &"")) == &"bomb_terminal_explosion":
+		_suppressed_combat_event_count += 1
+		_last_suppressed_combat_event = {
+			"event_id": String(event.get("shot_id", event.get("event_id", ""))),
+			"kind": &"terminal_damage",
+			"reason": &"owned_by_terminal_failure_presentation",
+			"presentation_only": true,
+		}
+		return
 	var event_id := String(event.get("shot_id", event.get("event_id", "")))
 	if event_id.is_empty():
 		return
@@ -646,6 +655,15 @@ func _on_player_damage(event: Dictionary) -> void:
 
 
 func _on_player_death(event: Dictionary) -> void:
+	if StringName(event.get("damage_class", &"")) == &"bomb_terminal_explosion":
+		_suppressed_combat_event_count += 1
+		_last_suppressed_combat_event = {
+			"event_id": String(event.get("shot_id", event.get("event_id", ""))),
+			"kind": &"terminal_death",
+			"reason": &"owned_by_terminal_failure_presentation",
+			"presentation_only": true,
+		}
+		return
 	var event_id := String(event.get("shot_id", event.get("event_id", "")))
 	if event_id.is_empty():
 		return
@@ -679,6 +697,7 @@ func _push_combat_row(receipt: Dictionary) -> void:
 			existing = index
 			break
 	if existing >= 0:
+		_archive_row_cleanup(_event_row_receipts[existing], &"same_event_replaced")
 		_event_rows.remove_at(existing)
 		_event_row_receipts.remove_at(existing)
 		_event_row_expiries.remove_at(existing)

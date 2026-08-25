@@ -14,6 +14,12 @@ const SAMPLE_CONTEXT_INTERVAL := 0.25
 const COMBAT_SAMPLE_INTERVAL := 1.0
 const COMBAT_HISTORY_LIMIT := 24
 const TARGET_RESOLUTION := Vector2i(1920, 1080)
+const CANDIDATE_HOTPATHS: Array[Dictionary] = [
+	{"name": &"runtime_qualification_frame_accumulator", "ordinary_cadence": &"per_frame_scalar_only", "deep_only": false},
+	{"name": &"runtime_qualification_sample_context", "ordinary_cadence": SAMPLE_CONTEXT_INTERVAL, "deep_only": false},
+	{"name": &"cleanup_counter_scene_scan", "ordinary_cadence": DEEP_OBSERVATION_INTERVAL, "deep_only": true},
+	{"name": &"combat_presentation_snapshot", "ordinary_cadence": COMBAT_SAMPLE_INTERVAL, "deep_only": true},
+]
 
 @export var mission_path: NodePath
 @export var roster_path: NodePath
@@ -762,6 +768,7 @@ func qualification_snapshot() -> Dictionary:
 			"ordinary_process_enabled": is_processing() and not _qualification_enabled,
 			"ordinary_hotpath_scope": &"frame_time_accumulator_and_sampled_context",
 			"deep_inspection_per_frame_in_ordinary_play": false,
+			"candidate_hotpaths": CANDIDATE_HOTPATHS,
 			"start_action": &"tester_qualification_start",
 			"stop_action": &"tester_qualification_stop",
 			"release_guard": &"OS.is_debug_build",

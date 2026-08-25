@@ -151,6 +151,11 @@ func _on_player_damage(event: Dictionary) -> void:
 	var event_id := _primary_event_id(event)
 	if event_id.is_empty():
 		return
+	if StringName(event.get("damage_class", &"")) == &"bomb_terminal_explosion":
+		var terminal_row := _ensure_row(event_id, &"terminal")
+		_set_channel(terminal_row, &"terminal_damage_lock", event)
+		_publish(terminal_row)
+		return
 	var row := _ensure_row(event_id, &"player_damage")
 	row["source_actor"] = String(event.get("source_path", "enemy"))
 	row["damage_result"] = {
@@ -165,8 +170,13 @@ func _on_player_damage(event: Dictionary) -> void:
 
 
 func _on_player_death(event: Dictionary) -> void:
-	_restore_epoch += 1
 	var event_id := _primary_event_id(event)
+	if StringName(event.get("damage_class", &"")) == &"bomb_terminal_explosion":
+		var row := _ensure_row(event_id, &"terminal")
+		_set_channel(row, &"terminal_damage_lock", event)
+		_publish(row)
+		return
+	_restore_epoch += 1
 	var row := _ensure_row(event_id, &"player_death")
 	_set_channel(row, &"death", event)
 	_publish(row)
@@ -182,6 +192,12 @@ func _on_damage_feedback(event: Dictionary) -> void:
 
 func _on_death_feedback(event: Dictionary) -> void:
 	var event_id := _primary_event_id(event)
+	if StringName(event.get("damage_class", &"")) == &"bomb_terminal_explosion":
+		var terminal_row := _ensure_row(event_id, &"terminal")
+		var terminal_feedback: Dictionary = _damage_feedback.call(&"snapshot") if _damage_feedback != null and _damage_feedback.has_method(&"snapshot") else {}
+		_set_channel(terminal_row, &"terminal_damage_feedback", terminal_feedback)
+		_publish(terminal_row)
+		return
 	var row := _ensure_row(event_id, &"player_death")
 	var feedback: Dictionary = _damage_feedback.call(&"snapshot") if _damage_feedback != null and _damage_feedback.has_method(&"snapshot") else {}
 	_set_channel(row, &"camera_damage_mask", feedback)
