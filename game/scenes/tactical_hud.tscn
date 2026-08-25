@@ -1,4 +1,4 @@
-[gd_scene load_steps=12 format=3]
+[gd_scene load_steps=10 format=3]
 
 [ext_resource type="Script" path="res://scripts/tactical_hud.gd" id="1_script"]
 [ext_resource type="Theme" path="res://systems/ui/fusepoint_theme.tres" id="2_theme"]
@@ -7,20 +7,7 @@
 [ext_resource type="PackedScene" path="res://ui/hud/combat/weapon_ammo_hud.tscn" id="5_weapon"]
 [ext_resource type="FontFile" path="res://ui/hud/combat/fonts/BarlowCondensed-SemiBold.ttf" id="6_semibold"]
 [ext_resource type="Texture2D" path="res://assets/ui/icons/event_kill_rifle.svg" id="7_kill_icon"]
-
-[sub_resource type="StyleBoxFlat" id="ProgressBackground"]
-bg_color = Color(0.01, 0.02, 0.025, 0.52)
-corner_radius_top_left = 2
-corner_radius_top_right = 2
-corner_radius_bottom_right = 2
-corner_radius_bottom_left = 2
-
-[sub_resource type="StyleBoxFlat" id="ProgressFill"]
-bg_color = Color(0.95, 0.68, 0.16, 0.95)
-corner_radius_top_left = 2
-corner_radius_top_right = 2
-corner_radius_bottom_right = 2
-corner_radius_bottom_left = 2
+[ext_resource type="Script" path="res://scripts/objective_stage_gauge.gd" id="8_gauge"]
 
 [sub_resource type="StyleBoxFlat" id="BandStyle"]
 bg_color = Color(0.012, 0.026, 0.032, 0.22)
@@ -311,12 +298,10 @@ theme_override_constants/outline_size = 4
 theme_override_font_sizes/font_size = 15
 text = "ALPHA • RETAKE FOUNDRY GATE"
 horizontal_alignment = 1
-[node name="Progress" type="ProgressBar" parent="Root/ObjectiveBand/Layout"]
-custom_minimum_size = Vector2(320, 3)
+[node name="Progress" type="Control" parent="Root/ObjectiveBand/Layout"]
+custom_minimum_size = Vector2(320, 10)
 layout_mode = 2
-theme_override_styles/background = SubResource("ProgressBackground")
-theme_override_styles/fill = SubResource("ProgressFill")
-show_percentage = false
+script = ExtResource("8_gauge")
 [node name="Detail" type="Label" parent="Root/ObjectiveBand/Layout"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.78, 0.84, 0.83, 0.94)

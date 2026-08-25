@@ -533,7 +533,7 @@ func tester_advance_defusal_stage(expected_generation: int) -> Dictionary:
 		# stage, otherwise a completed stage leaves the fixture pinned and prevents
 		# the next 1/3 -> 2/3 preparation from resolving.
 		var roster_release: Dictionary = enemy_roster.call(
-			&"tester_release_prepared_region", &"charlie", expected_generation, false, false
+			&"tester_release_prepared_region", &"charlie", expected_generation, false, false, false
 		) if enemy_roster != null and enemy_roster.has_method(&"tester_release_prepared_region") else {}
 		if roster_release.get("accepted", false) != true:
 			receipt["roster_release"] = roster_release
@@ -1120,8 +1120,8 @@ func _tick_capture(delta: float) -> void:
 		var point: Dictionary = capture_points[point_id]
 		var contesting := _enemy_occupancy(point_id)
 		if contesting > 0:
-			if StringName(point["state"]) != &"contested_rift":
-				point["state"] = &"contested_rift"
+			if StringName(point["state"]) != &"contested":
+				point["state"] = &"contested"
 				_record_event(&"capture_contested", {"objective_id": point_id, "enemy_count": contesting})
 			_active_capture = point_id
 			point["progress"] = maxf(0.0, float(point["progress"]) - delta / capture_duration_seconds * 0.5)
@@ -1149,7 +1149,7 @@ func _point_is_legal(point_id: StringName) -> bool:
 
 func _interrupt_capture(point_id: StringName, reason: StringName) -> void:
 	var point: Dictionary = capture_points[point_id]
-	if StringName(point["state"]) not in [&"capturing_aegis", &"contested_rift"]:
+	if StringName(point["state"]) not in [&"capturing_aegis", &"contested"]:
 		return
 	point["state"] = &"held_rift"
 	capture_points[point_id] = point
@@ -1164,6 +1164,15 @@ func _enemy_occupancy(point_id: StringName) -> int:
 		return 0
 	var objective := get_node(alpha_path if point_id == &"alpha" else bravo_path) as Node3D
 	return int(enemy_roster.call(&"contest_count", point_id, objective.global_position, 4.5))
+
+
+func _enemy_bomb_occupancy() -> int:
+	if enemy_roster == null or not enemy_roster.has_method(&"contest_count"):
+		return 0
+	var objective := get_node_or_null(charlie_path) as Node3D
+	if objective == null:
+		return 0
+	return int(enemy_roster.call(&"contest_count", &"charlie", objective.global_position, 5.25))
 
 
 func report_enemy_event(event: Dictionary) -> void:
@@ -1249,6 +1258,10 @@ func _tick_bomb(delta: float) -> void:
 		return
 	if not Input.is_action_pressed(&"interact"):
 		_interrupt_bomb(&"input_released")
+		return
+	var contesting := _enemy_bomb_occupancy()
+	if contesting > 0:
+		_interrupt_bomb(&"enemy_interference")
 		return
 	var duration := _bomb_stage_duration(bomb_stage_index)
 	bomb_stage_progress = minf(1.0, bomb_stage_progress + delta / duration)
@@ -1842,6 +1855,7 @@ func objective_state_for(objective_id: StringName) -> Dictionary:
 		"progress": bomb_stage_progress,
 		"legal": route_locks[&"b_to_c"] != true,
 		"overlap": overlaps[&"charlie"],
+		"contest_enemy_count": _enemy_bomb_occupancy(),
 	}
 
 

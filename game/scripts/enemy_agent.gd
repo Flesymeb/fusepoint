@@ -261,6 +261,61 @@ func set_tester_prepared_hold(enabled: bool, setup_generation: int) -> Dictionar
 	return receipt
 
 
+func tester_reset_to_reserved_slot(setup_generation: int, reason: StringName = &"fixture_prepare_reset") -> Dictionary:
+	var receipt := {
+		"actor_id": stable_id,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"setup_generation": setup_generation,
+		"reason": reason,
+		"release_guard": &"OS.is_debug_build",
+		"previous_position": global_position,
+		"reserved_position": reserved_position,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if setup_generation <= 0 or not is_alive():
+		receipt["failure_reason"] = &"actor_not_stable_live"
+		return receipt
+	global_position = reserved_position
+	_home_position = reserved_position + Vector3.UP * 0.04
+	_has_home_position = true
+	velocity = Vector3.ZERO
+	_navigation_safe_velocity = Vector3.ZERO
+	_navigation_desired_velocity = Vector3.ZERO
+	_navigation_safe_velocity_ready = false
+	_route_reservation = {
+		"key": "%s:%s" % [String(region_id), String(route_slot)],
+		"actor_id": stable_id,
+		"slot": route_slot,
+		"position": reserved_position,
+		"desired_velocity": Vector3.ZERO,
+		"admitted_velocity": Vector3.ZERO,
+		"issued_frame": Engine.get_physics_frames(),
+		"expires_frame": Engine.get_physics_frames(),
+		"state": &"tester_reserved_reset",
+		"setup_generation": setup_generation,
+	}
+	if _navigation_agent != null:
+		_navigation_agent.target_position = reserved_position
+		_navigation_agent.set_velocity_forced(Vector3.ZERO)
+	reset_volatile_combat_state_for_restore()
+	if _health != null:
+		_health.reset_health()
+	var floor_support := resolve_floor_support(reason)
+	var accepted: bool = floor_support.get("accepted", false) == true
+	receipt.merge({
+		"resolved": true,
+		"accepted": accepted,
+		"failure_reason": &"" if accepted else floor_support.get("failure_reason", &"floor_support_rejected"),
+		"resolved_position": global_position,
+		"floor_support": floor_support,
+	}, true)
+	return receipt
+
+
 func tester_prepare_search_state(setup_generation: int) -> Dictionary:
 	var receipt := {
 		"actor_id": stable_id,

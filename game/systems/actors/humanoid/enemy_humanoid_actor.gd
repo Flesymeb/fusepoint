@@ -790,7 +790,6 @@ func rifle_contact_report() -> Dictionary:
 		return {"accepted": false, "failure_reason": &"missing_skeleton"}
 	if _weapon_attachment == null or _weapon_root == null or _muzzle_marker == null:
 		return {"accepted": false, "failure_reason": &"missing_weapon_socket"}
-	_target_skeleton.force_update_all_bone_transforms()
 	var right_hand := _bone_world_origin("right_hand")
 	var left_hand := _bone_world_origin("left_hand")
 	if right_hand == null or left_hand == null:

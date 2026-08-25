@@ -106,6 +106,8 @@ var _victory_video_finished := false
 var _victory_video_completion_reason := &"none"
 var _victory_fallback_started_at := 0.0
 var _native_victory_reveal_complete := false
+var _result_media_retained := false
+var _result_media_retention_receipt: Dictionary = {}
 
 
 func _ready() -> void:
@@ -575,10 +577,13 @@ func _clear_overlay() -> void:
 	media_layer.visible = false
 	media_layer.modulate.a = 1.0
 	media_treatment.visible = true
+	media_treatment.color = Color(0.035, 0.012, 0.008, 0.34)
 	media_top_rail.visible = true
 	media_title.visible = true
 	media_copy.visible = true
 	media_skip.visible = true
+	_result_media_retained = false
+	_result_media_retention_receipt.clear()
 
 
 func _spawn_explosion_layers(origin: Vector3) -> void:
@@ -679,6 +684,8 @@ func snapshot() -> Dictionary:
 		"completion_count": completion_count,
 		"duplicate_event_count": duplicate_event_count,
 		"camera_position": camera.global_position if camera != null else Vector3.ZERO,
+		"result_media_retained": _result_media_retained,
+		"result_media_retention": _result_media_retention_receipt.duplicate(true),
 		"victory_avatar_visible": victory_avatar.visible,
 		"victory_phase": String(victory_state.get("phase", &"idle")),
 		"victory_phase_serial": victory_state.get("phase_serial", 0),
@@ -838,6 +845,8 @@ func _retain_active_receipt(reason: StringName) -> void:
 		"blast_playing": blast_audio.playing,
 		"tail_playing": tail_audio.playing,
 		"media_visible": media_layer.visible or victory_fallback.visible,
+		"result_media_retained": _result_media_retained,
+		"result_media_retention": _result_media_retention_receipt.duplicate(true),
 		"victory_avatar_visible": victory_avatar.visible,
 		"observed_usec": Time.get_ticks_usec(),
 	}
@@ -846,6 +855,8 @@ func _retain_active_receipt(reason: StringName) -> void:
 
 
 func _cleanup_completed_presentation() -> void:
+	var retained_branch := branch
+	var retained_event_id := current_event_id
 	for node: Node in _effect_nodes:
 		if is_instance_valid(node):
 			node.queue_free()
@@ -858,6 +869,43 @@ func _cleanup_completed_presentation() -> void:
 	victory_sequence.reset_sequence(true)
 	victory_avatar.visible = false
 	_clear_overlay()
+	if retained_branch in [&"failure", &"success"]:
+		_show_result_media_plate(retained_branch, retained_event_id)
+
+
+func _show_result_media_plate(retained_branch: StringName, retained_event_id: String) -> void:
+	_result_media_retained = true
+	_result_media_retention_receipt = {
+		"terminal_event_id": retained_event_id,
+		"branch": retained_branch,
+		"family_id": &"terminal_result_backplate",
+		"visible": true,
+		"video_stopped": not (death_video.is_playing() or victory_video.is_playing()),
+		"effect_layer_count": _effect_layer_receipts().size(),
+		"blast_playing": blast_audio.playing,
+		"tail_playing": tail_audio.playing,
+		"retained_frame": Engine.get_process_frames(),
+	}
+	if retained_branch == &"success":
+		victory_fallback.visible = true
+		victory_fallback.modulate = Color(1.0, 1.0, 1.0, 0.38)
+		media_layer.visible = true
+		media_layer.modulate.a = 1.0
+		media_treatment.visible = false
+		media_top_rail.visible = false
+		media_title.visible = false
+		media_copy.visible = false
+	else:
+		media_layer.visible = true
+		media_layer.modulate.a = 0.72
+		media_treatment.visible = true
+		media_treatment.color = Color(0.055, 0.012, 0.006, 0.42)
+		media_top_rail.visible = true
+		media_title.visible = true
+		media_copy.visible = true
+		media_title.text = "BASE IMPACT - SIGNAL LOST"
+		media_copy.text = "ROCKET MAINTENANCE BAY DESTROYED\nFAILURE TELEMETRY ARCHIVE RETAINED"
+	media_skip.visible = false
 
 
 func _mcp_state() -> Dictionary:
@@ -879,6 +927,8 @@ func _mcp_state() -> Dictionary:
 		"health_zero": state.get("health_zero", false),
 		"player_terminal_locked": state.get("player_terminal_locked", false),
 		"media_visible": media_layer.visible,
+		"result_media_retained": _result_media_retained,
+		"result_media_retention": _result_media_retention_receipt.duplicate(true),
 		"video_visible": death_video.visible or victory_video.visible,
 		"video_playing": death_video.is_playing() or victory_video.is_playing(),
 		"victory_video_playing": victory_video.is_playing(),

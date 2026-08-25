@@ -40,7 +40,7 @@ const COMBAT_FEED_ALLOWED_KINDS: Array[StringName] = [
 @onready var stance_label: Label = $Root/Stance
 @onready var objective_band: Control = $Root/ObjectiveBand
 @onready var objective_label: Label = $Root/ObjectiveBand/Layout/Objective
-@onready var objective_progress: ProgressBar = $Root/ObjectiveBand/Layout/Progress
+@onready var objective_progress: Control = $Root/ObjectiveBand/Layout/Progress
 @onready var objective_detail: Label = $Root/ObjectiveBand/Layout/Detail
 @onready var narrative: Label = $Root/Narrative
 @onready var feed: VBoxContainer = $Root/CombatFeed
@@ -475,8 +475,10 @@ func _update_mission_state() -> void:
 			_update_bomb_interaction_band(point_state, distance)
 		else:
 			objective_label.text = _objective_title(point_id)
-			objective_progress.visible = active_capture
-			objective_progress.value = float(point_state.get("progress", 0.0)) * 100.0
+			var capture_progress := float(point_state.get("progress", 0.0))
+			var capture_state := StringName(point_state.get("state", &"unknown"))
+			objective_progress.visible = active_capture or capture_progress > 0.0 or capture_state == &"secured_aegis"
+			_apply_capture_gauge(capture_progress, active_capture, capture_state == &"contested", capture_state == &"secured_aegis")
 			var threat_count := int(point_state.get("contest_enemy_count", 0))
 			objective_detail.text = "%s   •   %dm   •   THREATS %d" % [String(point_state.get("state", &"unknown")).replace("_", " ").to_upper(), int(distance), threat_count]
 	else:
@@ -493,17 +495,20 @@ func _update_bomb_interaction_band(state: Dictionary, distance: float) -> void:
 	var overlap: bool = state.get("overlap", false) == true
 	var active: bool = state.get("active", false) == true
 	var progress := clampf(float(state.get("progress", 0.0)), 0.0, 1.0)
+	var threat_count := int(state.get("contest_enemy_count", 0))
 	var stage_name := String(state.get("stage_id", &"complete")).replace("_", " ").to_upper()
 	var segments: Array[String] = []
 	for index in 3:
 		segments.append("◆" if index < completed or bomb_state == &"defused" else "◇")
 	objective_label.text = "C  %s  %s" % [" ".join(segments), stage_name]
-	objective_progress.visible = active
-	objective_progress.value = 100.0 if bomb_state == &"defused" else progress * 100.0
+	objective_progress.visible = true
+	_apply_defusal_gauge(completed, int(state.get("stage_index", 0)), progress, active, not legal, threat_count > 0, bomb_state == &"defused")
 	if bomb_state == &"defused":
 		objective_detail.text = "DEVICE SAFE   •   ALL THREE STAGES LATCHED"
 	elif bomb_state == &"detonated":
 		objective_detail.text = "DETONATED   •   COMBAT LOCKED"
+	elif threat_count > 0:
+		objective_detail.text = "%s   •   CLEAR THREATS %d   •   DEFUSAL UNSAFE" % [stage_name, threat_count]
 	elif not legal:
 		objective_detail.text = "LOCKED   •   RECOVER TWO DEFUSAL KEYS"
 	elif active:
@@ -593,6 +598,8 @@ func _update_objective_authority_receipt(point_id: StringName, point_state: Dict
 		"bravo_secured": bravo_secured,
 		"legal_next_objective": &"bravo" if alpha_secured and not bravo_secured else &"charlie" if alpha_secured and bravo_secured else &"alpha",
 		"lower_band_text": objective_label.text,
+		"progress_presentation": &"custom_segmented_stage_gauge",
+		"progress_visible": objective_progress.visible,
 		"stale_alpha_lower_band": stale_alpha_visible,
 		"event_frame": Engine.get_process_frames(),
 	}
@@ -610,14 +617,66 @@ func _on_mission_event(event: Dictionary) -> void:
 		var payload: Dictionary = event.get("payload", {})
 		var objective_id := StringName(payload.get("objective_id", &""))
 		if objective_id == &"alpha":
-			_begin_radio_cues(["Command: Alpha secure. Move to Bravo."], String(event.get("event_id", "alpha_handoff")))
+			_begin_radio_cues(["Command: Alpha secure. Gate key recovered. Move to Bravo."], String(event.get("event_id", "alpha_handoff")))
 			_update_mission_state()
 		elif objective_id == &"bravo":
-			_begin_radio_cues(["Command: Bravo secure. Breach Charlie."], String(event.get("event_id", "bravo_handoff")))
+			_begin_radio_cues(["Command: Bravo secure. Converter key recovered. Charlie is open."], String(event.get("event_id", "bravo_handoff")))
 			_update_mission_state()
+	elif kind == &"route_unlocked":
+		var route_payload: Dictionary = event.get("payload", {})
+		if StringName(route_payload.get("route_id", &"")) == &"b_to_c":
+			_begin_radio_cues(["Aegis: Route to Charlie unlocked. Expect contact at the rocket bay."], String(event.get("event_id", "charlie_route")))
+	elif kind == &"objective_enter":
+		var enter_payload: Dictionary = event.get("payload", {})
+		if StringName(enter_payload.get("objective_id", &"")) == &"charlie":
+			_begin_radio_cues(["EOD: Begin diagnosis, isolate power, then remove the detonator."], String(event.get("event_id", "charlie_approach")))
+	elif kind == &"defusal_locked":
+		_begin_radio_cues(["Aegis: Charlie locked. Recover both keys before touching the device."], String(event.get("event_id", "charlie_locked")))
+	elif kind == &"defusal_started":
+		var started_payload: Dictionary = event.get("payload", {})
+		_begin_radio_cues(["EOD: %s active. Hold position until the stage latches." % _stage_display_name(StringName(started_payload.get("stage_id", &"")))], String(event.get("event_id", "defusal_started")))
+	elif kind == &"defusal_interrupted":
+		var interrupted_payload: Dictionary = event.get("payload", {})
+		_begin_radio_cues(["EOD: Defusal interrupted - %s. Resume when clear." % String(interrupted_payload.get("reason", &"interference")).replace("_", " ")], String(event.get("event_id", "defusal_interrupted")))
+	elif kind == &"defusal_completed":
+		var completed_payload: Dictionary = event.get("payload", {})
+		var completed_stage_index := int(completed_payload.get("stage_index", 0))
+		_begin_radio_cues(["EOD: %s latched. %d of 3 complete." % [_stage_display_name(StringName(completed_payload.get("stage_id", &""))), completed_stage_index + 1]], String(event.get("event_id", "defusal_complete")))
+	elif kind == &"terminal_submitted":
+		var terminal_payload: Dictionary = event.get("payload", {})
+		var terminal_result := StringName(terminal_payload.get("result", &"bomb_detonated"))
+		var terminal_cues: Array[String] = []
+		terminal_cues.append("Aegis: Device safe. Mission complete." if terminal_result == &"bomb_defused" else "Aegis: Detonation confirmed. Kestrel Ridge lost.")
+		_begin_radio_cues(terminal_cues, String(event.get("event_id", "terminal_result")))
 	var important := kind in COMBAT_FEED_ALLOWED_KINDS
 	if important:
 		_push_combat_row(_row_receipt(event))
+
+
+func _apply_capture_gauge(progress: float, active: bool, contested: bool, complete: bool) -> void:
+	if objective_progress.has_method(&"set_capture_progress"):
+		objective_progress.call(&"set_capture_progress", progress, active, contested, complete)
+	else:
+		objective_progress.set("value", progress * 100.0)
+
+
+func _apply_defusal_gauge(done_count: int, stage_index: int, progress: float, active: bool, locked: bool, contested: bool, complete: bool) -> void:
+	if objective_progress.has_method(&"set_defusal_progress"):
+		objective_progress.call(&"set_defusal_progress", done_count, stage_index, progress, active, locked, contested, complete)
+	else:
+		objective_progress.set("value", 100.0 if complete else progress * 100.0)
+
+
+func _stage_display_name(stage_id: StringName) -> String:
+	match stage_id:
+		&"diagnosis":
+			return "Diagnosis"
+		&"power_isolation":
+			return "Power isolation"
+		&"detonator_removal":
+			return "Detonator removal"
+		_:
+			return String(stage_id).replace("_", " ").capitalize()
 
 
 func _on_weapon_shot(event: Dictionary) -> void:

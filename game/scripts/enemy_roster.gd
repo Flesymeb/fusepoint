@@ -593,12 +593,15 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 		return last_tester_setup_receipt.duplicate(true)
 	activation_sequence += 1
 	var hold_receipts: Array[Dictionary] = []
+	var reserved_reset_receipts: Array[Dictionary] = []
 	var stage_receipts: Array[Dictionary] = []
 	var staged_index := 0
 	for enemy: FusepointEnemyAgent in enemies.values():
 		var included := _fixture_includes_enemy(region_id, enemy)
 		enemy.set_mission_active(included, activation_sequence)
 		if included:
+			var reset_receipt := enemy.tester_reset_to_reserved_slot(setup_generation, &"region_presence_prepare")
+			reserved_reset_receipts.append(reset_receipt)
 			var hold_receipt := enemy.set_tester_prepared_hold(true, setup_generation)
 			hold_receipts.append(hold_receipt)
 			if hold_receipt.get("accepted", false) == true and enemy.has_method(&"tester_stage_prepared_combat"):
@@ -638,10 +641,13 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 	var every_actor_held := hold_receipts.size() == expected_count
 	for hold_receipt: Dictionary in hold_receipts:
 		every_actor_held = every_actor_held and hold_receipt.get("accepted", false) == true
+	var every_actor_reset := reserved_reset_receipts.size() == expected_count
+	for reset_receipt: Dictionary in reserved_reset_receipts:
+		every_actor_reset = every_actor_reset and reset_receipt.get("accepted", false) == true
 	var every_actor_staged := stage_receipts.size() == expected_count
 	for stage_receipt: Dictionary in stage_receipts:
 		every_actor_staged = every_actor_staged and stage_receipt.get("accepted", false) == true
-	var accepted: bool = occupancy.get("accepted", false) == true and active_region_ids.size() == expected_count and active_alive_count == expected_count and reset_isolation["capture_points_unchanged"] == true and every_actor_held and every_actor_staged
+	var accepted: bool = occupancy.get("accepted", false) == true and active_region_ids.size() == expected_count and active_alive_count == expected_count and reset_isolation["capture_points_unchanged"] == true and every_actor_reset and every_actor_held and every_actor_staged
 	last_tester_setup_receipt.merge({
 		"resolved": true,
 		"accepted": accepted,
@@ -652,8 +658,10 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 		"actor_state_page": _combat_actor_page_from_snapshots(active_snapshots),
 		"observation_matrix": _combat_observation_matrix_from_snapshots(active_snapshots),
 		"occupancy": occupancy,
+		"reserved_reset_receipts": reserved_reset_receipts,
 		"actor_hold_receipts": hold_receipts,
 		"prepared_combat_stage_receipts": stage_receipts,
+		"stable_reserved_reset": every_actor_reset,
 		"stable_inspection_hold": every_actor_held,
 		"combat_states_staged": every_actor_staged,
 		"reset_isolation": reset_isolation,
@@ -1321,6 +1329,7 @@ func tester_release_prepared_region(
 	expected_generation: int,
 	commit_transitions := true,
 	commit_kill_evidence := true,
+	keep_observation_window := true,
 ) -> Dictionary:
 	var receipt := {
 		"requested": true,
@@ -1332,6 +1341,7 @@ func tester_release_prepared_region(
 		"prepared_generation": _tester_prepared_generation,
 		"commit_transitions": commit_transitions,
 		"commit_kill_evidence": commit_kill_evidence,
+		"keep_observation_window": keep_observation_window,
 		"release_guard": &"OS.is_debug_build",
 	}
 	if not OS.is_debug_build():
@@ -1387,11 +1397,19 @@ func tester_release_prepared_region(
 		receipt["combat_transition_receipts"] = transition_receipts
 		receipt["combat_causality_summary"] = transition_summary
 		return receipt
-	# Keep the released region selected for a bounded, inspectable observation
-	# window. Actors now run their ordinary AI; only the debug region selector is
-	# pinned until the next prepare or lifecycle reset.
-	_tester_advanced_region = expected_region
-	_tester_advanced_generation = expected_generation
+	# Encounter releases keep a bounded, inspectable observation window. Defusal
+	# releases clear the branch so the next C stage can prepare without released
+	# Charlie actors remaining inside the bomb footprint.
+	if keep_observation_window:
+		_tester_advanced_region = expected_region
+		_tester_advanced_generation = expected_generation
+	else:
+		_tester_advanced_region = &""
+		_tester_advanced_generation = 0
+		activation_sequence += 1
+		for enemy: FusepointEnemyAgent in enemies.values():
+			if _fixture_includes_enemy(expected_region, enemy):
+				enemy.set_mission_active(false, activation_sequence)
 	_tester_prepared_region = &""
 	_tester_prepared_generation = 0
 	receipt.merge({

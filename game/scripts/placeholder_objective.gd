@@ -79,16 +79,16 @@ func _update_device_presentation(state: Dictionary) -> void:
 	var color := Color(1.0, 0.52, 0.035) if objective_id == &"alpha" else Color(0.04, 0.68, 0.96)
 	match point_state:
 		&"capturing_aegis": color = Color(0.02, 0.72, 0.92)
-		&"contested_rift": color = Color(1.0, 0.52, 0.035)
+		&"contested": color = Color(1.0, 0.52, 0.035)
 		&"recapturing_rift": color = Color(0.95, 0.19, 0.02)
 		&"secured_aegis": color = Color(0.04, 0.92, 0.68)
-	var pulse := 0.82 + sin(Time.get_ticks_msec() * 0.012) * 0.18 if point_state == &"contested_rift" else 1.0
+	var pulse := 0.82 + sin(Time.get_ticks_msec() * 0.012) * 0.18 if point_state == &"contested" else 1.0
 	for state_material in _source_state_materials:
 		state_material.emission = color
 		state_material.emission_energy_multiplier = (0.18 + progress * 0.22) * pulse
 	if device_light != null:
 		device_light.light_color = color
-		device_light.light_energy = (1.2 if point_state in [&"capturing_aegis", &"contested_rift"] else 0.42) * pulse
+		device_light.light_energy = (1.2 if point_state in [&"capturing_aegis", &"contested"] else 0.42) * pulse
 
 
 func _on_body_entered(body: Node3D) -> void:
