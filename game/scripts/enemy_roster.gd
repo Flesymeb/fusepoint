@@ -1307,9 +1307,16 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 	var every_actor_released := not release_receipts.is_empty()
 	for actor_receipt: Dictionary in release_receipts:
 		every_actor_released = every_actor_released and actor_receipt.get("accepted", false) == true
+	var transition_summary := _combat_transition_causality_summary(transition_receipts)
 	if not every_actor_released:
 		receipt["failure_reason"] = &"actor_release_failed"
 		receipt["actor_release_receipts"] = release_receipts
+		return receipt
+	if transition_summary.get("accepted", false) != true:
+		receipt["failure_reason"] = transition_summary.get("failure_reason", &"combat_transition_causality_failed")
+		receipt["actor_release_receipts"] = release_receipts
+		receipt["combat_transition_receipts"] = transition_receipts
+		receipt["combat_causality_summary"] = transition_summary
 		return receipt
 	# Keep the released region selected for a bounded, inspectable observation
 	# window. Actors now run their ordinary AI; only the debug region selector is
@@ -1330,6 +1337,7 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 		"observation_generation": _tester_advanced_generation,
 		"actor_release_receipts": release_receipts,
 		"combat_transition_receipts": transition_receipts,
+		"combat_causality_summary": transition_summary,
 		"combat_authority": &"ordinary_enemy_physics_perception_navigation_fire",
 		"route_acceptance_claimed": false,
 	}, true)
@@ -1362,6 +1370,76 @@ func combat_actor_page(region_id: StringName = &"", offset := 0, limit := ACTOR_
 		"truncated": end < ids.size(),
 		"next_offset": end if end < ids.size() else -1,
 		"items": items,
+	}
+
+
+func _combat_transition_causality_summary(transition_receipts: Array[Dictionary]) -> Dictionary:
+	var shot_ids: Array[String] = []
+	var attack_receipt_count := 0
+	var accepted_shot_or_negative_count := 0
+	var direct_fixture_damage_count := 0
+	var ammo_commit_total := 0
+	var player_damage_applied_count := 0
+	var player_health_delta_total := 0.0
+	var invalid_attack_receipts: Array[Dictionary] = []
+	var modes: Array[StringName] = []
+	for transition: Dictionary in transition_receipts:
+		var mode := StringName(transition.get("mode", &""))
+		if mode not in modes:
+			modes.append(mode)
+		var attack: Dictionary = transition.get("attack_report", {})
+		if attack.is_empty():
+			continue
+		attack_receipt_count += 1
+		if String(attack.get("shot_id", "")).is_empty():
+			invalid_attack_receipts.append({
+				"actor_id": transition.get("actor_id", &""),
+				"mode": mode,
+				"reason": &"missing_shot_id",
+				"attack_reason": attack.get("reason", &""),
+			})
+			continue
+		shot_ids.append(String(attack.get("shot_id", "")))
+		if attack.get("accepted_shot_or_valid_negative", false) == true:
+			accepted_shot_or_negative_count += 1
+		else:
+			invalid_attack_receipts.append({
+				"actor_id": transition.get("actor_id", &""),
+				"mode": mode,
+				"reason": &"shot_not_accepted_or_negative",
+				"attack_result": attack.get("result", &""),
+				"attack_reason": attack.get("reason", &""),
+			})
+		if attack.get("fixture_direct_damage", false) == true:
+			direct_fixture_damage_count += 1
+		ammo_commit_total += int(attack.get("ammo_commit", 0))
+		if attack.get("applied", false) == true:
+			player_damage_applied_count += 1
+			var before := float(attack.get("health_before", -1.0))
+			var after := float(attack.get("health_after", before))
+			if before >= 0.0 and after >= 0.0:
+				player_health_delta_total += before - after
+	var accepted := (
+		attack_receipt_count > 0
+		and accepted_shot_or_negative_count == attack_receipt_count
+		and direct_fixture_damage_count == 0
+		and ammo_commit_total >= attack_receipt_count
+		and invalid_attack_receipts.is_empty()
+	)
+	return {
+		"accepted": accepted,
+		"failure_reason": &"" if accepted else &"combat_transition_causality_failed",
+		"transition_count": transition_receipts.size(),
+		"attack_receipt_count": attack_receipt_count,
+		"accepted_shot_or_valid_negative_count": accepted_shot_or_negative_count,
+		"direct_fixture_damage_count": direct_fixture_damage_count,
+		"ammo_commit_total": ammo_commit_total,
+		"player_damage_applied_count": player_damage_applied_count,
+		"player_health_delta_total": player_health_delta_total,
+		"shot_ids": shot_ids,
+		"modes": modes,
+		"invalid_attack_receipts": invalid_attack_receipts,
+		"causality_contract": &"advance_fixtures_call_authoritative_enemy_shot_only",
 	}
 
 

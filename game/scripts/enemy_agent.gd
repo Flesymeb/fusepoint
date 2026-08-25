@@ -58,6 +58,7 @@ var _aim_pitch_degrees := 0.0
 var _upright_correction_count := 0
 var _route_reservation: Dictionary = {}
 var _last_pre_shot_authorization: Dictionary = {}
+var _pending_fixture_shot_context: Dictionary = {}
 var _last_progress_position := Vector3.ZERO
 var _stalled_seconds := 0.0
 var _progress_watchdog_count := 0
@@ -379,7 +380,7 @@ func tester_stage_prepared_combat(stage: StringName, setup_generation: int) -> D
 			_begin_reload()
 		&"hurt":
 			_prime_target_for_fixture()
-			var damage_report := _apply_tester_player_damage(false, setup_generation, &"prepared_hurt")
+			var damage_report := _apply_tester_self_damage(false, setup_generation, &"prepared_hurt")
 			receipt["damage_report"] = damage_report
 		_:
 			_prime_target_for_fixture()
@@ -416,17 +417,12 @@ func tester_commit_combat_transition(setup_generation: int, mode: StringName) ->
 	_prime_target_for_fixture()
 	match mode:
 		&"enemy_fire":
-			if rounds_remaining <= 0:
-				rounds_remaining = 1
-			_reaction_remaining = 0.0
-			_attack_remaining = 0.0
-			_face_target(1.0)
-			var attack := force_attack_if_ready()
+			var attack := _force_fixture_enemy_shot(setup_generation, mode, false)
 			receipt["attack_report"] = attack
 		&"lethal_player_hit":
-			receipt["damage_report"] = _apply_tester_player_damage(true, setup_generation, &"advance_lethal")
+			receipt["attack_report"] = _force_fixture_enemy_shot(setup_generation, mode, true)
 		&"nonlethal_player_hit":
-			receipt["damage_report"] = _apply_tester_player_damage(false, setup_generation, &"advance_hurt")
+			receipt["attack_report"] = _force_fixture_enemy_shot(setup_generation, mode, false)
 		&"reload":
 			rounds_remaining = 0
 			_begin_reload()
@@ -451,7 +447,55 @@ func _prime_target_for_fixture() -> void:
 		_face_target(1.0)
 
 
-func _apply_tester_player_damage(lethal: bool, setup_generation: int, reason: StringName) -> Dictionary:
+func _force_fixture_enemy_shot(setup_generation: int, mode: StringName, lethal: bool) -> Dictionary:
+	_prime_target_for_fixture()
+	if rounds_remaining <= 0:
+		rounds_remaining = 1
+	_reaction_remaining = 0.0
+	_attack_remaining = 0.0
+	_reload_remaining = 0.0
+	_hurt_remaining = 0.0
+	_face_target(1.0)
+	var original_damage := attack_damage
+	if lethal and _target_health != null and is_instance_valid(_target_health):
+		if _target_health is FPSHealth:
+			attack_damage = maxf((_target_health as FPSHealth).current_health + 1.0, original_damage)
+		elif "health" in _target_health:
+			attack_damage = maxf(float(_target_health.get("health")) + 1.0, original_damage)
+	_pending_fixture_shot_context = {
+		"fixture_authority": &"tester_encounter_advance_authoritative_enemy_shot",
+		"fixture_mode": mode,
+		"setup_generation": setup_generation,
+		"lethal_requested": lethal,
+		"fixture_direct_damage": false,
+	}
+	var attack := force_attack_if_ready()
+	_pending_fixture_shot_context.clear()
+	attack_damage = original_damage
+	attack["fixture_authority"] = &"tester_encounter_advance_authoritative_enemy_shot"
+	attack["fixture_mode"] = mode
+	attack["setup_generation"] = setup_generation
+	attack["lethal_requested"] = lethal
+	attack["damage_causality"] = &"enemy_shot_event" if attack.get("applied", false) == true else &"no_fixture_damage"
+	attack["fixture_direct_damage"] = false
+	attack["accepted_shot_or_valid_negative"] = attack.get("accepted", false) == true and StringName(attack.get("result", &"unknown")) in [&"hit", &"blocked", &"miss"]
+	_last_pre_shot_authorization = {
+		"accepted": attack.get("accepted", false) == true,
+		"fixture_mode": mode,
+		"setup_generation": setup_generation,
+		"shot_id": attack.get("shot_id", ""),
+		"result": attack.get("result", &"unknown"),
+		"ammo_before": attack.get("ammo_before", rounds_remaining),
+		"ammo_after": attack.get("ammo_after", rounds_remaining),
+		"ammo_commit": attack.get("ammo_commit", 0),
+		"target_path": attack.get("target_path", ""),
+		"receiver_path": attack.get("receiver_path", ""),
+		"failure_reason": attack.get("reason", ""),
+	}
+	return attack
+
+
+func _apply_tester_self_damage(lethal: bool, setup_generation: int, reason: StringName) -> Dictionary:
 	if _health == null:
 		return {"accepted": false, "failure_reason": &"health_unavailable"}
 	if not lethal and _health.current_health <= 16.0:
@@ -467,7 +511,7 @@ func _apply_tester_player_damage(lethal: bool, setup_generation: int, reason: St
 		"hit_region": &"center_mass",
 		"target_id": stable_id,
 		"target_path": String(get_path()) if is_inside_tree() else "",
-		"fixture_authority": &"tester_encounter_advance_real_health",
+		"fixture_authority": &"tester_encounter_prepare_enemy_hurt_self_damage",
 	})
 
 
@@ -933,11 +977,16 @@ func _on_attack_resolved(report: Dictionary) -> void:
 	if _restored_epoch > 0:
 		_restore_readiness = &"combat_ready"
 	var event := report.duplicate(true)
+	if not _pending_fixture_shot_context.is_empty():
+		event.merge(_pending_fixture_shot_context, true)
+		event["damage_causality"] = &"enemy_shot_event" if event.get("applied", false) == true else &"no_fixture_damage"
+		event["accepted_shot_or_valid_negative"] = event.get("accepted", false) == true and StringName(event.get("result", &"unknown")) in [&"hit", &"blocked", &"miss"]
 	event["actor_id"] = stable_id
 	event["weapon_id"] = &"rift_carbine"
 	event["region"] = region_id
 	event["role"] = tactical_role
 	event["ammo_after"] = rounds_remaining
+	last_attack_report = event.duplicate(true)
 	_shot_feedback.show_shot(event)
 	_commit_enemy_event(&"shot_resolved", event)
 
@@ -1110,6 +1159,8 @@ func _perform_attack() -> Dictionary:
 	var authorization := _pre_shot_authorization()
 	_last_pre_shot_authorization = authorization
 	if authorization.get("accepted", false) != true:
+		if _authorization_allows_negative_shot(authorization):
+			return _perform_occluded_negative_attack(authorization)
 		_attack_remaining = minf(maxf(attack_interval * 0.25, 0.08), 0.3)
 		return {
 			"accepted": false,
@@ -1124,6 +1175,71 @@ func _perform_attack() -> Dictionary:
 	var report := super._perform_attack()
 	report["pre_shot_authorization"] = authorization
 	_last_pre_shot_authorization = authorization
+	return report
+
+
+func _authorization_allows_negative_shot(authorization: Dictionary) -> bool:
+	if target == null or not is_instance_valid(target) or rounds_remaining <= 0:
+		return false
+	if authorization.get("body_clear", false) != true:
+		return false
+	var muzzle_occupancy := authorization.get("muzzle_occupancy", {}) as Dictionary
+	if muzzle_occupancy.get("clear", false) != true:
+		return false
+	var reason := StringName(authorization.get("reason", &""))
+	return reason in [&"eye_occluded", &"muzzle_occluded", &"reciprocal_occlusion_blocked"]
+
+
+func _perform_occluded_negative_attack(authorization: Dictionary) -> Dictionary:
+	_set_ai_state(AIState.FIRE)
+	_fire_pose_remaining = fire_pose_seconds
+	_attack_remaining = attack_interval
+	rounds_remaining -= 1
+	_attack_sequence += 1
+	_attack_attempts_on_current_target += 1
+	var shot_id := "run-%06d:enemy:%s:%06d" % [run_epoch, name, _attack_sequence]
+	var shot_origin := _muzzle.global_position if _muzzle != null else global_position
+	var shot_endpoint := _target_aim_position(target) if target != null else shot_origin - global_basis.z
+	var shot_direction := shot_origin.direction_to(shot_endpoint)
+	var trace := _resolve_attack_trace(shot_origin, shot_endpoint)
+	var trace_result := StringName(trace.get("result", &"miss"))
+	var result := &"miss" if trace_result == &"miss" else &"blocked"
+	var receiver_path := String(_target_health.get_path()) if _target_health != null and is_instance_valid(_target_health) and _target_health.is_inside_tree() else ""
+	var receiver_type := StringName(_target_health.get_class()) if _target_health != null and is_instance_valid(_target_health) else &"none"
+	if _target_health != null and _target_health.has_method(&"apply_damage") and not _target_health is FPSHealth:
+		receiver_type = &"PrototypePlayer"
+	var receiver_health_before := float(_target_health.get("current_health")) if _target_health is FPSHealth else float(_target_health.get("health")) if _target_health != null and "health" in _target_health else -1.0
+	var report := {
+		"event_id": shot_id,
+		"shot_id": shot_id,
+		"run_epoch": run_epoch,
+		"source_team": attack_team,
+		"source_path": String(get_path()) if is_inside_tree() else "",
+		"damage": attack_damage,
+		"accepted": true,
+		"hit": false,
+		"origin": _eye.global_position if _eye != null else global_position,
+		"muzzle_origin": shot_origin,
+		"direction": shot_direction,
+		"hit_position": trace.get("position", shot_endpoint),
+		"hit_normal": trace.get("normal", Vector3.UP),
+		"result": result,
+		"surface_kind": trace.get("surface_kind", &"air"),
+		"ammo_before": rounds_remaining + 1,
+		"ammo_after": rounds_remaining,
+		"ammo_commit": 1,
+		"target_path": String(target.get_path()) if target != null else "",
+		"receiver_path": receiver_path,
+		"receiver_type": receiver_type,
+		"health_before": receiver_health_before,
+		"health_authority": &"FPSHealth" if _target_health is FPSHealth else &"PrototypePlayer.health" if receiver_type == &"PrototypePlayer" else &"none",
+		"applied": false,
+		"reason": "resolved_%s_from_%s" % [String(result), String(authorization.get("reason", &"occluded"))],
+		"pre_shot_authorization": authorization.duplicate(true),
+		"negative_shot_authority": &"occluded_line_of_fire_receipt",
+	}
+	last_attack_report = report
+	attack_resolved.emit(report)
 	return report
 
 

@@ -1016,6 +1016,7 @@ func tester_advance_prepared_encounter(expected_region: StringName = &"", expect
 		"roster_release": roster_release,
 		"actor_state_page": roster_release.get("actor_state_page", []),
 		"observation_matrix": roster_release.get("observation_matrix", {}),
+		"combat_causality_summary": roster_release.get("combat_causality_summary", {}),
 		"reset_isolation": {
 			"capture_points_unchanged": _fixture_progression_frontier() == frontier_before,
 			"checkpoint_version_unchanged": checkpoint_version == checkpoint_before,
