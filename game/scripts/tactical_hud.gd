@@ -324,14 +324,11 @@ func _input(event: InputEvent) -> void:
 
 
 func _is_story_advance_input(event: InputEvent) -> bool:
-	if event is InputEventMouseButton:
-		var mouse_event := event as InputEventMouseButton
-		return mouse_event.button_index == MOUSE_BUTTON_LEFT and mouse_event.pressed
-	return event.is_action_pressed(&"menu_accept") or event.is_action_pressed(&"skip_presentation")
+	return event.is_action_pressed(&"fire") or event.is_action_pressed(&"menu_accept") or event.is_action_pressed(&"skip_presentation")
 
 
 func _story_input_source(event: InputEvent) -> StringName:
-	if event is InputEventMouseButton:
+	if event.is_action_pressed(&"fire"):
 		return &"left_click"
 	if event.is_action_pressed(&"skip_presentation"):
 		return &"physical_g_skip"

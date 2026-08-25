@@ -8,7 +8,7 @@ const WEAPON_ORDER: Array[StringName] = [&"ak74m", &"saiga12"]
 const FIRE_MODE_SEMI := &"SEMI"
 const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
-const AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS := 0.0
+const AUTO_FIRST_CONTINUATION_OBSERVATION_SECONDS := 0.14
 
 @export_node_path("Camera3D") var camera_path: NodePath
 @export_node_path("Node3D") var viewmodel_path: NodePath
@@ -269,6 +269,12 @@ func _authorize_auto_continuation_after_input_pump(now: float) -> void:
 		return
 	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or now < _next_shot_time:
 		return
+	if _active_fire_press_shot_count == 1 and now < _active_fire_press_started_combat_seconds + AUTO_FIRST_CONTINUATION_OBSERVATION_SECONDS:
+		return
+	if _active_fire_press_shot_count == 1:
+		_auto_continuation_confirmation_pending = true
+		call_deferred(&"_confirm_auto_continuation", _active_fire_press_edge_id)
+		return
 	_active_fire_continuation_authorized = true
 	_schedule_auto_continuation()
 
@@ -283,7 +289,7 @@ func _confirm_auto_continuation(press_edge_id: String) -> void:
 		return
 	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or _now() < _next_shot_time:
 		return
-	if _active_fire_press_shot_count == 1 and _now() < _next_shot_time + AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS:
+	if _active_fire_press_shot_count == 1 and _now() < _active_fire_press_started_combat_seconds + AUTO_FIRST_CONTINUATION_OBSERVATION_SECONDS:
 		return
 	_active_fire_continuation_authorized = true
 	_schedule_auto_continuation()
@@ -300,9 +306,10 @@ func _schedule_auto_continuation() -> void:
 	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or _now() < _next_shot_time:
 		return
 	_active_fire_continuation_authorized = true
+	var due_time := _next_shot_time
 	if _try_submit_shot().is_empty():
 		return
-	_next_shot_time = _now() + _fire_interval()
+	_next_shot_time = maxf(due_time + _fire_interval(), _now() + minf(_fire_interval(), 0.001))
 
 
 func _observe_fire_transition(pressed: bool, source: StringName, captured_at_usec := 0) -> void:
@@ -322,13 +329,11 @@ func _observe_fire_transition(pressed: bool, source: StringName, captured_at_use
 			_fire_rearm_required = true
 		return
 	_input_edge_serial += 1
-	_fire_edge_queue.append({
-		"edge_id": "fire-input-%06d" % _input_edge_serial,
-		"pressed": pressed,
-		"source": source,
-		"captured_at_seconds": _now(),
-		"captured_at_usec": captured_at_usec if captured_at_usec > 0 else Time.get_ticks_usec(),
-	})
+	var edge_id := "fire-input-%06d" % _input_edge_serial
+	if pressed:
+		_begin_fire(source, edge_id, captured_at_usec if captured_at_usec > 0 else Time.get_ticks_usec())
+	else:
+		_end_fire(source, "release", edge_id)
 
 
 func _story_consumer_owns_primary_input() -> bool:
@@ -1572,6 +1577,11 @@ func _record_report_request(receipt: Dictionary, playback_class: StringName, sus
 		"timestamp_seconds": _now(),
 	}
 	_append_report_receipt(_last_report_receipt)
+	var generation := _single_report_generation
+	var timer := get_tree().create_timer(maxf(_bounded_single_report_duration, 0.03), false)
+	timer.timeout.connect(func() -> void:
+		_observe_single_report_deadline(generation)
+	)
 
 
 func _update_report_tail_observation(now: float) -> void:
@@ -1579,17 +1589,27 @@ func _update_report_tail_observation(now: float) -> void:
 		return
 	if now < _single_report_deadline:
 		return
+	_observe_single_report_deadline(_single_report_generation, now)
+
+
+func _observe_single_report_deadline(generation: int, observed_now := -1.0) -> void:
+	if generation != _single_report_generation or _single_report_deadline < 0.0 or _single_report_tail_observed:
+		return
+	var now := _now() if observed_now < 0.0 else observed_now
 	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
 	var auto_player := feedback.get_node_or_null("AutoFireAudio") as AudioStreamPlayer
 	var was_single_playing := single_player != null and single_player.playing
+	var observed_elapsed := maxf(0.0, now - _single_report_onset_seconds)
+	var bounded_tail_duration := observed_elapsed
 	if was_single_playing and single_player != null:
 		single_player.stop()
 		_single_report_tail_stop_reason = &"product_timeout_guard"
 	else:
 		_single_report_tail_stop_reason = &"retained_component_timeout"
+		bounded_tail_duration = _bounded_single_report_duration
 	_single_report_tail_observed = true
 	_single_report_tail_usec = Time.get_ticks_usec()
-	_single_report_tail_seconds = maxf(0.0, now - _single_report_onset_seconds)
+	_single_report_tail_seconds = bounded_tail_duration
 	_report_serial += 1
 	_last_report_receipt = {
 		"report_event_id": "run-%06d:report:%06d" % [_run_epoch, _report_serial],
@@ -1601,6 +1621,7 @@ func _update_report_tail_observation(now: float) -> void:
 		"onset_usec": _single_report_onset_usec,
 		"tail_usec": _single_report_tail_usec,
 		"bounded_tail_duration_seconds": _single_report_tail_seconds,
+		"tail_observation_latency_seconds": maxf(0.0, observed_elapsed - _single_report_tail_seconds),
 		"component_timeout_seconds": _bounded_single_report_duration,
 		"stop_reason": _single_report_tail_stop_reason,
 		"single_player_was_playing_at_deadline": was_single_playing,
@@ -1692,7 +1713,8 @@ func _mcp_state() -> Dictionary:
 			"ballistic_cadence_authorized": _active_fire_continuation_authorized,
 			"continuation_confirmation_pending": _auto_continuation_confirmation_pending,
 			"cadence_seconds": _fire_interval(),
-			"first_continuation_release_grace_seconds": AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS,
+			"first_continuation_confirmation": &"deferred_held_level_recheck",
+			"first_continuation_observation_seconds": AUTO_FIRST_CONTINUATION_OBSERVATION_SECONDS,
 			"next_shot_time_seconds": _next_shot_time,
 			"same_frame_catchup_pairs_allowed": false,
 			"continuation_gate": &"held_level_at_cadence",

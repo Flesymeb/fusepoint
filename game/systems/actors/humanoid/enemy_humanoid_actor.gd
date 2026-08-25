@@ -572,6 +572,7 @@ func get_component_state() -> Dictionary:
 	var animation_length := player.current_animation_length if player != null else 0.0
 	var clip_name := _custom_clip if _custom_preview else String(STATE_CLIPS[current_state]["clip"])
 	var procedural_rifle := _uses_procedural_rifle_semantic()
+	var pistol_source_clip := "pistol" in clip_name.to_lower()
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
@@ -590,8 +591,8 @@ func get_component_state() -> Dictionary:
 		"animation_normalized_time": clampf(animation_position / animation_length, 0.0, 1.0) if animation_length > 0.0 else 0.0,
 		"animation_playing": player != null and player.is_playing(),
 		"weapon_family": WEAPON_FAMILY,
-		"weapon_family_compatible": procedural_rifle or "pistol" not in clip_name.to_lower(),
-		"compatibility_disposition": &"product_rifle_overlay_on_retained_source_clip" if procedural_rifle else &"compatible_noncombat_source",
+		"weapon_family_compatible": not pistol_source_clip,
+		"compatibility_disposition": &"unresolved_pistol_source_clip_for_rifle_semantic" if pistol_source_clip else &"compatible_noncombat_source",
 		"aim_pitch_degrees": _aim_pitch_degrees,
 		"aim_pitch_serial": _aim_pitch_serial,
 		"presentation_adapter_rotation_degrees": rotation_degrees,
@@ -611,7 +612,7 @@ func get_component_state() -> Dictionary:
 
 
 func _uses_procedural_rifle_semantic() -> bool:
-	return not _custom_preview and current_state in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD]
+	return false
 
 
 func _resolved_animation_semantic() -> StringName:
@@ -619,13 +620,13 @@ func _resolved_animation_semantic() -> StringName:
 		return StringName("source_%s" % _custom_clip.to_snake_case())
 	match current_state:
 		MotionState.IDLE:
-			return &"rifle_idle_ready"
+			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
 		MotionState.AIM:
-			return &"rifle_aim"
+			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
 		MotionState.FIRE:
-			return &"rifle_fire"
+			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
 		MotionState.RELOAD:
-			return &"rifle_reload"
+			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
 		_:
 			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
 
