@@ -243,6 +243,7 @@ func _event_identity(event: Dictionary, shot_id: String) -> String:
 func _spawn_muzzle(position: Vector3, direction: Vector3, color: Color, event: Dictionary, variant_index: int) -> void:
 	var root := Node3D.new()
 	root.name = "Muzzle_%s" % _safe_id(event)
+	_bind_event_metadata(root, event)
 	var core := MeshInstance3D.new()
 	var core_mesh := SphereMesh.new()
 	core_mesh.radius = 0.038 + 0.004 * float(variant_index)
@@ -283,6 +284,7 @@ func _spawn_tracer(from: Vector3, to: Vector3, color: Color, event: Dictionary, 
 	var tracer := MeshInstance3D.new()
 	var role := &"near_miss" if result == &"miss" else &"bounded_tracer"
 	tracer.name = "%s_%s" % [String(role).to_pascal_case(), _safe_id(event)]
+	_bind_event_metadata(tracer, event)
 	var mesh := CylinderMesh.new()
 	mesh.top_radius = (0.0058 + 0.0005 * float(variant_index)) if StringName(event.get("source_team", &"player")) == &"enemy" else 0.005
 	mesh.bottom_radius = mesh.top_radius
@@ -304,6 +306,7 @@ func _spawn_impact(position: Vector3, event: Dictionary) -> void:
 	var surface := StringName(event.get("surface_kind", &"character" if bool(event.get("hit", false)) else &"concrete"))
 	var root := Node3D.new()
 	root.name = "Impact_%s_%s" % [surface, _safe_id(event)]
+	_bind_event_metadata(root, event)
 	match surface:
 		&"character":
 			_build_character_impact(root)
@@ -415,6 +418,7 @@ func _spawn_audio_cue(position: Vector3, stream: AudioStream, role: StringName, 
 	player.play()
 	_append_audio_receipt({
 		"receipt_id": receipt_id,
+		"event_id": event_identity,
 		"event_identity": event_identity,
 		"run_epoch": current_run_epoch,
 		"role": role,
@@ -602,9 +606,18 @@ func _active_effect_snapshot() -> Array[Dictionary]:
 			"retirement_token": retirement_token,
 			"name": effect.name,
 			"role": StringName(effect.get_meta(&"effect_role", &"unknown")),
+			"event_id": String(effect.get_meta(&"event_identity", "")),
+			"shot_id": String(effect.get_meta(&"shot_id", "")),
 			"lifetime_seconds": float(effect.get_meta(&"effect_lifetime_seconds", 0.0)),
 		})
 	return result
+
+
+func _bind_event_metadata(effect: Node3D, event: Dictionary) -> void:
+	var shot_id := String(event.get("shot_id", ""))
+	effect.set_meta(&"shot_id", shot_id)
+	effect.set_meta(&"event_identity", _event_identity(event, shot_id) if not shot_id.is_empty() else "")
+	effect.set_meta(&"authority_frame", int(event.get("committed_frame", Engine.get_process_frames())))
 
 
 func _is_local_player_hit(event: Dictionary, source_team: StringName, result: StringName, surface: StringName) -> bool:

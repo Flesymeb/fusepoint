@@ -29,6 +29,7 @@ const RIFLE_FIRE_SECONDS := 0.18
 const RIFLE_RELOAD_SECONDS := 1.65
 const RIFLE_SOURCE_GRIP_OFFSET := Vector3(0.0, 2.0, 5.0)
 const RIFLE_MUZZLE_LOCAL := Vector3(0.0, 5.4, 13.85)
+const RIFLE_SUPPORT_HAND_FORWARD_RATIO := 0.42
 const RIFLE_SOCKET_POSITION := Vector3(0.02, 0.02, -0.02)
 const RIFLE_SOCKET_LOW_READY_ROTATION := Vector3(0.0, 90.0, 0.0)
 const RIFLE_SOCKET_SHOULDER_ROTATION := Vector3(-10.0, 90.0, 0.0)
@@ -414,8 +415,9 @@ func _apply_pose_and_ground() -> void:
 	_retargeter.apply_pose(_hips_translation_mode())
 	_apply_rifle_aim_overlay()
 	_apply_rifle_action_overlay()
-	_apply_ground_contact()
 	_apply_weapon_pose_for_state()
+	_apply_rifle_contact_overlay()
+	_apply_ground_contact()
 
 
 func set_aim_pitch(pitch_degrees: float) -> void:
@@ -488,6 +490,29 @@ func _apply_weapon_pose_for_state() -> void:
 			_weapon_root.rotation_degrees = RIFLE_SOCKET_RELOAD_ROTATION
 		_:
 			_weapon_root.rotation_degrees = RIFLE_SOCKET_LOW_READY_ROTATION
+
+
+func _apply_rifle_contact_overlay() -> void:
+	if _target_skeleton == null or _muzzle_marker == null or current_state not in [MotionState.IDLE, MotionState.WALK, MotionState.RUN, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD]:
+		return
+	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
+	if not mapping.has("left_hand") or not mapping.has("right_hand"):
+		return
+	_target_skeleton.force_update_all_bone_transforms()
+	var right_hand_world: Vector3 = _bone_world_origin("right_hand")
+	var muzzle_world := _muzzle_marker.global_position
+	var hand_to_muzzle := muzzle_world - right_hand_world
+	if hand_to_muzzle.length() <= 0.1:
+		return
+	var support_target := right_hand_world.lerp(muzzle_world, RIFLE_SUPPORT_HAND_FORWARD_RATIO)
+	if current_state == MotionState.RELOAD:
+		var reload_reach := sin(clampf(_rifle_action_elapsed / maxf(_rifle_action_duration, 0.001), 0.0, 1.0) * PI)
+		support_target = support_target.lerp(right_hand_world.lerp(muzzle_world, 0.28) + global_transform.basis.y * 0.18, reload_reach)
+	var left_hand_index: int = mapping["left_hand"]
+	var left_pose := _target_skeleton.get_bone_global_pose(left_hand_index)
+	left_pose.origin = _target_skeleton.to_local(support_target)
+	_target_skeleton.set_bone_global_pose(left_hand_index, left_pose)
+	_target_skeleton.force_update_all_bone_transforms()
 
 
 func _apply_ground_contact() -> void:

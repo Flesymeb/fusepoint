@@ -12,7 +12,7 @@ const DEPLOYMENT_STORY_CUES: Array[String] = [
 	"Defuse Charlie before the five-minute detonation.",
 ]
 const SAFE_AREA_RATIO := 0.05
-const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v4_split_narrative_lanes"
+const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v5_lower_narrative_lanes"
 const COMBAT_ROW_LIFETIME_SECONDS := 6.0
 const COMBAT_ROW_LIMIT := 5
 const STORY_TYPE_SECONDS := 1.35
@@ -201,6 +201,10 @@ func _apply_responsive_layout() -> void:
 	reticle.position = center - Vector2(14.0, 14.0)
 	reticle.size = Vector2(28.0, 28.0)
 	var narrative_width := minf(900.0, viewport_size.x - safe.x * 2.0 - 8.0)
+	var objective_width := minf(460.0 if expanded else 360.0, viewport_size.x - safe.x * 2.0 - 8.0)
+	objective_band.position = Vector2(center.x - objective_width * 0.5, viewport_size.y - safe.y - (106.0 if expanded else 96.0))
+	objective_band.size = Vector2(objective_width, 82.0 if expanded else 60.0)
+	objective_progress.custom_minimum_size.x = maxf(objective_width - 30.0, 120.0)
 	if _story_profile == &"opening":
 		var left_limit := safe.x + 206.0
 		var right_limit := viewport_size.x - safe.x - 354.0
@@ -210,14 +214,13 @@ func _apply_responsive_layout() -> void:
 		narrative.size = Vector2(opening_width, 162.0 if expanded else 150.0)
 		narrative.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	else:
-		var cue_width := minf(720.0 if expanded else 760.0, narrative_width)
-		narrative.position = Vector2(center.x - cue_width * 0.5, safe.y + (206.0 if expanded else 188.0))
-		narrative.size = Vector2(cue_width, 96.0 if expanded else 86.0)
-		narrative.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	var objective_width := minf(460.0 if expanded else 360.0, viewport_size.x - safe.x * 2.0 - 8.0)
-	objective_band.position = Vector2(center.x - objective_width * 0.5, viewport_size.y - safe.y - (106.0 if expanded else 96.0))
-	objective_band.size = Vector2(objective_width, 82.0 if expanded else 60.0)
-	objective_progress.custom_minimum_size.x = maxf(objective_width - 30.0, 120.0)
+		var cue_width := minf(820.0 if expanded else 760.0, narrative_width)
+		var objective_top := objective_band.position.y
+		var cue_height := 84.0 if expanded else 76.0
+		var lower_lane_y := clampf(objective_top - cue_height - 52.0, center.y + 84.0, viewport_size.y - safe.y - cue_height - 18.0)
+		narrative.position = Vector2(center.x - cue_width * 0.5, lower_lane_y)
+		narrative.size = Vector2(cue_width, cue_height)
+		narrative.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	vitals.position = Vector2(safe.x + 2.0, viewport_size.y - safe.y - 56.0)
 	vitals.size = Vector2(280.0, 54.0)
 	stance_label.position = Vector2(safe.x + 2.0, viewport_size.y - safe.y - 84.0)
@@ -607,10 +610,10 @@ func _on_mission_event(event: Dictionary) -> void:
 		var payload: Dictionary = event.get("payload", {})
 		var objective_id := StringName(payload.get("objective_id", &""))
 		if objective_id == &"alpha":
-			_begin_radio_cues(["Command: Alpha secure. Wiring topology recovered.\nMove to Bravo."], String(event.get("event_id", "alpha_handoff")))
+			_begin_radio_cues(["Command: Alpha secure. Move to Bravo."], String(event.get("event_id", "alpha_handoff")))
 			_update_mission_state()
 		elif objective_id == &"bravo":
-			_begin_radio_cues(["Command: Bravo secure. Isolation frequency recovered.\nBreach Charlie."], String(event.get("event_id", "bravo_handoff")))
+			_begin_radio_cues(["Command: Bravo secure. Breach Charlie."], String(event.get("event_id", "bravo_handoff")))
 			_update_mission_state()
 	var important := kind in COMBAT_FEED_ALLOWED_KINDS
 	if important:
@@ -894,7 +897,7 @@ func tester_prepare_authoritative_radio_cue(authority: Dictionary) -> Dictionary
 	if event_id.is_empty():
 		_last_tester_radio_receipt["failure_reason"] = &"authoritative_event_id_required"
 		return _last_tester_radio_receipt.duplicate(true)
-	_begin_radio_cues(["Command: Alpha secure. Wiring topology recovered.\nMove to Bravo."], event_id)
+	_begin_radio_cues(["Command: Alpha secure. Move to Bravo."], event_id)
 	_last_tester_radio_receipt.merge({
 		"resolved": true,
 		"accepted": _story_active and _story_profile == &"radio",
@@ -1002,6 +1005,7 @@ func _mcp_state() -> Dictionary:
 		"story_cue_count": _story_cues.size(),
 		"story_current_text": narrative.text,
 		"story_indefinite_dwell": _story_profile == &"radio",
+		"story_confirmation_held": _story_profile != &"opening" and _story_active,
 		"story_opening_confirm_driven": false,
 		"story_phase": _story_phase,
 		"story_visible_characters": _story_visible_characters,
@@ -1015,14 +1019,16 @@ func _mcp_state() -> Dictionary:
 		"story_weapon_lock_active": _story_weapon_lock_active,
 		"story_font_px": narrative.get_theme_font_size("font_size"),
 		"story_non_blocking_gameplay": not _story_weapon_lock_active,
-		"story_safe_lane": &"upper_safe_lane_between_map_compass_feed_and_reticle",
+		"story_safe_lane": &"upper_safe_lane_between_map_compass_feed_and_reticle" if _story_profile == &"opening" or (_story_profile == &"inactive" and _last_story_profile == &"opening") else &"lower_safe_lane_above_objective_band_below_reticle",
 		"story_bounds": story_rect,
 		"story_line_count": narrative.text.count("\n") + 1 if narrative.visible else 0,
 		"story_profile_contract": {
 			"opening_lines_accumulate": true,
 			"opening_confirm_advances": false,
+			"opening_unattended_timeline_preserved": true,
+			"opening_full_five_line_hold": true,
 			"opening_timeline_seconds": [0.0, OPENING_REVEAL_SECONDS, OPENING_HOLD_END_SECONDS, OPENING_FADE_END_SECONDS],
-			"radio_max_lines": 2,
+			"radio_max_lines": 1,
 			"weapon_fire_suppression_receipted": true,
 		},
 		"minimap_component": minimap.get_path(),
