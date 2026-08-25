@@ -35,6 +35,9 @@ const SETTINGS_COMPONENT_MAIN_SCRIPT := "res://ui/shell/maaacks_main_menu/main_m
 const SETTINGS_COMPONENT_BASE_SCENE := "res://addons/maaacks_menus_template/base/nodes/menus/main_menu/main_menu.tscn"
 const SETTINGS_COMPONENT_SCENE: PackedScene = preload("res://ui/shell/maaacks_main_menu/main_menu.tscn")
 const SETTINGS_COMPONENT_ROW_HEIGHT := 40.0
+const OPENING_VIDEO_PATH := "res://assets/cinematics/fusepoint_opening.ogv"
+const OPENING_VIDEO_AUDIO_RECEIPT := "res://assets/cinematics/fusepoint_opening_video_only_receipt.json"
+const OPENING_VIDEO_SHA256 := "e85d2381b9aa4ccb795d2fa1b614a8f97af7d16ec776be153ab1687042e2620f"
 const NON_PAGE_STATES: Array[StringName] = [STATE_DEPLOYMENT, STATE_GAMEPLAY, STATE_VICTORY, STATE_DETONATION]
 const LIFECYCLE_TABLE := {
 	&"title": {"predecessors":[&"title",&"loadout",&"briefing",&"settings",&"pause",&"death_recovery",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/TitlePage/Menu/StartButton"},
@@ -53,7 +56,7 @@ const LIFECYCLE_TABLE := {
 	&"failure_result": {"predecessors":[&"detonation"], "authority":&"terminal", "blocking":true, "focus":"Root/Pages/ResultPage/Menu/ReplayButton"},
 }
 const LIFECYCLE_ACTIONS := {
-	&"replay": {"legal_from":[&"success_result",&"failure_result"], "target":&"loadout"},
+	&"replay": {"legal_from":[&"success_result",&"failure_result"], "target":&"briefing"},
 	&"checkpoint_restart": {"legal_from":[&"gameplay",&"pause",&"death_recovery",&"failure_result"], "target":&"recovery_transition"},
 	&"home": {"legal_from":[&"pause",&"death_recovery",&"success_result",&"failure_result"], "target":&"title"},
 }
@@ -946,14 +949,23 @@ func _tester_prepare_replay() -> void:
 		return
 	var run_epoch_before := int(mission.get("run_epoch"))
 	_replay()
+	var focused := get_viewport().gui_get_focus_owner()
 	receipt["resolved"] = true
-	receipt["accepted"] = app_state == STATE_LOADOUT and int(mission.get("run_epoch")) == run_epoch_before + 1
+	receipt["accepted"] = (
+		app_state == STATE_BRIEFING
+		and _briefing_complete
+		and focused == $Root/Pages/BriefingPage/Actions/DeployButton
+		and int(mission.get("run_epoch")) == run_epoch_before + 1
+	)
 	receipt["reset_isolation"] = {
 		"new_run_epoch": int(mission.get("run_epoch")),
 		"previous_run_epoch": run_epoch_before,
 		"mission_predeployment": StringName(mission.get("mission_state")) == &"predeployment",
 		"gameplay_input_disabled": player.get("gameplay_input_enabled") == false,
 		"terminal_cache_cleared": _observed_terminal_results.is_empty(),
+		"briefing_complete": _briefing_complete,
+		"focused_deploy_button": focused == $Root/Pages/BriefingPage/Actions/DeployButton,
+		"route_acceptance_claimed": false,
 	}
 	receipt["failure_reason"] = &"" if receipt["accepted"] else &"authoritative_replay_rejected"
 	_store_tester_setup_receipt(receipt)
@@ -1887,7 +1899,27 @@ func _replay() -> void:
 		return
 	_observed_terminal_results.clear()
 	_set_gameplay_enabled(false)
-	_show_page(STATE_LOADOUT)
+	if not _route_to_deploy_ready_briefing(&"replay", &"replay_deploy_ready"):
+		_last_lifecycle_action_receipt["accepted"] = false
+		_last_lifecycle_action_receipt["failure_reason"] = &"replay_briefing_route_rejected"
+		_record_transition_rejection(&"replay", &"replay_briefing_route_rejected")
+
+
+func _route_to_deploy_ready_briefing(reason: StringName, completion_source: StringName) -> bool:
+	if app_state != STATE_LOADOUT:
+		if not _show_page(STATE_LOADOUT, reason):
+			return false
+	_loading_remaining = 0.0
+	if not _show_page(STATE_LOADING, reason):
+		return false
+	if not _show_page(STATE_BRIEFING, reason):
+		return false
+	_complete_briefing(false, completion_source)
+	var deploy_button := $Root/Pages/BriefingPage/Actions/DeployButton as Button
+	deploy_button.disabled = false
+	deploy_button.grab_focus()
+	_finalize_transition_focus()
+	return app_state == STATE_BRIEFING and _briefing_complete and get_viewport().gui_get_focus_owner() == deploy_button
 
 
 func _on_mission_event_committed(event: Dictionary) -> void:
@@ -2037,6 +2069,7 @@ func _mcp_state() -> Dictionary:
 			"opening_media_status": _opening_media_status,
 			"opening_stream_bound": briefing_video.stream != null,
 			"opening_video_loop": briefing_video.loop,
+			"opening_audio_owner": _opening_audio_owner_receipt(),
 			"briefing_complete": _briefing_complete,
 			"briefing_caption_index": _briefing_caption_index,
 			"briefing_visible_characters": _briefing_visible_characters,
@@ -2144,8 +2177,9 @@ func _mcp_state() -> Dictionary:
 		"opening_video_stream_length": briefing_video.get_stream_length() if briefing_video.stream != null else 0.0,
 		"opening_completion_source": _opening_completion_source,
 		"opening_completion_count": _opening_completion_count,
-		"opening_video_path": "res://assets/cinematics/fusepoint_opening.ogv",
+		"opening_video_path": OPENING_VIDEO_PATH,
 		"opening_receipt_path": "res://art/source/cinematics/opening_fusepoint_daylight_i2v/generation_receipt.json",
+		"opening_audio_owner": _opening_audio_owner_receipt(),
 		"deployment_requested": _deployment_requested,
 		"death_lock_remaining": _death_lock_remaining,
 		"active_recovery_epoch": _active_recovery_epoch,
@@ -2160,4 +2194,18 @@ func _mcp_state() -> Dictionary:
 		"terminal_result_receipts": _terminal_result_receipts.duplicate(true),
 		"terminal_result_receipt_count": _terminal_result_receipts.size(),
 		"terminal_presentation": terminal.snapshot(),
+	}
+
+
+func _opening_audio_owner_receipt() -> Dictionary:
+	return {
+		"receipt_path": OPENING_VIDEO_AUDIO_RECEIPT,
+		"opening_video_path": OPENING_VIDEO_PATH,
+		"runtime_video_sha256": OPENING_VIDEO_SHA256,
+		"container_audio_stream_present": false,
+		"authorized_dialogue_owner": false,
+		"opening_video_can_emit_embedded_audio": false,
+		"transcode": &"video_only_copy_stream",
+		"video_duration_seconds": 10.0,
+		"audio_owner_status": &"removed_from_runtime_container",
 	}

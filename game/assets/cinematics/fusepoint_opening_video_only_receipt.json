@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "asset": "res://assets/cinematics/fusepoint_opening.ogv",
+  "operation": "ffmpeg_video_stream_copy_without_audio",
+  "source_container_before_fix": {
+    "video_stream": {
+      "codec": "theora",
+      "duration_seconds": 10.0
+    },
+    "audio_stream": {
+      "codec": "vorbis",
+      "duration_seconds": 10.03102,
+      "authorized_owner": false
+    }
+  },
+  "runtime_container_after_fix": {
+    "sha256": "e85d2381b9aa4ccb795d2fa1b614a8f97af7d16ec776be153ab1687042e2620f",
+    "video_stream": {
+      "codec": "theora",
+      "duration_seconds": 10.0
+    },
+    "audio_stream_present": false,
+    "opening_video_can_emit_embedded_audio": false
+  }
+}

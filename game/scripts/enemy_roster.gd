@@ -675,7 +675,7 @@ func tester_prepare_enemy_search_state(region_id: StringName, setup_generation: 
 
 func _animation_binding_strategy() -> Dictionary:
 	return {
-		"selected_strategy": &"non_pistol_grounded_fallback_until_rifle_ready_intake",
+		"selected_strategy": &"truthful_non_pistol_grounded_fallback_until_rifle_ready_intake",
 		"strategies_compared": [
 			&"restore_last_visually_accepted_baseline",
 			&"repair_current_wrapper_binding",
@@ -684,9 +684,9 @@ func _animation_binding_strategy() -> Dictionary:
 		],
 		"local_component": &"quaternius_ual1_ual2_retargeted_humanoid",
 		"rifle_ready_authored_clips_available": false,
-		"combat_clip_disposition": &"pistol_source_clips_replaced_with_non_pistol_neutral_fallback",
+		"combat_clip_disposition": &"neutral_combat_fallback_marked_incompatible_until_rifle_ready_set",
 		"root_tilt_strategy": &"actor_root_pitch_roll_locked_fixture_reachable",
-		"issue_disposition": &"pistol_binding_removed_rifle_semantic_asset_still_needed",
+		"issue_disposition": &"truthful_fallback_reported_rifle_semantic_asset_still_needed",
 	}
 
 

@@ -573,6 +573,7 @@ func get_component_state() -> Dictionary:
 	var procedural_rifle := _uses_procedural_rifle_semantic()
 	var pistol_source_clip := "pistol" in clip_name.to_lower()
 	var neutral_fallback := _is_neutral_rifle_fallback(current_state, clip_name)
+	var family_compatible := not pistol_source_clip and not neutral_fallback
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
@@ -591,11 +592,12 @@ func get_component_state() -> Dictionary:
 		"animation_normalized_time": clampf(animation_position / animation_length, 0.0, 1.0) if animation_length > 0.0 else 0.0,
 		"animation_playing": player != null and player.is_playing(),
 		"weapon_family": WEAPON_FAMILY,
-		"weapon_family_compatible": not pistol_source_clip,
-		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"neutral_non_pistol_rifle_fallback" if neutral_fallback else &"compatible_noncombat_source",
+		"weapon_family_compatible": family_compatible,
+		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"neutral_non_pistol_rifle_fallback_still_open" if neutral_fallback else &"compatible_noncombat_source",
 		"binding_strategy": {
-			"selected_strategy": &"non_pistol_grounded_fallback_until_rifle_ready_intake",
+			"selected_strategy": &"truthful_non_pistol_grounded_fallback_until_rifle_ready_intake",
 			"rifle_ready_authored_clips_available": false,
+			"rifle_ready_authored_binding": family_compatible and current_state not in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD],
 			"source_clip_truthful": true,
 			"interim_issue_open": neutral_fallback,
 			"root_transform_tuning_primary_fix": false,
