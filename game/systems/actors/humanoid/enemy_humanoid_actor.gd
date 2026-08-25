@@ -42,11 +42,10 @@ const SKINS := {
 	},
 }
 const STATE_CLIPS := {
-	# Restore the component's last stable authored combat presentation. The UAL
-	# package has no rifle-authored state set, so these retain their truthful
-	# pistol source identity and keep the rifle-binding issue open instead of
-	# relabeling one neutral rail loop as aim, fire, and reload.
-	MotionState.IDLE: {"library": "ual1", "clip": "Pistol_Idle", "loop": true},
+	# The current UAL package has no coherent rifle-authored combat set. Use
+	# grounded non-pistol source clips so rifle actors no longer resolve pistol
+	# animations while receipts still expose the neutral fallback.
+	MotionState.IDLE: {"library": "ual1", "clip": "Idle", "loop": true},
 	MotionState.WALK: {"library": "ual1", "clip": "Walk", "loop": true},
 	MotionState.RUN: {"library": "ual1", "clip": "Jog_Fwd", "loop": true},
 	MotionState.CROUCH_IDLE: {"library": "ual1", "clip": "Crouch_Idle", "loop": true},
@@ -54,9 +53,9 @@ const STATE_CLIPS := {
 	MotionState.JUMP_START: {"library": "ual1", "clip": "Jump_Start", "loop": false},
 	MotionState.AIRBORNE: {"library": "ual1", "clip": "Jump", "loop": true},
 	MotionState.LAND: {"library": "ual1", "clip": "Jump_Land", "loop": false},
-	MotionState.AIM: {"library": "ual1", "clip": "Pistol_Aim_Neutral", "loop": true},
-	MotionState.FIRE: {"library": "ual1", "clip": "Pistol_Shoot", "loop": false},
-	MotionState.RELOAD: {"library": "ual1", "clip": "Pistol_Reload", "loop": false},
+	MotionState.AIM: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
+	MotionState.FIRE: {"library": "ual1", "clip": "Spell_Simple_Shoot", "loop": false},
+	MotionState.RELOAD: {"library": "ual1", "clip": "Interact", "loop": false},
 	# A regular bullet hit should read as a short flinch, not a full-body
 	# knockback. Hit_Head gives the requested small head snap while preserving
 	# the actor's planted combat stance.
@@ -573,6 +572,7 @@ func get_component_state() -> Dictionary:
 	var clip_name := _custom_clip if _custom_preview else String(STATE_CLIPS[current_state]["clip"])
 	var procedural_rifle := _uses_procedural_rifle_semantic()
 	var pistol_source_clip := "pistol" in clip_name.to_lower()
+	var neutral_fallback := _is_neutral_rifle_fallback(current_state, clip_name)
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
@@ -592,15 +592,16 @@ func get_component_state() -> Dictionary:
 		"animation_playing": player != null and player.is_playing(),
 		"weapon_family": WEAPON_FAMILY,
 		"weapon_family_compatible": not pistol_source_clip,
-		"compatibility_disposition": &"unresolved_pistol_source_clip_for_rifle_semantic" if pistol_source_clip else &"compatible_noncombat_source",
+		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"neutral_non_pistol_rifle_fallback" if neutral_fallback else &"compatible_noncombat_source",
 		"binding_strategy": {
-			"selected_strategy": &"restore_stable_component_baseline_with_fixture_isolation",
+			"selected_strategy": &"non_pistol_grounded_fallback_until_rifle_ready_intake",
 			"rifle_ready_authored_clips_available": false,
 			"source_clip_truthful": true,
-			"interim_issue_open": pistol_source_clip,
+			"interim_issue_open": neutral_fallback,
 			"root_transform_tuning_primary_fix": false,
 			"actor_root_dynamic_axes": ["yaw"],
 			"model_axis_adapter_fixed": true,
+			"pistol_source_clip_rejected": pistol_source_clip,
 		},
 		"aim_pitch_degrees": _aim_pitch_degrees,
 		"aim_pitch_serial": _aim_pitch_serial,
@@ -624,18 +625,22 @@ func _uses_procedural_rifle_semantic() -> bool:
 	return false
 
 
+func _is_neutral_rifle_fallback(state: MotionState, clip_name: String) -> bool:
+	return state in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD] and not ("pistol" in clip_name.to_lower())
+
+
 func _resolved_animation_semantic() -> StringName:
 	if _custom_preview:
 		return StringName("source_%s" % _custom_clip.to_snake_case())
 	match current_state:
 		MotionState.IDLE:
-			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
+			return &"rifle_idle_grounded_fallback"
 		MotionState.AIM:
-			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
+			return &"rifle_aim_grounded_fallback"
 		MotionState.FIRE:
-			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
+			return &"rifle_fire_grounded_fallback"
 		MotionState.RELOAD:
-			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
+			return &"rifle_reload_grounded_fallback"
 		_:
 			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
 

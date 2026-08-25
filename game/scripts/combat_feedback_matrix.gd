@@ -269,6 +269,8 @@ func _on_hud_row(receipt: Dictionary) -> void:
 		"lifetime_seconds": receipt.get("lifetime_seconds", 0.0),
 		"expires_at_seconds": receipt.get("expires_at_seconds", 0.0),
 		"cleanup_observed": receipt.get("cleanup_observed", false),
+		"active_effect_count": _active_effect_count(),
+		"duplicate_cleanup_callback_count": _duplicate_channel_count,
 	})
 	_publish(row)
 
@@ -422,6 +424,17 @@ func _audio_from_shot_snapshot(snapshot: Dictionary) -> Dictionary:
 	}
 
 
+func _active_effect_count() -> int:
+	var total := _event_order.size()
+	if _shot_feedback != null and _shot_feedback.has_method(&"snapshot"):
+		total += int((_shot_feedback.call(&"snapshot") as Dictionary).get("active_effect_count", 0))
+	if _damage_feedback != null and _damage_feedback.has_method(&"snapshot"):
+		total += int((_damage_feedback.call(&"snapshot") as Dictionary).get("active_effect_count", 0))
+	if _mission_feedback != null and _mission_feedback.has_method(&"snapshot"):
+		total += int((_mission_feedback.call(&"snapshot") as Dictionary).get("active_cue_count", 0))
+	return total
+
+
 func _clear_joined_receipts() -> void:
 	_events.clear()
 	_event_order.clear()
@@ -437,6 +450,8 @@ func _retain_boundary(reason: StringName, clear_active := false) -> void:
 		"restore_epoch": _restore_epoch,
 		"archived_count": _event_order.size(),
 		"active_rows_preserved": not clear_active,
+		"active_effect_count": _active_effect_count(),
+		"duplicate_cleanup_callback_count": _duplicate_channel_count,
 		"at_usec": Time.get_ticks_usec(),
 	})
 	while _clear_history.size() > 16:

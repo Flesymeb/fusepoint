@@ -338,7 +338,11 @@ func _observe_fire_transition(pressed: bool, source: StringName, captured_at_use
 
 func _story_consumer_owns_primary_input() -> bool:
 	var tactical_hud := get_tree().get_first_node_in_group(&"tactical_hud")
-	return tactical_hud != null and tactical_hud.get("_hud_enabled") == true and tactical_hud.get("_story_active") == true
+	if tactical_hud == null:
+		return false
+	if tactical_hud.has_method(&"story_owns_primary_fire_input"):
+		return tactical_hud.call(&"story_owns_primary_fire_input") == true
+	return tactical_hud.get("_hud_enabled") == true and tactical_hud.get("_story_active") == true
 
 
 func _drain_fire_edges() -> void:

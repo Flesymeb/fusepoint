@@ -4,6 +4,13 @@ extends CanvasLayer
 signal combat_row_presented(receipt: Dictionary)
 
 const DEPLOYMENT_STORY_TEXT := "11:40 - Kestrel Ridge Military Base\nRift Front armed a timed bomb in Sector C.\nCommunications are down. Support is not coming.\nRetake Alpha, hold Bravo, recover both keys.\nDefuse Charlie before the five-minute detonation."
+const DEPLOYMENT_STORY_CUES: Array[String] = [
+	"11:40 - Kestrel Ridge Military Base.",
+	"Rift Front armed a timed bomb in Sector C.",
+	"Communications are down. Support is not coming.",
+	"Retake Alpha, hold Bravo, and recover both keys.",
+	"Defuse Charlie before the five-minute detonation.",
+]
 const SAFE_AREA_RATIO := 0.05
 const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v4_split_narrative_lanes"
 const COMBAT_ROW_LIFETIME_SECONDS := 6.0
@@ -56,6 +63,7 @@ var _story_input_serial := 0
 var _last_story_input_receipt: Dictionary = {}
 var _story_input_history: Array[Dictionary] = []
 var _story_weapon_lock_active := false
+var _story_fire_consume_frame := -1
 var _story_full_text := ""
 var _story_phase := &"inactive"
 var _story_visible_characters := 0
@@ -187,9 +195,9 @@ func _apply_responsive_layout() -> void:
 	reticle.size = Vector2(28.0, 28.0)
 	var narrative_width := minf(900.0, viewport_size.x - safe.x * 2.0 - 8.0)
 	if _story_profile == &"opening":
-		narrative.position = Vector2(center.x - narrative_width * 0.5, safe.y + (176.0 if expanded else 154.0))
-		narrative.size = Vector2(narrative_width, 244.0 if expanded else 210.0)
-		narrative.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+		narrative.position = Vector2(center.x - narrative_width * 0.5, viewport_size.y - safe.y - (226.0 if expanded else 210.0))
+		narrative.size = Vector2(narrative_width, 86.0 if expanded else 72.0)
+		narrative.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	else:
 		narrative.position = Vector2(center.x - narrative_width * 0.5, viewport_size.y * (0.62 if expanded else 0.64))
 		narrative.size = Vector2(narrative_width, 96.0 if expanded else 82.0)
@@ -339,6 +347,8 @@ func _input(event: InputEvent) -> void:
 	var profile_before := _story_profile
 	var cue_before := _story_cue_index
 	_story_confirmation_source = _story_input_source(event)
+	if event.is_action_pressed(&"fire"):
+		_story_fire_consume_frame = Engine.get_process_frames()
 	_advance_story_cue()
 	get_viewport().set_input_as_handled()
 	_story_input_serial += 1
@@ -808,22 +818,15 @@ func _update_opening_story() -> void:
 		_story_visible_characters = clampi(int(floor(float(_story_full_text.length()) * _story_elapsed / OPENING_REVEAL_SECONDS)), 0, _story_full_text.length())
 		narrative.text = _story_full_text.left(_story_visible_characters)
 		narrative.modulate.a = 1.0
-	elif _story_elapsed < OPENING_HOLD_END_SECONDS:
-		_story_phase = &"opening_hold"
+	else:
+		_story_phase = &"awaiting_confirmation"
 		_story_visible_characters = _story_full_text.length()
 		narrative.text = _story_full_text
 		narrative.modulate.a = 1.0
-	elif _story_elapsed < OPENING_FADE_END_SECONDS:
-		_story_phase = &"opening_fade"
-		_story_visible_characters = _story_full_text.length()
-		narrative.text = _story_full_text
-		narrative.modulate.a = 1.0 - ((_story_elapsed - OPENING_HOLD_END_SECONDS) / (OPENING_FADE_END_SECONDS - OPENING_HOLD_END_SECONDS))
-	else:
-		_finish_story(&"opening_timeline_complete")
 
 
 func _begin_opening_story(event_id: String) -> void:
-	_begin_story_cues([DEPLOYMENT_STORY_TEXT], event_id, &"opening")
+	_begin_story_cues(DEPLOYMENT_STORY_CUES, event_id, &"opening")
 
 
 func _begin_radio_cues(cues: Array[String], event_id: String) -> void:
@@ -889,6 +892,15 @@ func _advance_story_cue() -> void:
 		return
 	_story_advance_count += 1
 	if _story_profile == &"opening":
+		if _story_cue_index + 1 < _story_cues.size():
+			_story_cue_index += 1
+			_story_full_text = _story_cues[_story_cue_index]
+			_story_elapsed = 0.0
+			_story_phase = &"opening_reveal"
+			_story_visible_characters = 0
+			narrative.text = ""
+			narrative.modulate.a = 1.0
+			return
 		_finish_story(_story_confirmation_source if not _story_confirmation_source.is_empty() else &"opening_skip")
 		return
 	if _story_cue_index + 1 < _story_cues.size():
@@ -917,7 +929,7 @@ func _finish_story(source: StringName) -> void:
 		"elapsed_seconds": _story_elapsed,
 		"completed_frame": Engine.get_process_frames(),
 		"opening_timeline_complete": completed_profile == &"opening" and source == &"opening_timeline_complete",
-		"player_confirmed": completed_profile == &"radio" and source in [&"enter", &"left_click", &"physical_g_skip"],
+		"player_confirmed": completed_profile in [&"opening", &"radio"] and source in [&"enter", &"left_click", &"physical_g_skip"],
 	}
 	narrative.visible = false
 	narrative.text = ""
@@ -937,6 +949,10 @@ func _set_story_weapon_lock(enabled: bool) -> void:
 		weapon.call(&"set_gameplay_input_enabled", true)
 
 
+func story_owns_primary_fire_input() -> bool:
+	return _hud_enabled and (_story_active or Engine.get_process_frames() <= _story_fire_consume_frame)
+
+
 func _mcp_state() -> Dictionary:
 	return {
 		"hud_enabled": _hud_enabled,
@@ -950,11 +966,12 @@ func _mcp_state() -> Dictionary:
 		"story_cue_index": _story_cue_index,
 		"story_cue_count": _story_cues.size(),
 		"story_current_text": narrative.text,
-		"story_indefinite_dwell": _story_profile == &"radio",
+		"story_indefinite_dwell": _story_profile in [&"opening", &"radio"],
+		"story_opening_confirm_driven": _story_profile == &"opening" or (_story_profile == &"inactive" and _last_story_profile == &"opening"),
 		"story_phase": _story_phase,
 		"story_visible_characters": _story_visible_characters,
 		"story_total_characters": _story_full_text.length(),
-		"story_timing_seconds": {"reveal": OPENING_REVEAL_SECONDS, "hold_end": OPENING_HOLD_END_SECONDS, "fade_end": OPENING_FADE_END_SECONDS} if (_story_profile == &"opening" or (_story_profile == &"inactive" and _last_story_profile == &"opening")) else {"type": STORY_TYPE_SECONDS, "hold": &"until_player_confirmation"},
+		"story_timing_seconds": {"reveal": OPENING_REVEAL_SECONDS, "hold": &"until_player_confirmation", "legacy_auto_hold_end": OPENING_HOLD_END_SECONDS, "legacy_auto_fade_end": OPENING_FADE_END_SECONDS} if (_story_profile == &"opening" or (_story_profile == &"inactive" and _last_story_profile == &"opening")) else {"type": STORY_TYPE_SECONDS, "hold": &"until_player_confirmation"},
 		"story_advance_count": _story_advance_count,
 		"story_confirmation_source": _story_confirmation_source,
 		"story_presentation_serial": _story_presentation_serial,
@@ -963,6 +980,7 @@ func _mcp_state() -> Dictionary:
 		"story_weapon_lock_active": _story_weapon_lock_active,
 		"story_font_px": narrative.get_theme_font_size("font_size"),
 		"story_non_blocking_gameplay": not _story_weapon_lock_active,
+		"story_safe_lane": &"lower_center_above_objective_band",
 		"minimap_component": minimap.get_path(),
 		"vitals_component": vitals.get_path(),
 		"weapon_component": weapon_hud.get_path(),

@@ -573,6 +573,7 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 	var occupancy := validate_restore_occupancy(player.global_position, false)
 	var actor_ids_after: Array[String] = []
 	var active_region_ids: Array[String] = []
+	var active_snapshots: Array[Dictionary] = []
 	var active_alive_count := 0
 	for actor_id: StringName in enemies:
 		actor_ids_after.append(String(actor_id))
@@ -580,6 +581,7 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 		if enemy.mission_active and _fixture_includes_enemy(region_id, enemy):
 			active_region_ids.append(String(actor_id))
 			active_alive_count += 1 if enemy.is_alive() else 0
+			active_snapshots.append(enemy.authoritative_snapshot())
 	actor_ids_after.sort()
 	active_region_ids.sort()
 	var mission_snapshot_after: Dictionary = mission_controller.call(&"_mcp_state")
@@ -605,6 +607,8 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 		"active_count": active_region_ids.size(),
 		"active_alive_count": active_alive_count,
 		"stable_actor_ids": active_region_ids,
+		"actor_state_page": _combat_actor_page_from_snapshots(active_snapshots),
+		"observation_matrix": _combat_observation_matrix_from_snapshots(active_snapshots),
 		"occupancy": occupancy,
 		"actor_hold_receipts": hold_receipts,
 		"stable_inspection_hold": every_actor_held,
@@ -671,7 +675,7 @@ func tester_prepare_enemy_search_state(region_id: StringName, setup_generation: 
 
 func _animation_binding_strategy() -> Dictionary:
 	return {
-		"selected_strategy": &"restore_stable_component_baseline_with_fixture_isolation",
+		"selected_strategy": &"non_pistol_grounded_fallback_until_rifle_ready_intake",
 		"strategies_compared": [
 			&"restore_last_visually_accepted_baseline",
 			&"repair_current_wrapper_binding",
@@ -680,9 +684,85 @@ func _animation_binding_strategy() -> Dictionary:
 		],
 		"local_component": &"quaternius_ual1_ual2_retargeted_humanoid",
 		"rifle_ready_authored_clips_available": false,
-		"combat_clip_disposition": &"pistol_source_clips_retained_as_truthful_unresolved_baseline",
+		"combat_clip_disposition": &"pistol_source_clips_replaced_with_non_pistol_neutral_fallback",
 		"root_tilt_strategy": &"actor_root_pitch_roll_locked_fixture_reachable",
-		"issue_disposition": &"rifle_clip_binding_remains_open_until_rifle_ready_asset_intake",
+		"issue_disposition": &"pistol_binding_removed_rifle_semantic_asset_still_needed",
+	}
+
+
+func _combat_actor_page_from_snapshots(snapshots: Array[Dictionary]) -> Array[Dictionary]:
+	var page: Array[Dictionary] = []
+	for snapshot: Dictionary in snapshots:
+		var inspection: Dictionary = snapshot.get("inspection_state", {})
+		var presentation: Dictionary = snapshot.get("presentation", {})
+		var health: Dictionary = snapshot.get("health", {})
+		var last_event: Dictionary = snapshot.get("last_event", {})
+		page.append({
+			"id": snapshot.get("id", &""),
+			"region": snapshot.get("region", &""),
+			"role": snapshot.get("role", &""),
+			"route_slot": snapshot.get("route_slot", &""),
+			"combat_state": snapshot.get("action", &"idle"),
+			"velocity": snapshot.get("velocity", Vector3.ZERO),
+			"target_visible": snapshot.get("target_visible", false),
+			"fire_authorized": (snapshot.get("pre_shot_authorization", {}) as Dictionary).get("accepted", false),
+			"ammo": snapshot.get("ammo", 0),
+			"reload_state": StringName(last_event.get("kind", &"")) in [&"reload_started", &"reload_finished"],
+			"health": health.get("current", 0.0),
+			"alive": snapshot.get("alive", false),
+			"presentation_state": snapshot.get("presentation_state", &"inactive"),
+			"animation_clip": snapshot.get("animation_name", ""),
+			"animation_semantic": snapshot.get("animation_semantic", &""),
+			"weapon_family_compatible": presentation.get("weapon_family_compatible", false),
+			"nearest_neighbor_spacing": snapshot.get("nearest_neighbor_distance", -1.0),
+			"occupancy": {
+				"grounded": snapshot.get("grounded_occupancy", false),
+				"capsule_clear": inspection.get("capsule_clear", false),
+				"static_blockers": inspection.get("capsule_static_blockers", -1),
+			},
+			"last_shot_id": snapshot.get("shot_event_id", ""),
+			"last_damage_event_id": (snapshot.get("shot_causality", {}) as Dictionary).get("damage_event_id", ""),
+			"setup_generation": inspection.get("setup_generation", 0),
+		})
+	return page
+
+
+func _combat_observation_matrix_from_snapshots(snapshots: Array[Dictionary]) -> Dictionary:
+	var actions := {}
+	var visible_count := 0
+	var authorized_count := 0
+	var alive_count := 0
+	var compatible_count := 0
+	var min_spacing := INF
+	var occupancy_failures := 0
+	for snapshot: Dictionary in snapshots:
+		var action := StringName(snapshot.get("action", &"idle"))
+		actions[action] = int(actions.get(action, 0)) + 1
+		visible_count += 1 if snapshot.get("target_visible", false) else 0
+		authorized_count += 1 if (snapshot.get("pre_shot_authorization", {}) as Dictionary).get("accepted", false) else 0
+		alive_count += 1 if snapshot.get("alive", false) else 0
+		compatible_count += 1 if (snapshot.get("presentation", {}) as Dictionary).get("weapon_family_compatible", false) else 0
+		var spacing := float(snapshot.get("nearest_neighbor_distance", -1.0))
+		if spacing >= 0.0:
+			min_spacing = minf(min_spacing, spacing)
+		var inspection: Dictionary = snapshot.get("inspection_state", {})
+		if snapshot.get("grounded_occupancy", false) != true or inspection.get("capsule_clear", false) != true:
+			occupancy_failures += 1
+	return {
+		"sampled_actor_count": snapshots.size(),
+		"alive_count": alive_count,
+		"target_visible_count": visible_count,
+		"fire_authorized_count": authorized_count,
+		"weapon_family_compatible_count": compatible_count,
+		"minimum_spacing": -1.0 if is_inf(min_spacing) else min_spacing,
+		"occupancy_failure_count": occupancy_failures,
+		"actions_observed": actions,
+		"fields": [
+			&"id", &"region", &"role", &"route_slot", &"combat_state", &"velocity",
+			&"target_visible", &"fire_authorized", &"ammo", &"reload_state",
+			&"health", &"alive", &"presentation_state", &"nearest_neighbor_spacing",
+			&"occupancy", &"last_shot_id", &"last_damage_event_id",
+		],
 	}
 
 
@@ -1101,11 +1181,13 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 		return receipt
 	var release_receipts: Array[Dictionary] = []
 	var active_ids: Array[String] = []
+	var active_snapshots: Array[Dictionary] = []
 	for enemy: FusepointEnemyAgent in enemies.values():
 		if not _fixture_includes_enemy(expected_region, enemy) or not enemy.mission_active:
 			continue
 		active_ids.append(String(enemy.stable_id))
 		release_receipts.append(enemy.set_tester_prepared_hold(false, expected_generation))
+		active_snapshots.append(enemy.authoritative_snapshot())
 	active_ids.sort()
 	var every_actor_released := not release_receipts.is_empty()
 	for actor_receipt: Dictionary in release_receipts:
@@ -1127,6 +1209,8 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 		"failure_reason": &"",
 		"active_stable_ids": active_ids,
 		"active_count": active_ids.size(),
+		"actor_state_page": _combat_actor_page_from_snapshots(active_snapshots),
+		"observation_matrix": _combat_observation_matrix_from_snapshots(active_snapshots),
 		"observation_region": _tester_advanced_region,
 		"observation_generation": _tester_advanced_generation,
 		"actor_release_receipts": release_receipts,

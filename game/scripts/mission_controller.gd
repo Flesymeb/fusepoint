@@ -768,6 +768,8 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 		"actor_id_count_matched": actor_ids.size() == expected_count,
 		"frontier_unchanged": frontier_after == frontier_before,
 		"terminal_unchanged": terminal_commit_count == terminal_before,
+		"observation_matrix_present": not (progression.get("observation_matrix", {}) as Dictionary).is_empty(),
+		"actor_state_page_present": not (progression.get("actor_state_page", []) as Array).is_empty(),
 	}
 	var accepted: bool = not validation.values().has(false)
 	if not accepted:
@@ -792,6 +794,8 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 		"validation": validation,
 		"prerequisite_commits": [],
 		"progression": progression,
+		"actor_state_page": progression.get("actor_state_page", []),
+		"observation_matrix": progression.get("observation_matrix", {}),
 		"checkpoint_version": checkpoint_version,
 		"reset_isolation": {
 			"run_epoch_unchanged": run_epoch == run_epoch_before,
@@ -961,6 +965,8 @@ func tester_advance_prepared_encounter(expected_region: StringName = &"", expect
 		"active_stable_ids": roster_release.get("active_stable_ids", []),
 		"region_count": roster_release.get("active_count", 0),
 		"roster_release": roster_release,
+		"actor_state_page": roster_release.get("actor_state_page", []),
+		"observation_matrix": roster_release.get("observation_matrix", {}),
 		"reset_isolation": {
 			"capture_points_unchanged": _fixture_progression_frontier() == frontier_before,
 			"checkpoint_version_unchanged": checkpoint_version == checkpoint_before,
