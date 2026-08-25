@@ -8,7 +8,7 @@ const WEAPON_ORDER: Array[StringName] = [&"ak74m", &"saiga12"]
 const FIRE_MODE_SEMI := &"SEMI"
 const FIRE_MODE_AUTO := &"AUTO"
 const READY_STATES: Array[StringName] = [&"hip", &"ads", &"fire", &"recoil"]
-const AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS := 0.018
+const AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS := 0.0
 
 @export_node_path("Camera3D") var camera_path: NodePath
 @export_node_path("Node3D") var viewmodel_path: NodePath
@@ -104,6 +104,13 @@ var _single_report_generation := 0
 var _single_report_deadline := -1.0
 var _single_report_shot_id := ""
 var _single_report_source_path := ""
+var _single_report_onset_usec := 0
+var _single_report_onset_frame := 0
+var _single_report_onset_seconds := 0.0
+var _single_report_tail_observed := false
+var _single_report_tail_usec := 0
+var _single_report_tail_seconds := 0.0
+var _single_report_tail_stop_reason := &""
 var _bounded_single_report_duration := 0.0
 var _tester_audio_generation := 0
 var _last_tester_audio_receipt: Dictionary = {}
@@ -216,6 +223,7 @@ func _process(delta: float) -> void:
 	var now := _now()
 	_authorize_auto_continuation_after_input_pump(now)
 	_schedule_auto_continuation()
+	_update_report_tail_observation(now)
 	if _action_state == &"reload" and now >= _action_until:
 		_commit_reload()
 	elif _action_state == &"inspect" and now >= _action_until:
@@ -261,10 +269,8 @@ func _authorize_auto_continuation_after_input_pump(now: float) -> void:
 		return
 	if _current_weapon()["fire_mode"] != FIRE_MODE_AUTO or now < _next_shot_time:
 		return
-	if _active_fire_press_shot_count == 1 and now < _next_shot_time + AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS:
-		return
-	_auto_continuation_confirmation_pending = true
-	call_deferred(&"_confirm_auto_continuation", _active_fire_press_edge_id)
+	_active_fire_continuation_authorized = true
+	_schedule_auto_continuation()
 
 
 func _confirm_auto_continuation(press_edge_id: String) -> void:
@@ -1529,6 +1535,16 @@ func _stop_fire_report(reason: StringName, stop_single_transient: bool) -> void:
 func _record_report_request(receipt: Dictionary, playback_class: StringName, sustained_authorized: bool) -> void:
 	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
 	var auto_player := feedback.get_node_or_null("AutoFireAudio") as AudioStreamPlayer
+	_single_report_generation += 1
+	_single_report_shot_id = String(receipt.get("shot_id", ""))
+	_single_report_onset_usec = Time.get_ticks_usec()
+	_single_report_onset_frame = Engine.get_process_frames()
+	_single_report_onset_seconds = _now()
+	_single_report_deadline = _now() + maxf(_bounded_single_report_duration, 0.03)
+	_single_report_tail_observed = false
+	_single_report_tail_usec = 0
+	_single_report_tail_seconds = 0.0
+	_single_report_tail_stop_reason = &"pending_component_timeout"
 	_report_serial += 1
 	_last_report_receipt = {
 		"report_event_id": "run-%06d:report:%06d" % [_run_epoch, _report_serial],
@@ -1543,10 +1559,57 @@ func _record_report_request(receipt: Dictionary, playback_class: StringName, sus
 		"product_output_gate_used": false,
 		"single_player_playing": single_player.playing if single_player != null else false,
 		"auto_player_playing": auto_player.playing if auto_player != null else false,
+		"source_path": single_player.stream.resource_path if single_player != null and single_player.stream != null else "",
+		"owner_count": 2,
+		"onset_usec": _single_report_onset_usec,
+		"onset_frame": _single_report_onset_frame,
+		"tail_deadline_seconds": _single_report_deadline,
+		"bounded_tail_duration_seconds": _bounded_single_report_duration,
+		"collector_ready": true,
 		"cadence_seconds": _fire_interval(),
 		"next_shot_time_seconds": _next_shot_time,
 		"player_report_owner_state": _player_report_owner_state(),
 		"timestamp_seconds": _now(),
+	}
+	_append_report_receipt(_last_report_receipt)
+
+
+func _update_report_tail_observation(now: float) -> void:
+	if _single_report_deadline < 0.0 or _single_report_tail_observed:
+		return
+	if now < _single_report_deadline:
+		return
+	var single_player := feedback.get_node_or_null("FireAudio") as AudioStreamPlayer
+	var auto_player := feedback.get_node_or_null("AutoFireAudio") as AudioStreamPlayer
+	var was_single_playing := single_player != null and single_player.playing
+	if was_single_playing and single_player != null:
+		single_player.stop()
+		_single_report_tail_stop_reason = &"product_timeout_guard"
+	else:
+		_single_report_tail_stop_reason = &"retained_component_timeout"
+	_single_report_tail_observed = true
+	_single_report_tail_usec = Time.get_ticks_usec()
+	_single_report_tail_seconds = maxf(0.0, now - _single_report_onset_seconds)
+	_report_serial += 1
+	_last_report_receipt = {
+		"report_event_id": "run-%06d:report:%06d" % [_run_epoch, _report_serial],
+		"kind": &"tail_observed",
+		"shot_id": _single_report_shot_id,
+		"generation": _single_report_generation,
+		"owner_count": 2,
+		"source_path": _single_report_source_path,
+		"onset_usec": _single_report_onset_usec,
+		"tail_usec": _single_report_tail_usec,
+		"bounded_tail_duration_seconds": _single_report_tail_seconds,
+		"component_timeout_seconds": _bounded_single_report_duration,
+		"stop_reason": _single_report_tail_stop_reason,
+		"single_player_was_playing_at_deadline": was_single_playing,
+		"single_player_playing": single_player.playing if single_player != null else false,
+		"auto_player_playing": auto_player.playing if auto_player != null else false,
+		"post_release_voice_count": (1 if single_player != null and single_player.playing else 0) + (1 if auto_player != null and auto_player.playing else 0),
+		"collector_ready": true,
+		"player_report_owner_state": _player_report_owner_state(),
+		"timestamp_seconds": now,
 	}
 	_append_report_receipt(_last_report_receipt)
 
@@ -1632,7 +1695,7 @@ func _mcp_state() -> Dictionary:
 			"first_continuation_release_grace_seconds": AUTO_FIRST_CONTINUATION_RELEASE_GRACE_SECONDS,
 			"next_shot_time_seconds": _next_shot_time,
 			"same_frame_catchup_pairs_allowed": false,
-			"continuation_gate": &"deferred_held_level_at_cadence",
+			"continuation_gate": &"held_level_at_cadence",
 			"shot_count": _shot_serial,
 			"magazine": weapon.get("magazine", 0),
 			"last_shot_id": _last_shot.get("shot_id", ""),
@@ -1678,6 +1741,12 @@ func _mcp_state() -> Dictionary:
 			"generation": _single_report_generation,
 			"shot_id": _single_report_shot_id,
 			"deadline_seconds": _single_report_deadline,
+			"onset_usec": _single_report_onset_usec,
+			"onset_frame": _single_report_onset_frame,
+			"tail_observed": _single_report_tail_observed,
+			"tail_usec": _single_report_tail_usec,
+			"bounded_tail_duration_seconds": _single_report_tail_seconds,
+			"tail_stop_reason": _single_report_tail_stop_reason,
 			"owner": &"retained_component_fire_audio",
 			"component_timeout_bound": true,
 			"source_stream_path": _single_report_source_path,
