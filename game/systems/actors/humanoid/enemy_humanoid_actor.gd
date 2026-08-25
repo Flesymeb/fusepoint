@@ -27,6 +27,12 @@ const PRIMARY_RIFLE_SCENE := preload("res://systems/actors/humanoid/assets/weapo
 const WEAPON_FAMILY := &"rifle"
 const RIFLE_FIRE_SECONDS := 0.18
 const RIFLE_RELOAD_SECONDS := 1.65
+const RIFLE_SOURCE_GRIP_OFFSET := Vector3(0.0, 2.0, 5.0)
+const RIFLE_MUZZLE_LOCAL := Vector3(0.0, 5.4, 13.85)
+const RIFLE_SOCKET_POSITION := Vector3(0.02, 0.02, -0.02)
+const RIFLE_SOCKET_LOW_READY_ROTATION := Vector3(0.0, 90.0, 0.0)
+const RIFLE_SOCKET_SHOULDER_ROTATION := Vector3(-35.0, 90.0, 0.0)
+const RIFLE_SOCKET_RELOAD_ROTATION := Vector3(-22.0, 90.0, 0.0)
 const SKINS := {
 	"soldier_a": {
 		"label": "Mixamo Soldier A (68 bones)",
@@ -42,10 +48,11 @@ const SKINS := {
 	},
 }
 const STATE_CLIPS := {
-	# The current UAL package has no coherent rifle-authored combat set. Use
-	# grounded non-pistol source clips so rifle actors no longer resolve pistol
-	# animations while receipts still expose the neutral fallback.
-	MotionState.IDLE: {"library": "ual1", "clip": "Idle", "loop": true},
+	# The current UAL package has no coherent rifle-authored combat set. Use the
+	# retained non-pistol rail baseline plus product-owned upper-body/socket
+	# overlay so living rifle actors no longer resolve through pistol/spell/prone
+	# fallbacks while receipts still expose the authored-clip gap.
+	MotionState.IDLE: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
 	MotionState.WALK: {"library": "ual1", "clip": "Walk", "loop": true},
 	MotionState.RUN: {"library": "ual1", "clip": "Jog_Fwd", "loop": true},
 	MotionState.CROUCH_IDLE: {"library": "ual1", "clip": "Crouch_Idle", "loop": true},
@@ -54,8 +61,8 @@ const STATE_CLIPS := {
 	MotionState.AIRBORNE: {"library": "ual1", "clip": "Jump", "loop": true},
 	MotionState.LAND: {"library": "ual1", "clip": "Jump_Land", "loop": false},
 	MotionState.AIM: {"library": "ual2", "clip": "Idle_Rail", "loop": true},
-	MotionState.FIRE: {"library": "ual1", "clip": "Spell_Simple_Shoot", "loop": false},
-	MotionState.RELOAD: {"library": "ual1", "clip": "Interact", "loop": false},
+	MotionState.FIRE: {"library": "ual2", "clip": "Idle_Rail", "loop": false},
+	MotionState.RELOAD: {"library": "ual2", "clip": "Idle_Rail", "loop": false},
 	# A regular bullet hit should read as a short flinch, not a full-body
 	# knockback. Hit_Head gives the requested small head snap while preserving
 	# the actor's planted combat stance.
@@ -91,6 +98,9 @@ var _custom_preview := false
 var _custom_clip := ""
 var _custom_loop := false
 var _weapon_attachment: BoneAttachment3D
+var _weapon_root: Node3D
+var _weapon_source: Node3D
+var _muzzle_marker: Marker3D
 var _locomotion_playback_scale := 1.0
 var _state_change_count := 0
 var _aim_pitch_degrees := 0.0
@@ -406,6 +416,7 @@ func _apply_pose_and_ground() -> void:
 	_apply_rifle_aim_overlay()
 	_apply_rifle_action_overlay()
 	_apply_ground_contact()
+	_apply_weapon_pose_for_state()
 
 
 func set_aim_pitch(pitch_degrees: float) -> void:
@@ -416,10 +427,11 @@ func set_aim_pitch(pitch_degrees: float) -> void:
 
 
 func _apply_rifle_aim_overlay() -> void:
-	if _target_skeleton == null or current_state not in [MotionState.AIM, MotionState.FIRE]:
+	if _target_skeleton == null or current_state not in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD, MotionState.WALK, MotionState.RUN]:
 		return
 	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
 	var pitch_radians := deg_to_rad(_aim_pitch_degrees)
+	var ready_weight := 0.62 if current_state in [MotionState.IDLE, MotionState.WALK, MotionState.RUN] else 1.0
 	for overlay in [
 		{"bone": "spine_mid", "weight": 0.18},
 		{"bone": "chest", "weight": 0.34},
@@ -431,7 +443,7 @@ func _apply_rifle_aim_overlay() -> void:
 			continue
 		var bone_index: int = mapping[canonical]
 		var base_rotation := _target_skeleton.get_bone_pose_rotation(bone_index)
-		var pitch_rotation := Quaternion(Vector3.RIGHT, pitch_radians * float(overlay["weight"]))
+		var pitch_rotation := Quaternion(Vector3.RIGHT, pitch_radians * float(overlay["weight"]) * ready_weight)
 		_target_skeleton.set_bone_pose_rotation(bone_index, base_rotation * pitch_rotation)
 
 
@@ -464,6 +476,19 @@ func _rotate_overlay_bone(mapping: Dictionary, canonical: String, axis: Vector3,
 	var bone_index: int = mapping[canonical]
 	var base_rotation := _target_skeleton.get_bone_pose_rotation(bone_index)
 	_target_skeleton.set_bone_pose_rotation(bone_index, base_rotation * Quaternion(axis, angle))
+
+
+func _apply_weapon_pose_for_state() -> void:
+	if _weapon_root == null:
+		return
+	_weapon_root.position = RIFLE_SOCKET_POSITION
+	match current_state:
+		MotionState.AIM, MotionState.FIRE:
+			_weapon_root.rotation_degrees = RIFLE_SOCKET_SHOULDER_ROTATION
+		MotionState.RELOAD:
+			_weapon_root.rotation_degrees = RIFLE_SOCKET_RELOAD_ROTATION
+		_:
+			_weapon_root.rotation_degrees = RIFLE_SOCKET_LOW_READY_ROTATION
 
 
 func _apply_ground_contact() -> void:
@@ -573,7 +598,9 @@ func get_component_state() -> Dictionary:
 	var procedural_rifle := _uses_procedural_rifle_semantic()
 	var pistol_source_clip := "pistol" in clip_name.to_lower()
 	var neutral_fallback := _is_neutral_rifle_fallback(current_state, clip_name)
-	var family_compatible := not pistol_source_clip and not neutral_fallback
+	var contact_report := rifle_contact_report()
+	var visible_rifle_ready: bool = contact_report.get("accepted", false) == true
+	var family_compatible := not pistol_source_clip and visible_rifle_ready
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
@@ -593,18 +620,21 @@ func get_component_state() -> Dictionary:
 		"animation_playing": player != null and player.is_playing(),
 		"weapon_family": WEAPON_FAMILY,
 		"weapon_family_compatible": family_compatible,
-		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"neutral_non_pistol_rifle_fallback_still_open" if neutral_fallback else &"compatible_noncombat_source",
+		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"visible_two_hand_rifle_ready_interim" if family_compatible else &"socket_contact_unaccepted",
 		"binding_strategy": {
-			"selected_strategy": &"truthful_non_pistol_grounded_fallback_until_rifle_ready_intake",
+			"selected_strategy": &"component_baseline_with_state_driven_rifle_socket_overlay",
 			"rifle_ready_authored_clips_available": false,
-			"rifle_ready_authored_binding": family_compatible and current_state not in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD],
+			"rifle_ready_authored_binding": false,
+			"visible_rifle_ready_binding": family_compatible,
 			"source_clip_truthful": true,
-			"interim_issue_open": neutral_fallback,
+			"interim_issue_open": not family_compatible or neutral_fallback,
 			"root_transform_tuning_primary_fix": false,
 			"actor_root_dynamic_axes": ["yaw"],
 			"model_axis_adapter_fixed": true,
 			"pistol_source_clip_rejected": pistol_source_clip,
+			"neutral_source_clip_disclosed": neutral_fallback,
 		},
+		"rifle_contact": contact_report,
 		"aim_pitch_degrees": _aim_pitch_degrees,
 		"aim_pitch_serial": _aim_pitch_serial,
 		"presentation_adapter_rotation_degrees": rotation_degrees,
@@ -624,11 +654,11 @@ func get_component_state() -> Dictionary:
 
 
 func _uses_procedural_rifle_semantic() -> bool:
-	return false
+	return current_state in [MotionState.IDLE, MotionState.WALK, MotionState.RUN, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD]
 
 
 func _is_neutral_rifle_fallback(state: MotionState, clip_name: String) -> bool:
-	return state in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD] and not ("pistol" in clip_name.to_lower())
+	return state in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD] and clip_name == "Idle_Rail"
 
 
 func _resolved_animation_semantic() -> StringName:
@@ -636,13 +666,13 @@ func _resolved_animation_semantic() -> StringName:
 		return StringName("source_%s" % _custom_clip.to_snake_case())
 	match current_state:
 		MotionState.IDLE:
-			return &"rifle_idle_grounded_fallback"
+			return &"rifle_idle_ready_component_baseline"
 		MotionState.AIM:
-			return &"rifle_aim_grounded_fallback"
+			return &"rifle_aim_ready_component_baseline"
 		MotionState.FIRE:
-			return &"rifle_fire_grounded_fallback"
+			return &"rifle_fire_overlay_component_baseline"
 		MotionState.RELOAD:
-			return &"rifle_reload_grounded_fallback"
+			return &"rifle_reload_overlay_component_baseline"
 		_:
 			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
 
@@ -680,6 +710,9 @@ func _attach_weapon() -> void:
 	var previous := _target_skeleton.get_node_or_null("WeaponSocket")
 	if previous != null:
 		previous.queue_free()
+	_weapon_root = null
+	_weapon_source = null
+	_muzzle_marker = null
 	var attachment := BoneAttachment3D.new()
 	attachment.name = "WeaponSocket"
 	attachment.bone_name = _target_skeleton.get_bone_name(right_hand_index)
@@ -692,21 +725,80 @@ func _attach_weapon() -> void:
 	# The authored origin sits below the receiver and behind the pistol grip.
 	# Rebase the intact rifle so the right-hand socket lands on the grip rather
 	# than on the model origin. The source has exactly one attached magazine.
-	source.position = Vector3(0.0, -4.8, 5.0)
+	source.position = RIFLE_SOURCE_GRIP_OFFSET
 	weapon.add_child(source)
 	var muzzle := Marker3D.new()
 	muzzle.name = "Muzzle"
 	# The imported rifle points down local +Z; the suppressor tip ends at 13.8.
-	muzzle.position = Vector3(0.0, 5.4, 13.85)
+	muzzle.position = RIFLE_MUZZLE_LOCAL
 	source.add_child(muzzle)
 	# Both accepted character sources use centimetre-scale skeleton space. The
 	# M4's 23.795-unit authored length therefore needs a 4.0 socket scale to read
 	# as a grounded ~0.95 m rifle in world space.
 	weapon.scale = Vector3.ONE * 4.0
-	weapon.position = Vector3(0.02, 0.02, -0.02)
-	weapon.rotation_degrees = Vector3(-90.0, 90.0, 0.0)
-	# Preserve muzzle-forward alignment while putting the optic above and the
-	# magazine below the barrel; the imported source roll is inverted relative
-	# to the retargeted right-hand socket.
-	weapon.rotate_object_local(Vector3.FORWARD, PI)
+	weapon.position = RIFLE_SOCKET_POSITION
+	weapon.rotation_degrees = RIFLE_SOCKET_LOW_READY_ROTATION
 	attachment.add_child(weapon)
+	_weapon_root = weapon
+	_weapon_source = source
+	_muzzle_marker = muzzle
+	_apply_weapon_pose_for_state()
+
+
+func rifle_contact_report() -> Dictionary:
+	if _target_skeleton == null:
+		return {"accepted": false, "failure_reason": &"missing_skeleton"}
+	if _weapon_attachment == null or _weapon_root == null or _muzzle_marker == null:
+		return {"accepted": false, "failure_reason": &"missing_weapon_socket"}
+	var right_hand := _bone_world_origin("right_hand")
+	var left_hand := _bone_world_origin("left_hand")
+	if right_hand == null or left_hand == null:
+		return {"accepted": false, "failure_reason": &"missing_hand_bones"}
+	var right_hand_position: Vector3 = right_hand
+	var left_hand_position: Vector3 = left_hand
+	var muzzle_world: Vector3 = _muzzle_marker.global_position
+	var actor_forward: Vector3 = -global_transform.basis.z.normalized()
+	var hand_to_muzzle: Vector3 = muzzle_world - right_hand_position
+	var muzzle_forward: Vector3 = hand_to_muzzle.normalized() if hand_to_muzzle.length() > 0.001 else actor_forward
+	var support_distance: float = left_hand_position.distance_to(right_hand_position)
+	var muzzle_height: float = muzzle_world.y - global_position.y
+	var right_muzzle_distance: float = right_hand_position.distance_to(muzzle_world)
+	var forward_dot: float = muzzle_forward.dot(actor_forward)
+	var forward_alignment: float = absf(forward_dot)
+	var upright: bool = absf(rotation.x) <= 0.001 and absf(rotation.z) <= 0.001
+	var accepted: bool = (
+		upright
+		and _weapon_attachment.visible
+		and support_distance >= 0.08
+		and support_distance <= 0.92
+		and right_muzzle_distance >= 0.28
+		and right_muzzle_distance <= 1.65
+		and muzzle_height >= 0.75
+		and muzzle_height <= 2.25
+		and forward_alignment >= 0.20
+	)
+	return {
+		"accepted": accepted,
+		"failure_reason": &"" if accepted else &"rifle_contact_threshold_missed",
+		"state": state_name(),
+		"weapon_visible": _weapon_attachment.visible,
+		"socket_bone": String(_weapon_attachment.bone_name),
+		"socket_rotation_degrees": _weapon_root.rotation_degrees,
+		"right_hand_world": right_hand_position,
+		"left_hand_world": left_hand_position,
+		"muzzle_world": muzzle_world,
+		"left_to_right_hand_distance": support_distance,
+		"right_hand_to_muzzle_distance": right_muzzle_distance,
+		"muzzle_height_above_actor": muzzle_height,
+		"muzzle_forward_dot_actor_forward": forward_dot,
+		"muzzle_forward_alignment_actor_axis": forward_alignment,
+		"two_hand_contact_estimated": support_distance <= 0.92,
+		"grounded_upright": upright,
+	}
+
+
+func _bone_world_origin(canonical_bone: String) -> Variant:
+	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
+	if not mapping.has(canonical_bone):
+		return null
+	return _target_skeleton.to_global(_target_skeleton.get_bone_global_pose(mapping[canonical_bone]).origin)

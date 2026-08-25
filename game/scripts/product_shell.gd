@@ -50,7 +50,7 @@ const LIFECYCLE_TABLE := {
 	&"settings": {"predecessors":[&"title",&"pause"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/SettingsPage/SafeArea/Layout/SettingsScroll/Settings/MasterVolume"},
 	&"death_recovery": {"predecessors":[&"gameplay"], "authority":&"player_death", "blocking":true, "focus":"Root/Pages/DeathPage/Menu/RestartButton"},
 	&"recovery_transition": {"predecessors":[&"gameplay",&"death_recovery",&"pause",&"failure_result"], "authority":&"mission_recovery", "blocking":true, "focus":"Root/Pages/DeathPage/Menu/RestartButton"},
-	&"victory": {"predecessors":[&"gameplay"], "authority":&"terminal", "blocking":true, "focus":""},
+	&"victory": {"predecessors":[&"gameplay",&"death_recovery",&"recovery_transition"], "authority":&"terminal", "blocking":true, "focus":""},
 	&"detonation": {"predecessors":[&"gameplay"], "authority":&"terminal", "blocking":true, "focus":""},
 	&"success_result": {"predecessors":[&"victory"], "authority":&"terminal", "blocking":true, "focus":"Root/Pages/ResultPage/Menu/ReplayButton"},
 	&"failure_result": {"predecessors":[&"detonation"], "authority":&"terminal", "blocking":true, "focus":"Root/Pages/ResultPage/Menu/ReplayButton"},
@@ -1641,6 +1641,28 @@ func _commit_queued_recovery_activation() -> void:
 	_restart_checkpoint()
 
 
+func _clear_death_recovery_latches(reason: StringName) -> Dictionary:
+	var receipt := {
+		"reason": reason,
+		"source_state": app_state,
+		"death_lock_remaining_before": _death_lock_remaining,
+		"queued_recovery_before": _queued_recovery_activation,
+		"active_recovery_epoch_before": _active_recovery_epoch,
+		"tree_paused_before": get_tree().paused,
+	}
+	_death_lock_remaining = 0.0
+	_queued_recovery_activation = false
+	_queued_recovery_activation_receipt.clear()
+	_active_recovery_epoch = 0
+	get_tree().paused = false
+	var recovery_button := $Root/Pages/DeathPage/Menu/RestartButton as Button
+	recovery_button.disabled = false
+	recovery_button.text = _recovery_button_text()
+	receipt["resolved"] = true
+	receipt["tree_paused_after"] = get_tree().paused
+	return receipt
+
+
 func _on_restore_feedback_completed(epoch: int) -> void:
 	if app_state != STATE_RECOVERING or epoch != _active_recovery_epoch:
 		return
@@ -1871,7 +1893,7 @@ func _layout_snapshot() -> Dictionary:
 func _return_home() -> void:
 	if not _commit_lifecycle_action(&"home"):
 		return
-	get_tree().paused = false
+	_clear_death_recovery_latches(&"home")
 	roster.call(&"reset_transient_feedback")
 	_reset_hud_lifecycle_feedback(&"home")
 	terminal.reset_presentation(true, true)
@@ -1888,7 +1910,7 @@ func _return_home() -> void:
 func _replay() -> void:
 	if not _commit_lifecycle_action(&"replay"):
 		return
-	get_tree().paused = false
+	_clear_death_recovery_latches(&"replay")
 	roster.call(&"reset_transient_feedback")
 	_reset_hud_lifecycle_feedback(&"replay")
 	terminal.reset_presentation(true, true)
@@ -1929,7 +1951,14 @@ func _on_mission_event_committed(event: Dictionary) -> void:
 	var result := StringName(payload.get("result", &"bomb_detonated"))
 	_set_gameplay_enabled(false)
 	_prime_terminal_result_page(result)
-	_show_page(STATE_VICTORY if result == &"bomb_defused" else STATE_DETONATION, &"terminal_submitted", &"terminal")
+	var latch_receipt := {}
+	if result == &"bomb_defused":
+		latch_receipt = _clear_death_recovery_latches(&"authoritative_terminal_success")
+	var routed := _show_page(STATE_VICTORY if result == &"bomb_defused" else STATE_DETONATION, &"terminal_submitted", &"terminal")
+	if not routed and result == &"bomb_defused" and StringName(mission.get("mission_state")) == &"bomb_defused":
+		_record_transition_rejection(&"terminal_success_authority", &"authoritative_success_route_failed")
+	_last_transition_receipt["terminal_latch_clear"] = latch_receipt
+	_last_transition_receipt["terminal_route_accepted"] = routed
 
 
 func _reconcile_terminal_completion() -> void:
@@ -1950,6 +1979,9 @@ func _reconcile_terminal_completion() -> void:
 func _on_terminal_presentation_completed(event_id: String, result: StringName) -> void:
 	if _observed_terminal_results.has(event_id):
 		return
+	if result == &"bomb_defused" and app_state != STATE_VICTORY and StringName(mission.get("mission_state")) == &"bomb_defused":
+		_clear_death_recovery_latches(&"terminal_completion_success_recover")
+		_show_page(STATE_VICTORY, &"terminal_completion_success_recover", &"terminal")
 	if (result == &"bomb_defused" and app_state != STATE_VICTORY) or (result == &"bomb_detonated" and app_state != STATE_DETONATION):
 		_record_transition_rejection(&"terminal_completion", &"terminal_predecessor_mismatch")
 		return
