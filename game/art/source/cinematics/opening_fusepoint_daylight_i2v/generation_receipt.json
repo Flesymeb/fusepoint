@@ -23,10 +23,11 @@
   },
   "runtime_materialization": {
     "path": "../../../../assets/cinematics/fusepoint_opening.ogv",
-    "sha256": "7eb2dc179b1be18705a21b2914e0edce7ab9cfa00443a6e1591d89006fd8adce",
+    "sha256": "e85d2381b9aa4ccb795d2fa1b614a8f97af7d16ec776be153ab1687042e2620f",
     "video_codec": "theora",
-    "audio_codec": "vorbis",
-    "decoded_duration_seconds": 10.03102,
+    "audio_codec": null,
+    "audio_stream_present": false,
+    "decoded_duration_seconds": 10.0,
     "looped_under_native_captions": false,
     "minimum_presentation_seconds": 10.0,
     "scene_binding": "res://scenes/product_shell.tscn::Root/Pages/BriefingPage/OpeningVideo"
