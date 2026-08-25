@@ -404,6 +404,8 @@ func _hips_translation_mode() -> String:
 
 func _apply_pose_and_ground() -> void:
 	_retargeter.apply_pose(_hips_translation_mode())
+	_apply_rifle_aim_overlay()
+	_apply_rifle_action_overlay()
 	_apply_ground_contact()
 
 
@@ -568,14 +570,17 @@ func get_component_state() -> Dictionary:
 	var player: AnimationPlayer = _source_players.get(_active_library)
 	var animation_position := player.current_animation_position if player != null else 0.0
 	var animation_length := player.current_animation_length if player != null else 0.0
+	var clip_name := _custom_clip if _custom_preview else String(STATE_CLIPS[current_state]["clip"])
+	var procedural_rifle := _uses_procedural_rifle_semantic()
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
 		"animation_library": _active_library,
 		"mode": "clip_browser" if _custom_preview else "semantic_state",
-		"animation": _custom_clip if _custom_preview else String(STATE_CLIPS[current_state]["clip"]),
-		"animation_semantic": StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case()),
-		"rifle_semantic_procedural": false,
+		"animation": clip_name,
+		"source_animation_semantic": StringName("source_%s" % clip_name.to_snake_case()),
+		"animation_semantic": _resolved_animation_semantic(),
+		"rifle_semantic_procedural": procedural_rifle,
 		"rifle_action_progress": clampf(_rifle_action_elapsed / maxf(_rifle_action_duration, 0.001), 0.0, 1.0) if _rifle_action_duration > 0.0 else 0.0,
 		"rifle_action_duration_seconds": _rifle_action_duration,
 		"rifle_action_elapsed_seconds": _rifle_action_elapsed,
@@ -585,8 +590,8 @@ func get_component_state() -> Dictionary:
 		"animation_normalized_time": clampf(animation_position / animation_length, 0.0, 1.0) if animation_length > 0.0 else 0.0,
 		"animation_playing": player != null and player.is_playing(),
 		"weapon_family": WEAPON_FAMILY,
-		"weapon_family_compatible": "pistol" not in String(STATE_CLIPS[current_state]["clip"]).to_lower(),
-		"compatibility_disposition": &"pistol_source_restored_rifle_set_unavailable" if "pistol" in String(STATE_CLIPS[current_state]["clip"]).to_lower() else &"compatible_noncombat_source",
+		"weapon_family_compatible": procedural_rifle or "pistol" not in clip_name.to_lower(),
+		"compatibility_disposition": &"product_rifle_overlay_on_retained_source_clip" if procedural_rifle else &"compatible_noncombat_source",
 		"aim_pitch_degrees": _aim_pitch_degrees,
 		"aim_pitch_serial": _aim_pitch_serial,
 		"presentation_adapter_rotation_degrees": rotation_degrees,
@@ -603,6 +608,26 @@ func get_component_state() -> Dictionary:
 		"state_change_count": _state_change_count,
 		"binding": binding_report,
 	}
+
+
+func _uses_procedural_rifle_semantic() -> bool:
+	return not _custom_preview and current_state in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD]
+
+
+func _resolved_animation_semantic() -> StringName:
+	if _custom_preview:
+		return StringName("source_%s" % _custom_clip.to_snake_case())
+	match current_state:
+		MotionState.IDLE:
+			return &"rifle_idle_ready"
+		MotionState.AIM:
+			return &"rifle_aim"
+		MotionState.FIRE:
+			return &"rifle_fire"
+		MotionState.RELOAD:
+			return &"rifle_reload"
+		_:
+			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
 
 
 func _build_holders() -> void:

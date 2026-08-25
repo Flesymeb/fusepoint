@@ -132,7 +132,7 @@ func _process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not active or not skip_available:
 		return
-	if event.is_action_pressed(&"menu_accept") or event.is_action_pressed(&"interact"):
+	if event.is_action_pressed(&"menu_accept") or event.is_action_pressed(&"interact") or event.is_action_pressed(&"skip_presentation"):
 		_complete_presentation(&"media_skipped")
 		get_viewport().set_input_as_handled()
 

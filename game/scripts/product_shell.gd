@@ -1022,6 +1022,7 @@ func _activate_focused_control_once() -> bool:
 
 
 func _process(delta: float) -> void:
+	_reconcile_terminal_completion()
 	if app_state == STATE_LOADING and _loading_remaining > 0.0:
 		_loading_remaining = maxf(_loading_remaining - delta, 0.0)
 		$Root/Pages/LoadingPage/Progress.value = (1.0 - _loading_remaining / 1.35) * 100.0
@@ -1860,7 +1861,23 @@ func _on_mission_event_committed(event: Dictionary) -> void:
 	var payload: Dictionary = event.get("payload", {})
 	var result := StringName(payload.get("result", &"bomb_detonated"))
 	_set_gameplay_enabled(false)
+	_prime_terminal_result_page(result)
 	_show_page(STATE_VICTORY if result == &"bomb_defused" else STATE_DETONATION, &"terminal_submitted", &"terminal")
+
+
+func _reconcile_terminal_completion() -> void:
+	if app_state not in [STATE_VICTORY, STATE_DETONATION]:
+		return
+	var terminal_state: Dictionary = terminal.snapshot()
+	if terminal_state.get("active", true) == true or StringName(terminal_state.get("phase", &"")) != &"completed":
+		return
+	var event_id := String(terminal_state.get("current_event_id", ""))
+	if event_id.is_empty() or _observed_terminal_results.has(event_id):
+		return
+	var expected_result := &"bomb_defused" if app_state == STATE_VICTORY else &"bomb_detonated"
+	if StringName(mission.get("mission_state")) != expected_result:
+		return
+	_on_terminal_presentation_completed(event_id, expected_result)
 
 
 func _on_terminal_presentation_completed(event_id: String, result: StringName) -> void:
@@ -1937,6 +1954,34 @@ func _show_result(result: StringName) -> void:
 	var retry_button := $Root/Pages/ResultPage/Menu/RestartButton as Button
 	retry_button.visible = not success and remaining > 0 and (not (mission.get("deployment_snapshot") as Dictionary).is_empty() or int(mission.get("checkpoint_version")) > 0)
 	_show_page(STATE_SUCCESS_RESULT if success else STATE_FAILURE_RESULT, &"terminal_presentation_completed", &"terminal")
+
+
+func _prime_terminal_result_page(result: StringName) -> void:
+	var success := result == &"bomb_defused"
+	var snapshot: Dictionary = mission.call(&"result_snapshot")
+	var components: Dictionary = snapshot.get("score_components", {})
+	var remaining := int(snapshot.get("remaining_seconds", 0))
+	var completion := int(snapshot.get("completion_seconds", 0))
+	$Root/Pages/ResultPage/Outcome.text = "MISSION COMPLETE" if success else "MISSION FAILED"
+	$Root/Pages/ResultPage/Outcome.modulate = Color(0.2, 0.92, 0.82) if success else Color(1.0, 0.27, 0.18)
+	$Root/Pages/ResultPage/Reason.text = "ROCKET BAY PRESERVED  •  DETONATOR REMOVED" if success else "DETONATION CONFIRMED  •  KESTREL RIDGE LOST"
+	$Root/Pages/ResultPage/Primary/TimeGroup/Value.text = "%02d:%02d" % [completion / 60, completion % 60]
+	$Root/Pages/ResultPage/Primary/TimeGroup/Caption.text = "COMPLETION TIME" if success else "TIME ELAPSED"
+	$Root/Pages/ResultPage/Primary/ScoreGroup/Value.text = "%d" % int(snapshot.get("score", 0))
+	$Root/Pages/ResultPage/Primary/RankGroup/Value.text = "—" if int(snapshot.get("leaderboard_rank", 0)) <= 0 else "#%d" % int(snapshot.get("leaderboard_rank", 0))
+	$Root/Pages/ResultPage/Primary/RankGroup/Caption.text = "LOCAL RANK" if success else "FAILED RUN"
+	$Root/Pages/ResultPage/MissionMetrics/Remaining.text = "%02d:%02d  REMAINING" % [remaining / 60, remaining % 60]
+	$Root/Pages/ResultPage/MissionMetrics/Eliminations.text = "%d  ELIMINATIONS" % int(snapshot.get("eliminations", 0))
+	$Root/Pages/ResultPage/MissionMetrics/Deaths.text = "%d  DEATHS" % int(snapshot.get("deaths", 0))
+	$Root/Pages/ResultPage/MissionMetrics/Restarts.text = "%d  RESTARTS" % int(snapshot.get("restart_count", 0))
+	$Root/Pages/ResultPage/MissionMetrics/Alpha.text = "A  •  ALPHA  %s" % ("SECURED" if snapshot.get("alpha_captured", false) else "HOSTILE")
+	$Root/Pages/ResultPage/MissionMetrics/Bravo.text = "B  •  BRAVO  %s" % ("SECURED" if snapshot.get("bravo_captured", false) else "HOSTILE")
+	var completed_stages := 0
+	for stage_key: String in ["diagnosis", "power_isolation", "detonator_removal"]:
+		if int(components.get(stage_key, 0)) > 0:
+			completed_stages += 1
+	$Root/Pages/ResultPage/MissionMetrics/Charlie.text = "C  •  %d / 3 DEFUSAL" % completed_stages
+	$Root/Pages/ResultPage/MissionMetrics/Loadout.text = "%s  LOADOUT" % String(snapshot.get("selected_loadout", &"ak74m")).to_upper()
 
 
 func _mcp_state() -> Dictionary:

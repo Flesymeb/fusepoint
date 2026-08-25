@@ -112,18 +112,40 @@ func _face_avatar_to_camera(camera_position: Vector3) -> void:
 func _safe_camera_position(desired: Vector3) -> Vector3:
 	if _camera == null or _avatar == null:
 		return desired
+	if _camera_line_clear(desired):
+		return desired
+	for candidate: Vector3 in _fallback_camera_positions():
+		if _camera_line_clear(candidate):
+			return candidate
+	var hit_position := _first_camera_hit_position(desired)
+	if hit_position != Vector3.INF:
+		return hit_position.move_toward(_reveal_center, 0.55)
+	return desired
+
+
+func _fallback_camera_positions() -> Array[Vector3]:
+	var positions: Array[Vector3] = []
+	var center := _avatar.global_position
+	for angle in [PI * 0.42, PI * 0.25, PI * 0.58, PI * 0.08, PI * 0.75, -PI * 0.08]:
+		positions.append(center + Vector3(cos(angle) * reveal_distance, 1.36, sin(angle) * reveal_distance))
+		positions.append(center + Vector3(cos(angle) * (reveal_distance + 0.7), 1.50, sin(angle) * (reveal_distance + 0.7)))
+	return positions
+
+
+func _camera_line_clear(position: Vector3) -> bool:
+	return _first_camera_hit_position(position) == Vector3.INF
+
+
+func _first_camera_hit_position(position: Vector3) -> Vector3:
 	var excluded: Array[RID] = []
 	var player := get_tree().get_first_node_in_group(&"player")
 	if player is CollisionObject3D:
 		excluded.append((player as CollisionObject3D).get_rid())
-	var query := PhysicsRayQueryParameters3D.create(_reveal_center, desired, 0xFFFFFFFF, excluded)
+	var query := PhysicsRayQueryParameters3D.create(_reveal_center, position, 0xFFFFFFFF, excluded)
 	query.collide_with_areas = false
 	query.collide_with_bodies = true
 	var hit := _camera.get_world_3d().direct_space_state.intersect_ray(query)
-	if hit.is_empty():
-		return desired
-	var hit_position: Vector3 = hit.get("position", desired)
-	return hit_position.move_toward(_reveal_center, 0.38)
+	return Vector3.INF if hit.is_empty() else hit.get("position", position)
 
 
 func _look_transform(position: Vector3) -> Transform3D:
