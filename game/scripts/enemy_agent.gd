@@ -64,6 +64,7 @@ var _progress_watchdog_count := 0
 var _combat_profile: Dictionary = {}
 var _tester_prepared_hold := false
 var _tester_prepared_generation := 0
+var _tester_search_fixture_receipt: Dictionary = {}
 var _last_floor_support_receipt: Dictionary = {}
 var _safe_velocity_callback_count := 0
 var _safe_velocity_duplicate_callback_count := 0
@@ -259,6 +260,73 @@ func set_tester_prepared_hold(enabled: bool, setup_generation: int) -> Dictionar
 	return receipt
 
 
+func tester_prepare_search_state(setup_generation: int) -> Dictionary:
+	var receipt := {
+		"actor_id": stable_id,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"setup_generation": setup_generation,
+		"release_guard": &"OS.is_debug_build",
+		"fixture": &"enemy_search_root_state",
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		_tester_search_fixture_receipt = receipt.duplicate(true)
+		return receipt
+	if setup_generation <= 0 or not mission_active or not is_alive():
+		receipt["failure_reason"] = &"actor_not_stable_live"
+		_tester_search_fixture_receipt = receipt.duplicate(true)
+		return receipt
+	_ensure_presentation()
+	var hold_receipt := set_tester_prepared_hold(true, setup_generation)
+	if hold_receipt.get("accepted", false) != true:
+		receipt["failure_reason"] = hold_receipt.get("failure_reason", &"hold_rejected")
+		receipt["hold_receipt"] = hold_receipt
+		_tester_search_fixture_receipt = receipt.duplicate(true)
+		return receipt
+	set_target(null)
+	_has_last_seen_target_position = true
+	_last_seen_target_position = global_position - global_basis.z * 4.0
+	_last_seen_target_remaining = search_seconds
+	_targetless_action = &"tester_search_inspection"
+	_targetless_action_remaining = targetless_scan_seconds
+	_targetless_watchdog_remaining = targetless_watchdog_seconds
+	velocity = -global_basis.z * minf(move_speed, 1.1)
+	_set_ai_state(AIState.SEARCH)
+	if _presentation_actor != null:
+		_presentation_actor.walk()
+		_presentation_actor.set_locomotion_speed(Vector2(velocity.x, velocity.z).length())
+	_enforce_upright_navigation_root()
+	var snapshot := authoritative_snapshot()
+	var presentation_state: Dictionary = snapshot.get("presentation", {})
+	receipt.merge({
+		"resolved": true,
+		"accepted": snapshot.get("root_upright", false) == true and StringName(snapshot.get("action", &"")) == &"search",
+		"failure_reason": &"" if snapshot.get("root_upright", false) == true and StringName(snapshot.get("action", &"")) == &"search" else &"search_root_state_rejected",
+		"hold_receipt": hold_receipt,
+		"root_state": {
+			"action": snapshot.get("action", &"idle"),
+			"root_pitch_degrees": snapshot.get("root_pitch_degrees", 0.0),
+			"root_roll_degrees": snapshot.get("root_roll_degrees", 0.0),
+			"root_upright": snapshot.get("root_upright", false),
+			"velocity": snapshot.get("velocity", Vector3.ZERO),
+			"grounded_occupancy": snapshot.get("grounded_occupancy", false),
+		},
+		"animation": {
+			"skin": presentation_state.get("skin_id", ""),
+			"clip": presentation_state.get("animation", ""),
+			"semantic": presentation_state.get("animation_semantic", &""),
+			"normalized_time": presentation_state.get("animation_normalized_time", 0.0),
+			"weapon_family": presentation_state.get("weapon_family", &"unbound"),
+			"weapon_family_compatible": presentation_state.get("weapon_family_compatible", false),
+		},
+		"attack_authority": &"visible_actor_root_and_muzzle",
+	}, true)
+	_tester_search_fixture_receipt = receipt.duplicate(true)
+	return receipt
+
+
 func resolve_floor_support(context: StringName) -> Dictionary:
 	var receipt := {
 		"context": context,
@@ -336,6 +404,7 @@ func resolve_floor_support(context: StringName) -> Dictionary:
 func clear_tester_prepared_hold() -> void:
 	_tester_prepared_hold = false
 	_tester_prepared_generation = 0
+	_tester_search_fixture_receipt.clear()
 	_apply_activation_state()
 
 
@@ -1053,6 +1122,7 @@ func _mcp_state() -> Dictionary:
 		"visible_contact": _last_floor_support_receipt.get("visual_contact", {}),
 		"tester_prepared_hold": _tester_prepared_hold,
 		"setup_generation": _tester_prepared_generation,
+		"tester_search_fixture_receipt": _tester_search_fixture_receipt,
 		"restore_epoch": _restore_epoch,
 		"run_epoch": run_epoch,
 	}

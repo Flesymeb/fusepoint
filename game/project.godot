@@ -197,6 +197,10 @@ tester_encounter_all_prepare={
 "deadzone": 0.5,
 "events": []
 }
+tester_enemy_search_state_prepare={
+"deadzone": 0.5,
+"events": []
+}
 tester_encounter_commit={
 "deadzone": 0.5,
 "events": []

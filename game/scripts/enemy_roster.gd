@@ -619,6 +619,73 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 	return last_tester_setup_receipt.duplicate(true)
 
 
+func tester_prepare_enemy_search_state(region_id: StringName, setup_generation: int) -> Dictionary:
+	var presence := tester_prepare_region_presence(region_id, setup_generation)
+	var receipt := presence.duplicate(true)
+	receipt["kind"] = &"enemy_search_state_prepare"
+	receipt["branch_id"] = &"animation:enemy_search_root"
+	receipt["search_actor_id"] = &""
+	receipt["root_state"] = {}
+	receipt["animation_binding_strategy"] = _animation_binding_strategy()
+	if presence.get("accepted", false) != true:
+		receipt["accepted"] = false
+		receipt["failure_reason"] = presence.get("failure_reason", &"presence_prepare_failed")
+		last_tester_setup_receipt = receipt.duplicate(true)
+		_store_tester_setup_receipt()
+		return receipt
+	var active_ids: Array = presence.get("stable_actor_ids", [])
+	if active_ids.is_empty():
+		receipt["accepted"] = false
+		receipt["failure_reason"] = &"no_active_actor_for_search_fixture"
+		last_tester_setup_receipt = receipt.duplicate(true)
+		_store_tester_setup_receipt()
+		return receipt
+	var actor_id := StringName(active_ids[0])
+	var enemy := enemies.get(actor_id) as FusepointEnemyAgent
+	if enemy == null:
+		receipt["accepted"] = false
+		receipt["failure_reason"] = &"selected_actor_missing"
+		last_tester_setup_receipt = receipt.duplicate(true)
+		_store_tester_setup_receipt()
+		return receipt
+	var search_receipt := enemy.tester_prepare_search_state(setup_generation) if enemy.has_method(&"tester_prepare_search_state") else {}
+	var snapshot := enemy.authoritative_snapshot()
+	receipt.merge({
+		"resolved": search_receipt.get("resolved", false) == true,
+		"accepted": search_receipt.get("accepted", false) == true,
+		"search_actor_id": actor_id,
+		"root_state": search_receipt.get("root_state", {}),
+		"search_fixture": search_receipt,
+		"animation": search_receipt.get("animation", {}),
+		"stable_actor_ids": active_ids,
+		"root_pitch_degrees": snapshot.get("root_pitch_degrees", 0.0),
+		"root_roll_degrees": snapshot.get("root_roll_degrees", 0.0),
+		"root_upright": snapshot.get("root_upright", false),
+		"failure_reason": &"" if search_receipt.get("accepted", false) == true else search_receipt.get("failure_reason", &"search_fixture_rejected"),
+	}, true)
+	last_tester_setup_receipt = receipt.duplicate(true)
+	_store_tester_setup_receipt()
+	_commit_roster_event(&"tester_enemy_search_state_resolved", receipt.duplicate(true))
+	return receipt
+
+
+func _animation_binding_strategy() -> Dictionary:
+	return {
+		"selected_strategy": &"restore_stable_component_baseline_with_fixture_isolation",
+		"strategies_compared": [
+			&"restore_last_visually_accepted_baseline",
+			&"repair_current_wrapper_binding",
+			&"replace_with_coherent_rifle_ready_set",
+			&"isolate_missing_evidence_through_fixtures",
+		],
+		"local_component": &"quaternius_ual1_ual2_retargeted_humanoid",
+		"rifle_ready_authored_clips_available": false,
+		"combat_clip_disposition": &"pistol_source_clips_retained_as_truthful_unresolved_baseline",
+		"root_tilt_strategy": &"actor_root_pitch_roll_locked_fixture_reachable",
+		"issue_disposition": &"rifle_clip_binding_remains_open_until_rifle_ready_asset_intake",
+	}
+
+
 func _store_tester_setup_receipt() -> void:
 	tester_setup_history.append(last_tester_setup_receipt.duplicate(true))
 	while tester_setup_history.size() > 8:
@@ -962,6 +1029,7 @@ func _summary() -> Dictionary:
 		},
 		"last_tester_setup_receipt": last_tester_setup_receipt,
 		"tester_setup_history": tester_setup_history,
+		"animation_binding_strategy": _animation_binding_strategy(),
 		"allocation_state": reservation_transaction_state,
 		"allocation_minimum_distance": reservation_minimum_distance,
 		"allocation_required_separation": MIN_RESERVATION_SEPARATION,

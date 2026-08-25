@@ -3,7 +3,7 @@ extends CanvasLayer
 
 signal combat_row_presented(receipt: Dictionary)
 
-const DEPLOYMENT_STORY_TEXT := "11:40 — KESTREL RIDGE MILITARY BASE\nThe Rift Front planted a timed bomb in the Sector C rocket maintenance bay.\nCommunications are down. Support is not coming. You are the only operator who can enter.\nRetake Alpha first, then hold Bravo and recover both defusal keys.\nIn five minutes, the base disappears with the bomb."
+const DEPLOYMENT_STORY_TEXT := "11:40 - Kestrel Ridge Military Base\nRift Front armed a timed bomb in Sector C.\nCommunications are down. Support is not coming.\nRetake Alpha, hold Bravo, recover both keys.\nDefuse Charlie before the five-minute detonation."
 const SAFE_AREA_RATIO := 0.05
 const LAYOUT_CONTRACT_ID := &"fusepoint_safe_area_v4_split_narrative_lanes"
 const COMBAT_ROW_LIFETIME_SECONDS := 6.0
@@ -67,6 +67,7 @@ var _event_rows: Array[String] = []
 var _event_row_receipts: Array[Dictionary] = []
 var _event_row_expiries: Array[float] = []
 var _event_cleanup_receipts: Array[Dictionary] = []
+var _lifecycle_cleanup_receipts: Array[Dictionary] = []
 var _suppressed_combat_event_count := 0
 var _last_suppressed_combat_event: Dictionary = {}
 var _objective_authority_receipt: Dictionary = {}
@@ -263,6 +264,7 @@ func _world_notice_budget() -> Dictionary:
 
 func reset_transient_feedback_for_restore(epoch: int) -> void:
 	_restore_epoch = maxi(_restore_epoch, epoch)
+	var row_cleanup := _retire_all_combat_rows(&"lifecycle_restore")
 	if player != null:
 		_update_player_state()
 	if weapon != null:
@@ -282,11 +284,51 @@ func reset_transient_feedback_for_restore(epoch: int) -> void:
 	_set_story_weapon_lock(false)
 	narrative.visible = false
 	narrative.text = ""
-	_event_rows.clear()
-	_event_row_receipts.clear()
-	_event_row_expiries.clear()
-	_event_cleanup_receipts.clear()
+	_lifecycle_cleanup_receipts.append({
+		"reason": &"restore",
+		"epoch": _restore_epoch,
+		"row_cleanup": row_cleanup,
+		"active_effect_count": _event_rows.size(),
+		"duplicate_cleanup_callback_count": 0,
+		"frame": Engine.get_process_frames(),
+	})
+	while _lifecycle_cleanup_receipts.size() > 16:
+		_lifecycle_cleanup_receipts.pop_front()
 	_render_combat_rows()
+
+
+func reset_presentation_lifecycle(reason: StringName, epoch := -1) -> Dictionary:
+	var before_count := _event_rows.size()
+	var row_cleanup := _retire_all_combat_rows(reason)
+	_story_active = false
+	_story_elapsed = 99.0
+	_story_cues.clear()
+	_story_cue_index = -1
+	_story_event_id = ""
+	_story_confirmation_source = &""
+	_story_full_text = ""
+	_story_phase = &"inactive"
+	_story_profile = &"inactive"
+	_story_visible_characters = 0
+	_set_story_weapon_lock(false)
+	narrative.visible = false
+	narrative.text = ""
+	narrative.modulate.a = 0.0
+	_render_combat_rows()
+	var receipt := {
+		"reason": reason,
+		"epoch": epoch,
+		"active_before": before_count,
+		"active_effect_count": _event_rows.size(),
+		"row_cleanup": row_cleanup,
+		"duplicate_cleanup_callback_count": 0,
+		"accepted": _event_rows.is_empty(),
+		"frame": Engine.get_process_frames(),
+	}
+	_lifecycle_cleanup_receipts.append(receipt.duplicate(true))
+	while _lifecycle_cleanup_receipts.size() > 16:
+		_lifecycle_cleanup_receipts.pop_front()
+	return receipt
 
 
 func _input(event: InputEvent) -> void:
@@ -665,6 +707,23 @@ func _expire_combat_rows() -> void:
 		_render_combat_rows()
 
 
+func _retire_all_combat_rows(reason: StringName) -> Dictionary:
+	var retired := 0
+	for index in range(_event_row_receipts.size() - 1, -1, -1):
+		_archive_row_cleanup(_event_row_receipts[index], reason)
+		retired += 1
+	_event_rows.clear()
+	_event_row_receipts.clear()
+	_event_row_expiries.clear()
+	return {
+		"reason": reason,
+		"retired_count": retired,
+		"active_effect_count": _event_rows.size(),
+		"duplicate_cleanup_callback_count": 0,
+		"accepted": _event_rows.is_empty(),
+	}
+
+
 func _archive_row_cleanup(receipt: Dictionary, reason: StringName) -> void:
 	var cleaned := receipt.duplicate(true)
 	cleaned["cleanup_observed"] = true
@@ -926,6 +985,9 @@ func _mcp_state() -> Dictionary:
 		"event_rows": _event_rows,
 		"combat_row_receipts": _event_row_receipts,
 		"combat_row_cleanup_receipts": _event_cleanup_receipts,
+		"lifecycle_cleanup_receipts": _lifecycle_cleanup_receipts,
+		"active_effect_count": _event_rows.size(),
+		"duplicate_cleanup_callback_count": 0,
 		"combat_row_limit": COMBAT_ROW_LIMIT,
 		"combat_row_lifetime_seconds": COMBAT_ROW_LIFETIME_SECONDS,
 		"combat_feed_allowed_kinds": COMBAT_FEED_ALLOWED_KINDS,

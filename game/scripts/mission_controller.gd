@@ -809,6 +809,61 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 	return last_tester_encounter_receipt.duplicate(true)
 
 
+func tester_prepare_enemy_search_state(region_id: StringName = &"alpha") -> Dictionary:
+	## Non-release animation/root-state fixture. It pins one live actor in the
+	## search branch for inspection and leaves objective authority untouched.
+	tester_encounter_request_count += 1
+	var setup_id := "tester-enemy-search-%06d" % tester_encounter_request_count
+	var setup_generation := tester_encounter_request_count
+	var timer_before := remaining_time
+	var run_epoch_before := run_epoch
+	var frontier_before := _fixture_progression_frontier()
+	var terminal_before := terminal_commit_count
+	last_tester_encounter_receipt = {
+		"setup_id": setup_id,
+		"branch_id": &"animation:enemy_search_root",
+		"setup_generation": setup_generation,
+		"kind": &"enemy_search_state_prepare",
+		"requested_region": region_id,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"non_release": OS.is_debug_build(),
+		"release_guard": &"OS.is_debug_build",
+		"run_epoch": run_epoch,
+		"route_acceptance_claimed": false,
+	}
+	if not OS.is_debug_build():
+		last_tester_encounter_receipt["failure_reason"] = &"release_build_forbidden"
+		return last_tester_encounter_receipt.duplicate(true)
+	if mission_state != &"active_gameplay" or deployment_snapshot.is_empty() or checkpoint_restore_in_progress or recovery_input_locked:
+		last_tester_encounter_receipt["failure_reason"] = &"authoritative_state_unavailable"
+		return last_tester_encounter_receipt.duplicate(true)
+	var roster_setup: Dictionary = enemy_roster.call(&"tester_prepare_enemy_search_state", region_id, setup_generation) if enemy_roster != null and enemy_roster.has_method(&"tester_prepare_enemy_search_state") else {}
+	var frontier_after := _fixture_progression_frontier()
+	var accepted: bool = roster_setup.get("accepted", false) == true and frontier_after == frontier_before and terminal_commit_count == terminal_before
+	last_tester_encounter_receipt.merge({
+		"resolved": roster_setup.get("resolved", false) == true,
+		"accepted": accepted,
+		"prepared_region": region_id,
+		"stable_actor_ids": roster_setup.get("stable_actor_ids", []),
+		"search_actor_id": roster_setup.get("search_actor_id", &""),
+		"root_state": roster_setup.get("root_state", {}),
+		"animation_binding_strategy": roster_setup.get("animation_binding_strategy", {}),
+		"reset_isolation": {
+			"run_epoch_unchanged": run_epoch == run_epoch_before,
+			"timer_not_increased": remaining_time <= timer_before + 0.001,
+			"terminal_state_unchanged": terminal_commit_count == terminal_before,
+			"capture_points_unchanged": frontier_after == frontier_before,
+			"route_acceptance_claimed": false,
+			"player_relocated": false,
+		},
+		"failure_reason": &"" if accepted else roster_setup.get("failure_reason", &"enemy_search_fixture_rejected"),
+	}, true)
+	_record_event(&"tester_enemy_search_state_prepared", last_tester_encounter_receipt.duplicate(true), false)
+	return last_tester_encounter_receipt.duplicate(true)
+
+
 func tester_commit_prepared_encounter(expected_region: StringName = &"", expected_generation := -1) -> Dictionary:
 	var region_id := tester_prepared_region
 	var receipt := {

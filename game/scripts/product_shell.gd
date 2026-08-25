@@ -420,6 +420,10 @@ func _input(event: InputEvent) -> void:
 		_tester_prepare_encounter(&"all")
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed(&"tester_enemy_search_state_prepare"):
+		_tester_prepare_enemy_search_state()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed(&"tester_encounter_commit"):
 		_tester_commit_prepared_encounter()
 		get_viewport().set_input_as_handled()
@@ -633,6 +637,26 @@ func _tester_prepare_encounter(region_id: StringName) -> void:
 	receipt["branch_id"] = mission_setup.get("branch_id", &"")
 	receipt["setup_generation"] = mission_setup.get("setup_generation", 0)
 	receipt["stable_actor_ids"] = mission_setup.get("stable_actor_ids", [])
+	receipt["reset_isolation"] = mission_setup.get("reset_isolation", {})
+	receipt["route_acceptance_claimed"] = false
+	receipt["failure_reason"] = mission_setup.get("failure_reason", &"")
+	_store_tester_setup_receipt(receipt)
+
+
+func _tester_prepare_enemy_search_state() -> void:
+	var receipt := _new_tester_setup_receipt(&"enemy_search_state_prepare")
+	if not _tester_setup_available(STATE_GAMEPLAY, receipt):
+		_store_tester_setup_receipt(receipt)
+		return
+	var mission_setup: Dictionary = mission.call(&"tester_prepare_enemy_search_state")
+	receipt["mission_setup"] = mission_setup
+	receipt["resolved"] = mission_setup.get("resolved", false) == true
+	receipt["accepted"] = mission_setup.get("accepted", false) == true
+	receipt["branch_id"] = mission_setup.get("branch_id", &"animation:search_root")
+	receipt["setup_generation"] = mission_setup.get("setup_generation", 0)
+	receipt["stable_actor_ids"] = mission_setup.get("stable_actor_ids", [])
+	receipt["search_actor_id"] = mission_setup.get("search_actor_id", &"")
+	receipt["root_state"] = mission_setup.get("root_state", {})
 	receipt["reset_isolation"] = mission_setup.get("reset_isolation", {})
 	receipt["route_acceptance_claimed"] = false
 	receipt["failure_reason"] = mission_setup.get("failure_reason", &"")
@@ -1329,6 +1353,13 @@ func _set_gameplay_enabled(enabled: bool) -> void:
 	hud.call(&"set_hud_enabled", enabled)
 
 
+func _reset_hud_lifecycle_feedback(reason: StringName) -> Dictionary:
+	if hud != null and hud.has_method(&"reset_presentation_lifecycle"):
+		var receipt: Variant = hud.call(&"reset_presentation_lifecycle", reason, int(mission.get("run_epoch")))
+		return receipt if receipt is Dictionary else {}
+	return {}
+
+
 func _pause_gameplay() -> void:
 	if app_state != STATE_GAMEPLAY:
 		return
@@ -1336,6 +1367,7 @@ func _pause_gameplay() -> void:
 	player.call(&"set_gameplay_input_enabled", false)
 	weapon.call(&"set_gameplay_input_enabled", false)
 	roster.call(&"reset_transient_feedback")
+	_reset_hud_lifecycle_feedback(&"pause")
 	get_tree().paused = true
 	_show_page(STATE_PAUSE)
 
@@ -1517,6 +1549,7 @@ func _on_player_died(_event: Dictionary) -> void:
 	player.call(&"set_gameplay_input_enabled", false)
 	weapon.call(&"set_gameplay_input_enabled", false)
 	roster.call(&"reset_transient_feedback")
+	_reset_hud_lifecycle_feedback(&"ordinary_death")
 	_death_lock_remaining = DEATH_LOCK_SECONDS
 	_queued_recovery_activation = false
 	_queued_recovery_activation_receipt.clear()
@@ -1828,6 +1861,7 @@ func _return_home() -> void:
 		return
 	get_tree().paused = false
 	roster.call(&"reset_transient_feedback")
+	_reset_hud_lifecycle_feedback(&"home")
 	terminal.reset_presentation(true, true)
 	if mission.call(&"reset_for_replay") != true:
 		_last_lifecycle_action_receipt["accepted"] = false
@@ -1844,6 +1878,7 @@ func _replay() -> void:
 		return
 	get_tree().paused = false
 	roster.call(&"reset_transient_feedback")
+	_reset_hud_lifecycle_feedback(&"replay")
 	terminal.reset_presentation(true, true)
 	if mission.call(&"reset_for_replay") != true:
 		_last_lifecycle_action_receipt["accepted"] = false
@@ -1914,6 +1949,7 @@ func _on_terminal_presentation_completed(event_id: String, result: StringName) -
 func _show_result(result: StringName) -> void:
 	_set_gameplay_enabled(false)
 	roster.call(&"reset_transient_feedback")
+	_reset_hud_lifecycle_feedback(StringName("terminal_%s" % String(result)))
 	var success := result == &"bomb_defused"
 	$Root/Pages/ResultPage/Outcome.text = "MISSION COMPLETE" if success else "MISSION FAILED"
 	$Root/Pages/ResultPage/Outcome.modulate = Color(0.2, 0.92, 0.82) if success else Color(1.0, 0.27, 0.18)
