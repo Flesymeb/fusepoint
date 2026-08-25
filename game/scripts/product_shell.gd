@@ -60,6 +60,39 @@ const LIFECYCLE_ACTIONS := {
 	&"checkpoint_restart": {"legal_from":[&"gameplay",&"pause",&"death_recovery",&"failure_result"], "target":&"recovery_transition"},
 	&"home": {"legal_from":[&"pause",&"death_recovery",&"success_result",&"failure_result"], "target":&"title"},
 }
+const TESTER_CONTROL_ACTIONS: Array[StringName] = [
+	&"tester_alpha_checkpoint",
+	&"tester_encounter_alpha_prepare",
+	&"tester_encounter_bravo_prepare",
+	&"tester_encounter_charlie_prepare",
+	&"tester_encounter_all_prepare",
+	&"tester_enemy_search_state_prepare",
+	&"tester_encounter_commit",
+	&"tester_encounter_advance",
+	&"tester_terminal_success_prepare",
+	&"tester_terminal_success_advance",
+	&"tester_terminal_failure_prepare",
+	&"tester_terminal_failure_advance",
+	&"tester_defusal_stage_prepare",
+	&"tester_defusal_stage_advance",
+	&"tester_ui_scale_200_prepare",
+	&"tester_ui_scale_restore",
+	&"tester_opening_fallback_prepare",
+	&"tester_shell_death",
+	&"tester_shell_failure_result",
+	&"tester_shell_success_result",
+	&"tester_shell_replay",
+	&"tester_feedback_component_report_prepare",
+	&"tester_feedback_adapter_report_prepare",
+	&"tester_feedback_enemy_report_prepare",
+	&"tester_feedback_miss_prepare",
+	&"tester_feedback_concrete_prepare",
+	&"tester_feedback_metal_prepare",
+	&"tester_feedback_character_prepare",
+	&"tester_feedback_capacity_prepare",
+	&"tester_feedback_advance",
+	&"tester_feedback_reset",
+]
 
 @onready var root: Control = $Root
 @onready var pages: Control = $Root/Pages
@@ -132,6 +165,7 @@ var _tester_opening_fallback_active := false
 var _tester_opening_fallback_generation := 0
 var _tester_opening_original_stream: VideoStream
 var _last_tester_opening_reset_receipt: Dictionary = {}
+var _tester_action_dispatch_frames: Dictionary = {}
 
 
 func _ready() -> void:
@@ -453,97 +487,7 @@ func _finalize_settings_focus_receipt(control: Control) -> void:
 
 func _input(event: InputEvent) -> void:
 	_observe_input_family(event)
-	if event.is_action_pressed(&"tester_alpha_checkpoint"):
-		_tester_prepare_alpha_checkpoint()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_encounter_alpha_prepare"):
-		_tester_prepare_encounter(&"alpha")
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_encounter_bravo_prepare"):
-		_tester_prepare_encounter(&"bravo")
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_encounter_charlie_prepare"):
-		_tester_prepare_encounter(&"charlie")
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_encounter_all_prepare"):
-		_tester_prepare_encounter(&"all")
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_enemy_search_state_prepare"):
-		_tester_prepare_enemy_search_state()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_encounter_commit"):
-		_tester_commit_prepared_encounter()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_encounter_advance"):
-		_tester_advance_prepared_encounter()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_terminal_success_prepare"):
-		_tester_prepare_terminal_branch(&"success")
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_terminal_success_advance"):
-		_tester_advance_terminal_branch(&"success")
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_terminal_failure_prepare"):
-		_tester_prepare_terminal_branch(&"failure")
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_terminal_failure_advance"):
-		_tester_advance_terminal_branch(&"failure")
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_defusal_stage_prepare"):
-		_tester_prepare_defusal_stage()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_defusal_stage_advance"):
-		_tester_advance_defusal_stage()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_ui_scale_200_prepare"):
-		_tester_apply_ui_scale(2.0, &"ui_scale_200_prepare")
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_ui_scale_restore"):
-		_tester_apply_ui_scale(1.0, &"ui_scale_restore")
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_opening_fallback_prepare"):
-		_tester_prepare_opening_fallback()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_shell_death"):
-		_tester_prepare_shell_death()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_shell_failure_result"):
-		_tester_prepare_failure_result()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_shell_success_result"):
-		_tester_prepare_success_result()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_shell_replay"):
-		_tester_prepare_replay()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed(&"tester_feedback_advance"):
-		_tester_advance_audio_stem()
-		get_viewport().set_input_as_handled()
-		return
-	var tester_audio_stem := _tester_audio_stem_for_event(event)
-	if not tester_audio_stem.is_empty():
-		_tester_prepare_audio_stem(tester_audio_stem)
+	if _dispatch_tester_action_event(event):
 		get_viewport().set_input_as_handled()
 		return
 	if app_state == STATE_BRIEFING and not _briefing_complete and _is_physical_briefing_skip(event):
@@ -599,6 +543,94 @@ func _tester_audio_stem_for_event(event: InputEvent) -> StringName:
 		if event.is_action_pressed(action):
 			return StringName(actions[action])
 	return &""
+
+
+func _dispatch_tester_action_event(event: InputEvent) -> bool:
+	for action: StringName in TESTER_CONTROL_ACTIONS:
+		if event.is_action_pressed(action):
+			return _dispatch_tester_action(action)
+	return false
+
+
+func _poll_tester_action_injection() -> void:
+	if not OS.is_debug_build():
+		return
+	for action: StringName in TESTER_CONTROL_ACTIONS:
+		if Input.is_action_just_pressed(action):
+			_dispatch_tester_action(action)
+
+
+func _dispatch_tester_action(action: StringName) -> bool:
+	var frame := Engine.get_process_frames()
+	if int(_tester_action_dispatch_frames.get(action, -1)) == frame:
+		return true
+	_tester_action_dispatch_frames[action] = frame
+	match action:
+		&"tester_alpha_checkpoint":
+			_tester_prepare_alpha_checkpoint()
+		&"tester_encounter_alpha_prepare":
+			_tester_prepare_encounter(&"alpha")
+		&"tester_encounter_bravo_prepare":
+			_tester_prepare_encounter(&"bravo")
+		&"tester_encounter_charlie_prepare":
+			_tester_prepare_encounter(&"charlie")
+		&"tester_encounter_all_prepare":
+			_tester_prepare_encounter(&"all")
+		&"tester_enemy_search_state_prepare":
+			_tester_prepare_enemy_search_state()
+		&"tester_encounter_commit":
+			_tester_commit_prepared_encounter()
+		&"tester_encounter_advance":
+			_tester_advance_prepared_encounter()
+		&"tester_terminal_success_prepare":
+			_tester_prepare_terminal_branch(&"success")
+		&"tester_terminal_success_advance":
+			_tester_advance_terminal_branch(&"success")
+		&"tester_terminal_failure_prepare":
+			_tester_prepare_terminal_branch(&"failure")
+		&"tester_terminal_failure_advance":
+			_tester_advance_terminal_branch(&"failure")
+		&"tester_defusal_stage_prepare":
+			_tester_prepare_defusal_stage()
+		&"tester_defusal_stage_advance":
+			_tester_advance_defusal_stage()
+		&"tester_ui_scale_200_prepare":
+			_tester_apply_ui_scale(2.0, &"ui_scale_200_prepare")
+		&"tester_ui_scale_restore":
+			_tester_apply_ui_scale(1.0, &"ui_scale_restore")
+		&"tester_opening_fallback_prepare":
+			_tester_prepare_opening_fallback()
+		&"tester_shell_death":
+			_tester_prepare_shell_death()
+		&"tester_shell_failure_result":
+			_tester_prepare_failure_result()
+		&"tester_shell_success_result":
+			_tester_prepare_success_result()
+		&"tester_shell_replay":
+			_tester_prepare_replay()
+		&"tester_feedback_advance":
+			_tester_advance_audio_stem()
+		&"tester_feedback_reset":
+			_tester_prepare_audio_stem(&"reset")
+		_:
+			var stem := _tester_audio_stem_for_action(action)
+			if stem.is_empty():
+				return false
+			_tester_prepare_audio_stem(stem)
+	return true
+
+
+func _tester_audio_stem_for_action(action: StringName) -> StringName:
+	return {
+		&"tester_feedback_component_report_prepare": &"component_report",
+		&"tester_feedback_adapter_report_prepare": &"product_adapter_report",
+		&"tester_feedback_enemy_report_prepare": &"enemy_report",
+		&"tester_feedback_miss_prepare": &"near_miss",
+		&"tester_feedback_concrete_prepare": &"concrete_impact",
+		&"tester_feedback_metal_prepare": &"metal_impact",
+		&"tester_feedback_character_prepare": &"character_hit",
+		&"tester_feedback_capacity_prepare": &"capacity_cleanup",
+	}.get(action, &"")
 
 
 func _tester_prepare_audio_stem(stem_id: StringName) -> void:
@@ -1134,6 +1166,7 @@ func _activate_focused_control_once() -> bool:
 
 
 func _process(delta: float) -> void:
+	_poll_tester_action_injection()
 	_reconcile_terminal_completion()
 	if app_state == STATE_LOADING and _loading_remaining > 0.0:
 		_loading_remaining = maxf(_loading_remaining - delta, 0.0)

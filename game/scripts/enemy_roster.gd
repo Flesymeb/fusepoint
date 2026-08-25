@@ -1584,6 +1584,9 @@ func _compact_actor_state(enemy: FusepointEnemyAgent) -> Dictionary:
 	var feedback: Dictionary = snapshot.get("shot_feedback", {})
 	return {
 		"id": snapshot.get("id", enemy.stable_id),
+		"node_id": snapshot.get("node_id", StringName(enemy.name)),
+		"stable_id": snapshot.get("stable_id", enemy.stable_id),
+		"actor_identity_aliases": snapshot.get("actor_identity_aliases", [String(enemy.stable_id), String(enemy.name)]),
 		"region": snapshot.get("region", enemy.region_id),
 		"role": snapshot.get("role", enemy.tactical_role),
 		"route_slot": snapshot.get("route_slot", enemy.route_slot),

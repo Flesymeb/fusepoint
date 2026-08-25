@@ -751,6 +751,9 @@ func authoritative_snapshot() -> Dictionary:
 	return {
 		"run_epoch": run_epoch,
 		"id": stable_id,
+		"node_id": StringName(name),
+		"stable_id": stable_id,
+		"actor_identity_aliases": [String(stable_id), String(name)],
 		"observation_ready": true,
 		"observation_rejected": false,
 		# One compact, front-loaded inspection cell keeps every required combat
@@ -1478,6 +1481,9 @@ func _mcp_state() -> Dictionary:
 	var inspection: Dictionary = snapshot.get("inspection_state", {})
 	return {
 		"actor_id": stable_id,
+		"node_id": StringName(name),
+		"stable_id": stable_id,
+		"actor_identity_aliases": snapshot.get("actor_identity_aliases", [String(stable_id), String(name)]),
 		"presentation_state": {
 			"skin": (snapshot.get("presentation", {}) as Dictionary).get("skin_id", ""),
 			"library": (snapshot.get("presentation", {}) as Dictionary).get("animation_library", ""),
