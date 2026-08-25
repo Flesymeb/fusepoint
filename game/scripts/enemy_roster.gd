@@ -13,6 +13,8 @@ const RESERVATION_RING_RADII := [1.5, 2.25, 3.0, 4.0, 5.5, 7.0, 9.0]
 const RESERVATION_ANGLE_STEPS := 16
 const ACTOR_PAGE_LIMIT := 10
 const QUALIFICATION_PAGE_LIMIT := 6
+const PREPARED_COMBAT_STAGE_CYCLE: Array[StringName] = [&"search", &"aim", &"reload", &"hurt", &"flank"]
+const ADVANCE_COMBAT_STAGE_CYCLE: Array[StringName] = [&"enemy_fire", &"nonlethal_player_hit", &"lethal_player_hit", &"reload", &"search"]
 const ROSTER := [
 	{"id":"rift-a-01","region":"alpha","role":"defender","slot":"alpha_core","route_pressure":false,"offset":Vector3(-1,0,-1)},
 	{"id":"rift-a-02","region":"alpha","role":"approach","slot":"alpha_west_lane","route_pressure":true,"offset":Vector3(-8,0,5)},
@@ -564,11 +566,21 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 		return last_tester_setup_receipt.duplicate(true)
 	activation_sequence += 1
 	var hold_receipts: Array[Dictionary] = []
+	var stage_receipts: Array[Dictionary] = []
+	var staged_index := 0
 	for enemy: FusepointEnemyAgent in enemies.values():
 		var included := _fixture_includes_enemy(region_id, enemy)
 		enemy.set_mission_active(included, activation_sequence)
 		if included:
-			hold_receipts.append(enemy.set_tester_prepared_hold(true, setup_generation))
+			var hold_receipt := enemy.set_tester_prepared_hold(true, setup_generation)
+			hold_receipts.append(hold_receipt)
+			if hold_receipt.get("accepted", false) == true and enemy.has_method(&"tester_stage_prepared_combat"):
+				stage_receipts.append(enemy.call(
+					&"tester_stage_prepared_combat",
+					_prepared_combat_stage_for(enemy, staged_index),
+					setup_generation
+				))
+			staged_index += 1
 	_record_region_milestone(region_id)
 	var occupancy := validate_restore_occupancy(player.global_position, false)
 	var actor_ids_after: Array[String] = []
@@ -599,7 +611,10 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 	var every_actor_held := hold_receipts.size() == expected_count
 	for hold_receipt: Dictionary in hold_receipts:
 		every_actor_held = every_actor_held and hold_receipt.get("accepted", false) == true
-	var accepted: bool = occupancy.get("accepted", false) == true and active_region_ids.size() == expected_count and active_alive_count == expected_count and reset_isolation["capture_points_unchanged"] == true and every_actor_held
+	var every_actor_staged := stage_receipts.size() == expected_count
+	for stage_receipt: Dictionary in stage_receipts:
+		every_actor_staged = every_actor_staged and stage_receipt.get("accepted", false) == true
+	var accepted: bool = occupancy.get("accepted", false) == true and active_region_ids.size() == expected_count and active_alive_count == expected_count and reset_isolation["capture_points_unchanged"] == true and every_actor_held and every_actor_staged
 	last_tester_setup_receipt.merge({
 		"resolved": true,
 		"accepted": accepted,
@@ -611,7 +626,9 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 		"observation_matrix": _combat_observation_matrix_from_snapshots(active_snapshots),
 		"occupancy": occupancy,
 		"actor_hold_receipts": hold_receipts,
+		"prepared_combat_stage_receipts": stage_receipts,
 		"stable_inspection_hold": every_actor_held,
+		"combat_states_staged": every_actor_staged,
 		"reset_isolation": reset_isolation,
 		"failure_reason": &"" if accepted else &"region_presence_validation_failed",
 	}, true)
@@ -621,6 +638,40 @@ func tester_prepare_region_presence(region_id: StringName, setup_generation: int
 	_store_tester_setup_receipt()
 	_commit_roster_event(&"tester_region_presence_resolved", last_tester_setup_receipt.duplicate(true))
 	return last_tester_setup_receipt.duplicate(true)
+
+
+func _prepared_combat_stage_for(enemy: FusepointEnemyAgent, staged_index: int) -> StringName:
+	if enemy.tactical_role == &"defender":
+		match staged_index % 3:
+			0:
+				return &"aim"
+			1:
+				return &"hurt"
+			_:
+				return &"reload"
+	if enemy.tactical_role == &"approach":
+		return &"search"
+	if enemy.tactical_role == &"flanker":
+		return &"flank"
+	if enemy.tactical_role == &"fallback":
+		return &"reload"
+	if enemy.tactical_role == &"sentry":
+		return &"aim"
+	return PREPARED_COMBAT_STAGE_CYCLE[posmod(staged_index, PREPARED_COMBAT_STAGE_CYCLE.size())]
+
+
+func _advance_combat_stage_for(enemy: FusepointEnemyAgent, staged_index: int) -> StringName:
+	if staged_index == 2:
+		return &"lethal_player_hit"
+	if enemy.tactical_role == &"defender" and staged_index == 0:
+		return &"enemy_fire"
+	if enemy.tactical_role == &"flanker":
+		return &"nonlethal_player_hit"
+	if enemy.tactical_role == &"fallback":
+		return &"reload"
+	if enemy.tactical_role == &"sentry":
+		return &"enemy_fire"
+	return ADVANCE_COMBAT_STAGE_CYCLE[posmod(staged_index, ADVANCE_COMBAT_STAGE_CYCLE.size())]
 
 
 func tester_prepare_enemy_search_state(region_id: StringName, setup_generation: int) -> Dictionary:
@@ -671,6 +722,61 @@ func tester_prepare_enemy_search_state(region_id: StringName, setup_generation: 
 	_store_tester_setup_receipt()
 	_commit_roster_event(&"tester_enemy_search_state_resolved", receipt.duplicate(true))
 	return receipt
+
+
+func tester_encounter_observer_transform(region_id: StringName) -> Dictionary:
+	var receipt := {
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"region": region_id,
+		"release_guard": &"OS.is_debug_build",
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if region_id not in [&"alpha", &"bravo", &"charlie"]:
+		receipt["failure_reason"] = &"unsupported_region"
+		return receipt
+	var objective := _objective_for(region_id)
+	var nav_map: RID = navigation_region.get_navigation_map()
+	var candidates := _observer_offsets_for(region_id)
+	var attempts: Array[Dictionary] = []
+	for offset: Vector3 in candidates:
+		var requested := objective.global_position + offset
+		var projected := NavigationServer3D.map_get_closest_point(nav_map, requested)
+		var destination := projected + Vector3.UP * 1.18
+		var look_target := objective.global_position
+		var direction := look_target - destination
+		direction.y = 0.0
+		var yaw := atan2(-direction.x, -direction.z) if direction.length_squared() > 0.0001 else 0.0
+		var transform := Transform3D(Basis(Vector3.UP, yaw), destination)
+		var support := _slot_geometry_receipt(nav_map, projected)
+		attempts.append({"offset": offset, "requested": requested, "projected": projected, "support": support})
+		if support.get("floor_support", false) == true and support.get("navigation_support", false) == true:
+			receipt.merge({
+				"resolved": true,
+				"accepted": true,
+				"transform": transform,
+				"objective_path": String(objective.get_path()),
+				"attempt_count": attempts.size(),
+				"attempts": attempts,
+				"route_acceptance_claimed": false,
+			}, true)
+			return receipt
+	receipt["failure_reason"] = &"no_supported_observer_transform"
+	receipt["attempts"] = attempts
+	return receipt
+
+
+func _observer_offsets_for(region_id: StringName) -> Array[Vector3]:
+	match region_id:
+		&"alpha":
+			return [Vector3(13.0, 0.0, 17.7), Vector3(9.0, 0.0, 13.0), Vector3(-9.0, 0.0, 13.0)]
+		&"bravo":
+			return [Vector3(10.0, 0.0, -12.0), Vector3(-10.0, 0.0, -10.0), Vector3(0.0, 0.0, -14.0), Vector3(12.0, 0.0, 0.0)]
+		_:
+			return [Vector3(-9.0, 0.0, -2.0), Vector3(9.0, 0.0, -3.0), Vector3(-4.0, 0.0, -8.0), Vector3(5.0, 0.0, 2.0)]
 
 
 func _animation_binding_strategy() -> Dictionary:
@@ -1180,14 +1286,23 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 		receipt["failure_reason"] = &"prepared_generation_mismatch"
 		return receipt
 	var release_receipts: Array[Dictionary] = []
+	var transition_receipts: Array[Dictionary] = []
 	var active_ids: Array[String] = []
 	var active_snapshots: Array[Dictionary] = []
+	var staged_index := 0
 	for enemy: FusepointEnemyAgent in enemies.values():
 		if not _fixture_includes_enemy(expected_region, enemy) or not enemy.mission_active:
 			continue
 		active_ids.append(String(enemy.stable_id))
 		release_receipts.append(enemy.set_tester_prepared_hold(false, expected_generation))
+		if enemy.has_method(&"tester_commit_combat_transition"):
+			transition_receipts.append(enemy.call(
+				&"tester_commit_combat_transition",
+				expected_generation,
+				_advance_combat_stage_for(enemy, staged_index)
+			))
 		active_snapshots.append(enemy.authoritative_snapshot())
+		staged_index += 1
 	active_ids.sort()
 	var every_actor_released := not release_receipts.is_empty()
 	for actor_receipt: Dictionary in release_receipts:
@@ -1214,6 +1329,7 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 		"observation_region": _tester_advanced_region,
 		"observation_generation": _tester_advanced_generation,
 		"actor_release_receipts": release_receipts,
+		"combat_transition_receipts": transition_receipts,
 		"combat_authority": &"ordinary_enemy_physics_perception_navigation_fire",
 		"route_acceptance_claimed": false,
 	}, true)

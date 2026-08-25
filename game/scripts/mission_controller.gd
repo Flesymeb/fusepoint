@@ -747,6 +747,11 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 	if mission_state != &"active_gameplay" or deployment_snapshot.is_empty() or checkpoint_restore_in_progress or recovery_input_locked:
 		last_tester_encounter_receipt["failure_reason"] = &"authoritative_state_unavailable"
 		return last_tester_encounter_receipt.duplicate(true)
+	var observer_relocation := _tester_encounter_observer_relocation(region_id)
+	if observer_relocation.get("accepted", false) != true and region_id in [&"bravo", &"charlie"]:
+		last_tester_encounter_receipt["failure_reason"] = &"encounter_observer_relocation_failed"
+		last_tester_encounter_receipt["observer_relocation"] = observer_relocation
+		return last_tester_encounter_receipt.duplicate(true)
 	var progression: Dictionary = enemy_roster.call(&"tester_prepare_region_presence", region_id, setup_generation) if enemy_roster != null and enemy_roster.has_method(&"tester_prepare_region_presence") else {}
 	var roster_state: Dictionary = enemy_roster.call(&"_mcp_state") if enemy_roster != null and enemy_roster.has_method(&"_mcp_state") else {}
 	var expected_count := 3 if region_id == &"alpha" else 5 if region_id == &"bravo" else 10 if region_id == &"charlie" else 18
@@ -793,6 +798,7 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 		"distinct_slot_count": distinct_slots.size(),
 		"validation": validation,
 		"prerequisite_commits": [],
+		"observer_relocation": observer_relocation,
 		"progression": progression,
 		"actor_state_page": progression.get("actor_state_page", []),
 		"observation_matrix": progression.get("observation_matrix", {}),
@@ -805,12 +811,55 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 			"stable_identity_count": int(roster_state.get("stable_identity_count", 0)),
 			"no_actor_killed": int(progression.get("active_alive_count", 0)) == expected_count,
 			"route_acceptance_claimed": false,
-			"player_relocated": false,
+			"player_relocated": observer_relocation.get("accepted", false) == true,
+			"relocation_does_not_claim_route": true,
 		},
 		"failure_reason": &"",
 	}, true)
 	_record_event(&"tester_encounter_prepared", last_tester_encounter_receipt.duplicate(true), false)
 	return last_tester_encounter_receipt.duplicate(true)
+
+
+func _tester_encounter_observer_relocation(region_id: StringName) -> Dictionary:
+	var receipt := {
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"region": region_id,
+		"release_guard": &"OS.is_debug_build",
+		"route_acceptance_claimed": false,
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if region_id == &"all":
+		receipt.merge({
+			"resolved": true,
+			"accepted": true,
+			"skipped": true,
+			"reason": &"all_region_overview_uses_current_player_position",
+		}, true)
+		return receipt
+	if enemy_roster == null or not enemy_roster.has_method(&"tester_encounter_observer_transform"):
+		receipt["failure_reason"] = &"roster_observer_transform_unavailable"
+		return receipt
+	var transform_receipt: Dictionary = enemy_roster.call(&"tester_encounter_observer_transform", region_id)
+	receipt["transform_receipt"] = transform_receipt
+	if transform_receipt.get("accepted", false) != true:
+		receipt["failure_reason"] = transform_receipt.get("failure_reason", &"observer_transform_rejected")
+		return receipt
+	var relocation: Dictionary = player.call(
+		&"tester_relocate_for_fixture",
+		transform_receipt.get("transform", player.global_transform),
+		StringName("encounter:%s" % String(region_id))
+	)
+	receipt.merge({
+		"resolved": relocation.get("resolved", false) == true,
+		"accepted": relocation.get("accepted", false) == true,
+		"relocation": relocation,
+		"failure_reason": &"" if relocation.get("accepted", false) == true else relocation.get("failure_reason", &"player_relocation_rejected"),
+	}, true)
+	return receipt
 
 
 func tester_prepare_enemy_search_state(region_id: StringName = &"alpha") -> Dictionary:

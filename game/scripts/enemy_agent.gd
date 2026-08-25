@@ -327,6 +327,170 @@ func tester_prepare_search_state(setup_generation: int) -> Dictionary:
 	return receipt
 
 
+func tester_stage_prepared_combat(stage: StringName, setup_generation: int) -> Dictionary:
+	var receipt := {
+		"actor_id": stable_id,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"stage": stage,
+		"setup_generation": setup_generation,
+		"release_guard": &"OS.is_debug_build",
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if setup_generation <= 0 or not mission_active or not is_alive() or not _tester_prepared_hold:
+		receipt["failure_reason"] = &"actor_not_stably_prepared"
+		return receipt
+	_ensure_presentation()
+	cleanup_hidden = false
+	_last_pre_shot_authorization.clear()
+	_attack_remaining = 0.0
+	_fire_pose_remaining = 0.0
+	_reload_remaining = 0.0
+	_hurt_remaining = 0.0
+	_force_reposition = false
+	if _health != null and _health.is_dead:
+		_health.reset_health()
+	match stage:
+		&"search":
+			set_target(null)
+			_has_last_seen_target_position = true
+			_last_seen_target_position = global_position - global_basis.z * 5.0
+			_last_seen_target_remaining = search_seconds
+			_targetless_action = &"tester_region_search"
+			_targetless_action_remaining = targetless_scan_seconds
+			_targetless_watchdog_remaining = targetless_watchdog_seconds
+			velocity = -global_basis.z * minf(move_speed, 1.15)
+			_set_ai_state(AIState.SEARCH)
+			_drive_locomotion_presentation(&"walk")
+		&"flank":
+			_prime_target_for_fixture()
+			_force_reposition = true
+			_reposition_timeout_remaining = reposition_timeout_seconds
+			_last_reposition_reason = &"tester_prepared_flank"
+			velocity = global_basis.x * minf(move_speed, 1.4)
+			_set_ai_state(AIState.REPOSITION)
+			_drive_locomotion_presentation(&"run")
+		&"reload":
+			_prime_target_for_fixture()
+			rounds_remaining = 0
+			_begin_reload()
+		&"hurt":
+			_prime_target_for_fixture()
+			var damage_report := _apply_tester_player_damage(false, setup_generation, &"prepared_hurt")
+			receipt["damage_report"] = damage_report
+		_:
+			_prime_target_for_fixture()
+			_reaction_remaining = 0.0
+			_face_target(1.0)
+			_set_ai_state(AIState.AIM)
+	var snapshot := authoritative_snapshot()
+	var accepted: bool = snapshot.get("observation_ready", false) == true and StringName(snapshot.get("action", &"idle")) in [&"search", &"reposition", &"aim", &"reload", &"hurt"]
+	receipt.merge({
+		"resolved": true,
+		"accepted": accepted,
+		"failure_reason": &"" if accepted else &"prepared_combat_stage_rejected",
+		"snapshot": _fixture_snapshot_page(snapshot),
+	}, true)
+	return receipt
+
+
+func tester_commit_combat_transition(setup_generation: int, mode: StringName) -> Dictionary:
+	var receipt := {
+		"actor_id": stable_id,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"mode": mode,
+		"setup_generation": setup_generation,
+		"release_guard": &"OS.is_debug_build",
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if setup_generation <= 0 or _tester_prepared_hold or not mission_active or not is_alive():
+		receipt["failure_reason"] = &"actor_not_released_live"
+		return receipt
+	_prime_target_for_fixture()
+	match mode:
+		&"enemy_fire":
+			if rounds_remaining <= 0:
+				rounds_remaining = 1
+			_reaction_remaining = 0.0
+			_attack_remaining = 0.0
+			_face_target(1.0)
+			var attack := force_attack_if_ready()
+			receipt["attack_report"] = attack
+		&"lethal_player_hit":
+			receipt["damage_report"] = _apply_tester_player_damage(true, setup_generation, &"advance_lethal")
+		&"nonlethal_player_hit":
+			receipt["damage_report"] = _apply_tester_player_damage(false, setup_generation, &"advance_hurt")
+		&"reload":
+			rounds_remaining = 0
+			_begin_reload()
+		_:
+			_set_ai_state(AIState.SEARCH)
+			_drive_locomotion_presentation(&"walk")
+	var snapshot := authoritative_snapshot()
+	receipt.merge({
+		"resolved": true,
+		"accepted": snapshot.get("observation_ready", false) == true,
+		"failure_reason": &"",
+		"snapshot": _fixture_snapshot_page(snapshot),
+	}, true)
+	return receipt
+
+
+func _prime_target_for_fixture() -> void:
+	if _mission_target != null and is_instance_valid(_mission_target):
+		set_target(_mission_target)
+		remember_target_position(_mission_target.global_position)
+		_reaction_remaining = 0.0
+		_face_target(1.0)
+
+
+func _apply_tester_player_damage(lethal: bool, setup_generation: int, reason: StringName) -> Dictionary:
+	if _health == null:
+		return {"accepted": false, "failure_reason": &"health_unavailable"}
+	if not lethal and _health.current_health <= 16.0:
+		_health.reset_health()
+	var amount := maxf(_health.max_health + 1.0, 101.0) if lethal else minf(12.0, maxf(_health.current_health - 1.0, 1.0))
+	var shot_id := "run-%06d:tester:%s:%s:%06d" % [run_epoch, stable_id, String(reason), setup_generation]
+	return _health.apply_damage(amount, {
+		"event_id": shot_id,
+		"shot_id": shot_id,
+		"source_team": &"player",
+		"source_path": String(_mission_target.get_path()) if _mission_target != null and _mission_target.is_inside_tree() else "",
+		"origin": _mission_target.global_position if _mission_target != null and _mission_target.is_inside_tree() else global_position - global_basis.z * 4.0,
+		"hit_region": &"center_mass",
+		"target_id": stable_id,
+		"target_path": String(get_path()) if is_inside_tree() else "",
+		"fixture_authority": &"tester_encounter_advance_real_health",
+	})
+
+
+func _fixture_snapshot_page(snapshot: Dictionary) -> Dictionary:
+	return {
+		"action": snapshot.get("action", &"idle"),
+		"alive": snapshot.get("alive", false),
+		"health": (snapshot.get("health", {}) as Dictionary).get("current", 0.0),
+		"ammo": snapshot.get("ammo", 0),
+		"target_visible": snapshot.get("target_visible", false),
+		"fire_block_reason": snapshot.get("fire_block_reason", &"unknown"),
+		"shot_event_id": snapshot.get("shot_event_id", ""),
+		"last_event": snapshot.get("last_event", {}),
+		"velocity": snapshot.get("velocity", Vector3.ZERO),
+		"nearest_neighbor_distance": snapshot.get("nearest_neighbor_distance", -1.0),
+		"presentation_state": snapshot.get("presentation_state", &"inactive"),
+		"animation_semantic": snapshot.get("animation_semantic", &""),
+		"animation_name": snapshot.get("animation_name", ""),
+		"grounded_occupancy": snapshot.get("grounded_occupancy", false),
+		"capsule_clear": (snapshot.get("inspection_state", {}) as Dictionary).get("capsule_clear", false),
+	}
+
+
 func resolve_floor_support(context: StringName) -> Dictionary:
 	var receipt := {
 		"context": context,
