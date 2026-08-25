@@ -24,7 +24,7 @@ const COMBAT_FEED_ALLOWED_KINDS: Array[StringName] = [
 	&"key_committed", &"route_unlocked", &"checkpoint_committed",
 	&"deployment_started", &"checkpoint_restored", &"weapon_hit",
 	&"enemy_died", &"defusal_locked", &"defusal_started", &"defusal_interrupted",
-	&"defusal_completed", &"terminal_submitted", &"player_damage", &"player_death",
+	&"defusal_completed", &"terminal_submitted", &"player_damage", &"player_damaged", &"player_death",
 ]
 
 @onready var root: Control = $Root
@@ -803,6 +803,12 @@ func _format_event(event: Dictionary) -> String:
 		return "ROUTE  ALPHA APPROACH LIVE"
 	if kind == &"checkpoint_restored":
 		return "RESTORED  CHECKPOINT READY"
+	if kind == &"player_damaged":
+		var damage_payload: Dictionary = event.get("payload", {})
+		return "DAMAGE  -%d  %d HP" % [
+			int(round(float(damage_payload.get("amount", 0.0)))),
+			int(round(float(damage_payload.get("health_after", 0.0)))),
+		]
 	var verb := String(kind).replace("_", " ").to_upper()
 	var payload: Dictionary = event.get("payload", {})
 	var subject := String(payload.get("objective_id", payload.get("actor_id", ""))).to_upper()

@@ -848,6 +848,9 @@ func _combat_actor_page_from_snapshots(snapshots: Array[Dictionary]) -> Array[Di
 			"animation_clip": snapshot.get("animation_name", ""),
 			"animation_semantic": snapshot.get("animation_semantic", &""),
 			"weapon_family_compatible": presentation.get("weapon_family_compatible", false),
+			"weapon_socket_bound": presentation.get("weapon_socket_bound", presentation.get("socket_bound", false)),
+			"weapon_socket_contact_status": presentation.get("weapon_socket_contact_status", &"unreported"),
+			"rifle_contact": presentation.get("rifle_contact", {}),
 			"nearest_neighbor_spacing": snapshot.get("nearest_neighbor_distance", -1.0),
 			"occupancy": {
 				"grounded": snapshot.get("grounded_occupancy", false),
@@ -867,6 +870,9 @@ func _combat_observation_matrix_from_snapshots(snapshots: Array[Dictionary]) -> 
 	var authorized_count := 0
 	var alive_count := 0
 	var compatible_count := 0
+	var socket_bound_count := 0
+	var rifle_contact_accepted_count := 0
+	var visible_pose_failure_count := 0
 	var min_spacing := INF
 	var occupancy_failures := 0
 	for snapshot: Dictionary in snapshots:
@@ -875,7 +881,12 @@ func _combat_observation_matrix_from_snapshots(snapshots: Array[Dictionary]) -> 
 		visible_count += 1 if snapshot.get("target_visible", false) else 0
 		authorized_count += 1 if (snapshot.get("pre_shot_authorization", {}) as Dictionary).get("accepted", false) else 0
 		alive_count += 1 if snapshot.get("alive", false) else 0
-		compatible_count += 1 if (snapshot.get("presentation", {}) as Dictionary).get("weapon_family_compatible", false) else 0
+		var presentation: Dictionary = snapshot.get("presentation", {})
+		compatible_count += 1 if presentation.get("weapon_family_compatible", false) else 0
+		socket_bound_count += 1 if presentation.get("weapon_socket_bound", presentation.get("socket_bound", false)) else 0
+		var rifle_contact: Dictionary = presentation.get("rifle_contact", {})
+		rifle_contact_accepted_count += 1 if rifle_contact.get("accepted", false) else 0
+		visible_pose_failure_count += 1 if presentation.get("weapon_family_compatible", false) != true and snapshot.get("alive", false) == true else 0
 		var spacing := float(snapshot.get("nearest_neighbor_distance", -1.0))
 		if spacing >= 0.0:
 			min_spacing = minf(min_spacing, spacing)
@@ -888,6 +899,9 @@ func _combat_observation_matrix_from_snapshots(snapshots: Array[Dictionary]) -> 
 		"target_visible_count": visible_count,
 		"fire_authorized_count": authorized_count,
 		"weapon_family_compatible_count": compatible_count,
+		"weapon_socket_bound_count": socket_bound_count,
+		"rifle_contact_accepted_count": rifle_contact_accepted_count,
+		"visible_pose_failure_count": visible_pose_failure_count,
 		"minimum_spacing": -1.0 if is_inf(min_spacing) else min_spacing,
 		"occupancy_failure_count": occupancy_failures,
 		"actions_observed": actions,
@@ -895,7 +909,8 @@ func _combat_observation_matrix_from_snapshots(snapshots: Array[Dictionary]) -> 
 			&"id", &"region", &"role", &"route_slot", &"combat_state", &"velocity",
 			&"target_visible", &"fire_authorized", &"ammo", &"reload_state",
 			&"health", &"alive", &"presentation_state", &"nearest_neighbor_spacing",
-			&"occupancy", &"last_shot_id", &"last_damage_event_id",
+			&"occupancy", &"weapon_socket_bound", &"weapon_socket_contact_status",
+			&"rifle_contact", &"last_shot_id", &"last_damage_event_id",
 		],
 	}
 
@@ -1576,7 +1591,9 @@ func _compact_actor_state(enemy: FusepointEnemyAgent) -> Dictionary:
 		"weapon_family": snapshot.get("weapon_family", &"unbound"),
 		"weapon_family_compatible": snapshot.get("weapon_family_compatible", false),
 		"weapon_socket_bound": snapshot.get("weapon_socket_bound", false),
+		"weapon_socket_contact_status": snapshot.get("weapon_socket_contact_status", &"unreported"),
 		"weapon_attached": snapshot.get("weapon_attached", false),
+		"rifle_contact": snapshot.get("rifle_contact", {}),
 		"root_pitch_degrees": snapshot.get("root_pitch_degrees", 0.0),
 		"root_roll_degrees": snapshot.get("root_roll_degrees", 0.0),
 		"root_upright": snapshot.get("root_upright", false),
@@ -1754,6 +1771,10 @@ func _qualification_live_fields(snapshot: Dictionary, source_event: Dictionary) 
 			"normalized_time": snapshot.get("animation_normalized_time", 0.0),
 			"playing": snapshot.get("animation_playing", false),
 			"weapon_family": snapshot.get("weapon_family", &"unbound"),
+			"weapon_family_compatible": snapshot.get("weapon_family_compatible", false),
+			"weapon_socket_bound": snapshot.get("weapon_socket_bound", false),
+			"weapon_socket_contact_status": snapshot.get("weapon_socket_contact_status", &"unreported"),
+			"rifle_contact": snapshot.get("rifle_contact", {}),
 		},
 		"stalled_seconds": snapshot.get("stalled_seconds", 0.0),
 		"progress_watchdog_count": snapshot.get("progress_watchdog_count", 0),

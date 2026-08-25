@@ -626,6 +626,7 @@ func get_component_state() -> Dictionary:
 	var visible_rifle_ready: bool = contact_report.get("accepted", false) == true
 	var family_compatible := not pistol_source_clip and visible_rifle_ready and not incompatible_fallback
 	var locomotion_source_requires_overlay := current_state in [MotionState.WALK, MotionState.RUN] and clip_name in ["Walk", "Jog_Fwd"]
+	var socket_contact_status := &"accepted" if contact_report.get("accepted", false) == true else StringName(contact_report.get("failure_reason", &"socket_contact_unaccepted"))
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
@@ -646,6 +647,7 @@ func get_component_state() -> Dictionary:
 		"weapon_family": WEAPON_FAMILY,
 		"weapon_family_compatible": family_compatible,
 		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"incompatible_source_clip_rejected" if incompatible_fallback else &"visible_two_hand_rifle_ready_locomotion_overlay" if family_compatible and locomotion_source_requires_overlay else &"visible_two_hand_rifle_ready" if family_compatible else &"socket_contact_unaccepted",
+		"weapon_socket_contact_status": socket_contact_status,
 		"binding_strategy": {
 			"selected_strategy": &"neutral_standing_baseline_with_state_driven_rifle_socket_overlay",
 			"rifle_ready_authored_clips_available": false,
@@ -672,6 +674,7 @@ func get_component_state() -> Dictionary:
 			"vertical_aim_layer": &"presentation_upper_body",
 		},
 		"socket_bound": _weapon_attachment != null,
+		"weapon_socket_bound": _weapon_attachment != null,
 		"socket_bone": String(_weapon_attachment.bone_name) if _weapon_attachment != null else "",
 		"weapon_attached": _weapon_attachment != null and _weapon_attachment.get_node_or_null("PrimaryRifle") != null,
 		"locomotion_playback_scale": _locomotion_playback_scale,
@@ -787,6 +790,7 @@ func rifle_contact_report() -> Dictionary:
 		return {"accepted": false, "failure_reason": &"missing_skeleton"}
 	if _weapon_attachment == null or _weapon_root == null or _muzzle_marker == null:
 		return {"accepted": false, "failure_reason": &"missing_weapon_socket"}
+	_target_skeleton.force_update_all_bone_transforms()
 	var right_hand := _bone_world_origin("right_hand")
 	var left_hand := _bone_world_origin("left_hand")
 	if right_hand == null or left_hand == null:
@@ -803,23 +807,32 @@ func rifle_contact_report() -> Dictionary:
 	var forward_dot: float = muzzle_forward.dot(actor_forward)
 	var forward_alignment: float = absf(forward_dot)
 	var upright: bool = absf(rotation.x) <= 0.001 and absf(rotation.z) <= 0.001
+	var weapon_visible := _weapon_attachment.visible and _weapon_root.visible
+	var right_hand_contact := right_muzzle_distance >= 0.28 and right_muzzle_distance <= 1.65
+	var left_foregrip_contact := support_distance >= 0.08 and support_distance <= 0.98
+	var stock_shoulder_estimated := muzzle_height >= 0.75 and muzzle_height <= 2.25 and right_muzzle_distance >= 0.28
 	var muzzle_direction_coherent := forward_dot >= 0.20
+	var visible_pose_evidence := {
+		"right_hand_contact_estimated": right_hand_contact,
+		"left_foregrip_contact_estimated": left_foregrip_contact,
+		"stock_shoulder_estimated": stock_shoulder_estimated,
+		"muzzle_direction_coherent": muzzle_direction_coherent,
+		"grounded_root": ground_contact_report().get("applicable", false),
+		"upright_torso": upright,
+	}
 	var accepted: bool = (
 		upright
-		and _weapon_attachment.visible
-		and support_distance >= 0.08
-		and support_distance <= 0.98
-		and right_muzzle_distance >= 0.28
-		and right_muzzle_distance <= 1.65
-		and muzzle_height >= 0.75
-		and muzzle_height <= 2.25
+		and weapon_visible
+		and right_hand_contact
+		and left_foregrip_contact
+		and stock_shoulder_estimated
 		and muzzle_direction_coherent
 	)
 	return {
 		"accepted": accepted,
 		"failure_reason": &"" if accepted else &"rifle_contact_threshold_missed",
 		"state": state_name(),
-		"weapon_visible": _weapon_attachment.visible,
+		"weapon_visible": weapon_visible,
 		"socket_bone": String(_weapon_attachment.bone_name),
 		"socket_rotation_degrees": _weapon_root.rotation_degrees,
 		"right_hand_world": right_hand_position,
@@ -831,8 +844,13 @@ func rifle_contact_report() -> Dictionary:
 		"muzzle_forward_dot_actor_forward": forward_dot,
 		"muzzle_forward_alignment_actor_axis": forward_alignment,
 		"muzzle_direction_coherent": muzzle_direction_coherent,
-		"two_hand_contact_estimated": support_distance <= 0.98,
+		"right_hand_contact_estimated": right_hand_contact,
+		"left_foregrip_contact_estimated": left_foregrip_contact,
+		"stock_shoulder_estimated": stock_shoulder_estimated,
+		"two_hand_contact_estimated": left_foregrip_contact,
 		"grounded_upright": upright,
+		"visible_pose_evidence": visible_pose_evidence,
+		"forward_reference": &"component_actor_forward_axis",
 	}
 
 
