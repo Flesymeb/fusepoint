@@ -569,10 +569,25 @@ func _cleanup_delta(start: Dictionary, finish: Dictionary) -> Dictionary:
 
 
 func _renderer_context() -> Dictionary:
+	var driver_info := OS.get_video_adapter_driver_info()
+	var driver_text := str(driver_info).to_lower()
+	var software_renderer := (
+		"llvmpipe" in driver_text
+		or "swrast" in driver_text
+		or "software" in driver_text
+		or "softpipe" in driver_text
+	)
+	var method := String(ProjectSettings.get_setting("rendering/renderer/rendering_method", "unknown"))
+	var mobile_method := String(ProjectSettings.get_setting("rendering/renderer/rendering_method.mobile", "unknown"))
 	return {
-		"rendering_method": String(ProjectSettings.get_setting("rendering/renderer/rendering_method", "unknown")),
-		"mobile_rendering_method": String(ProjectSettings.get_setting("rendering/renderer/rendering_method.mobile", "unknown")),
-		"adapter_driver_info": OS.get_video_adapter_driver_info(),
+		"rendering_method": method,
+		"mobile_rendering_method": mobile_method,
+		"adapter_driver_info": driver_info,
+		"software_renderer_detected": software_renderer,
+		"registered_renderer_match": method == "gl_compatibility" and mobile_method == "gl_compatibility",
+		"native_gl_compatibility_sample": method == "gl_compatibility" and mobile_method == "gl_compatibility" and not software_renderer,
+		"evidence_class": &"native_gl_compatibility" if method == "gl_compatibility" and mobile_method == "gl_compatibility" and not software_renderer else &"external_evidence_limitation",
+		"limitation_reason": &"software_renderer_or_unregistered_backend" if software_renderer or method != "gl_compatibility" or mobile_method != "gl_compatibility" else &"",
 		"platform": OS.get_name(),
 		"engine_version": Engine.get_version_info(),
 		"hardware_verdict_asserted": false,
@@ -625,6 +640,7 @@ func _cycle_record(include_raw: bool) -> Dictionary:
 		"cleanup_end": _cleanup_counters.duplicate(true),
 		"cleanup_delta": _cleanup_delta(_cycle_cleanup_start, _cleanup_counters),
 		"lifecycle_boundaries": _cycle_boundaries.duplicate(true),
+		"runtime_caps": _runtime_caps(),
 		"raw_page_size": RAW_PAGE_SIZE,
 		"raw_page_count": ceili(float(_raw_frame_times_ms.size()) / float(RAW_PAGE_SIZE)),
 	}
@@ -807,6 +823,12 @@ func qualification_snapshot() -> Dictionary:
 		"retained_cycle_index": _retained_cycle_index(),
 		"cycle_history": _retained_cycle_index(),
 		"qualification_evidence": _qualification_evidence_state(),
+		"hotpath_budget_contract": {
+			"candidate_hotpaths": CANDIDATE_HOTPATHS,
+			"runtime_caps": _runtime_caps(),
+			"native_hardware_required_for_verdict": true,
+			"software_renderer_samples_are_external_evidence_limitations": true,
+		},
 		"raw_sample_access": {
 			"method": &"qualification_sample_page",
 			"page_size": RAW_PAGE_SIZE,
@@ -836,6 +858,23 @@ func qualification_snapshot() -> Dictionary:
 			"sample_count": _combat_animation_history.size(),
 			"history": _combat_animation_history.duplicate(true),
 		},
+	}
+
+
+func _runtime_caps() -> Dictionary:
+	var mission_feedback_state: Dictionary = mission_feedback.call(&"_mcp_state") if mission_feedback != null and mission_feedback.has_method(&"_mcp_state") else {}
+	var feedback_matrix_state: Dictionary = feedback_matrix.call(&"_mcp_state") if feedback_matrix != null and feedback_matrix.has_method(&"_mcp_state") else {}
+	var weapon_state: Dictionary = weapon.call(&"_mcp_state") if weapon != null and weapon.has_method(&"_mcp_state") else {}
+	var player_shot_feedback: Dictionary = weapon_state.get("shot_feedback", {})
+	return {
+		"enemy_workload_counts": [3, 5, 10, 18],
+		"combat_feedback_cache_limit": int(feedback_matrix_state.get("cache_limit", 0)),
+		"combat_feedback_retained_run_limit": int(feedback_matrix_state.get("retained_run_limit", 0)),
+		"combat_feedback_retained_family_limit": int(feedback_matrix_state.get("retained_family_limit", 0)),
+		"player_shot_vfx_active_limit": int(player_shot_feedback.get("max_active_effects", 0)),
+		"mission_audio_concurrency": mission_feedback_state.get("audio_concurrency_limits", {}),
+		"detonation_layers_count": int(_cleanup_counters.get("terminal_effect_layer_count", 0)),
+		"ordinary_probe_deep_scans_disabled": not _qualification_enabled,
 	}
 
 

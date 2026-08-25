@@ -600,7 +600,7 @@ func get_component_state() -> Dictionary:
 	var neutral_fallback := _is_neutral_rifle_fallback(current_state, clip_name)
 	var contact_report := rifle_contact_report()
 	var visible_rifle_ready: bool = contact_report.get("accepted", false) == true
-	var family_compatible := not pistol_source_clip and visible_rifle_ready
+	var family_compatible := not pistol_source_clip and visible_rifle_ready and not neutral_fallback
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
@@ -620,14 +620,14 @@ func get_component_state() -> Dictionary:
 		"animation_playing": player != null and player.is_playing(),
 		"weapon_family": WEAPON_FAMILY,
 		"weapon_family_compatible": family_compatible,
-		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"visible_two_hand_rifle_ready_interim" if family_compatible else &"socket_contact_unaccepted",
+		"compatibility_disposition": &"pistol_source_clip_rejected" if pistol_source_clip else &"neutral_source_clip_incompatible" if neutral_fallback else &"visible_two_hand_rifle_ready" if family_compatible else &"socket_contact_unaccepted",
 		"binding_strategy": {
 			"selected_strategy": &"component_baseline_with_state_driven_rifle_socket_overlay",
 			"rifle_ready_authored_clips_available": false,
-			"rifle_ready_authored_binding": false,
+			"authored_rifle_clip_binding_status": &"missing_required_asset",
 			"visible_rifle_ready_binding": family_compatible,
 			"source_clip_truthful": true,
-			"interim_issue_open": not family_compatible or neutral_fallback,
+			"interim_issue_open": true,
 			"root_transform_tuning_primary_fix": false,
 			"actor_root_dynamic_axes": ["yaw"],
 			"model_axis_adapter_fixed": true,

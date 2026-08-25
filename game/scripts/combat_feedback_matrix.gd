@@ -8,6 +8,7 @@ const CACHE_LIMIT := 128
 const PREVIOUS_RECEIPT_LIMIT := 64
 const RETAINED_RUN_LIMIT := 3
 const RETAINED_FAMILY_LIMIT := 6
+const BRANCH_EVIDENCE_FAMILIES: Array[StringName] = [&"player_shot", &"enemy_shot_resolved", &"player_damage", &"enemy_death", &"mission"]
 const JOINED_ENEMY_KINDS: Array[StringName] = [&"shot_resolved", &"player_hit", &"died", &"reload_started", &"reload_finished"]
 const JOINED_MISSION_KINDS: Array[StringName] = [
 	&"deployment_started", &"capture_started", &"capture_contested", &"capture_interrupted",
@@ -374,10 +375,23 @@ func _publish(row: Dictionary) -> void:
 	_refresh_context_channels(row)
 	row["missing_channels"] = _missing_channels(row)
 	row["late_channels"] = _late_channels(row)
+	if _should_retain_branch_evidence(row):
+		row["branch_evidence_retained"] = true
+		_retain_row(row, &"active_branch_evidence")
 	var identity := String(row["immutable_identity"])
 	_events[identity] = row
 	_latest_event_id = identity
 	feedback_receipt_updated.emit(row.duplicate(true))
+
+
+func _should_retain_branch_evidence(row: Dictionary) -> bool:
+	var family := StringName(row.get("event_family", &""))
+	if family in BRANCH_EVIDENCE_FAMILIES:
+		return true
+	for observed: Variant in row.get("observed_kinds", []):
+		if StringName(observed) in BRANCH_EVIDENCE_FAMILIES:
+			return true
+	return false
 
 
 func _missing_channels(row: Dictionary) -> Array[StringName]:

@@ -790,6 +790,7 @@ func _animation_binding_strategy() -> Dictionary:
 		],
 		"local_component": &"quaternius_ual1_ual2_retargeted_humanoid",
 		"rifle_ready_authored_clips_available": false,
+		"authored_rifle_clip_binding_status": &"missing_required_asset",
 		"combat_clip_disposition": &"neutral_combat_fallback_marked_incompatible_until_rifle_ready_set",
 		"root_tilt_strategy": &"actor_root_pitch_roll_locked_fixture_reachable",
 		"issue_disposition": &"truthful_fallback_reported_rifle_semantic_asset_still_needed",

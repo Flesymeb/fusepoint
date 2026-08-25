@@ -9,6 +9,7 @@ signal mission_cue_presented(receipt: Dictionary)
 const CACHE_LIMIT := 128
 const WARNING_THRESHOLDS: Array[int] = [30, 15, 10, 5]
 const VOICE_RECEIPT_LIMIT := 64
+const ENEMY_FOOTSTEP_AUDIBLE_LIMIT := 4
 const FOOTSTEP_ROLES: Array[StringName] = [&"enemy_step"]
 const HUD_EVENT_ROW_KINDS: Array[StringName] = [
 	&"deployment_started", &"capture_started", &"capture_contested",
@@ -237,6 +238,7 @@ func snapshot() -> Dictionary:
 			"mission_family": 1,
 			"player_mission_emitters": 0,
 			"enemy_footstep_emitters_per_actor": 1,
+			"enemy_footstep_audible_limit": ENEMY_FOOTSTEP_AUDIBLE_LIMIT,
 			"retained_receipts": VOICE_RECEIPT_LIMIT,
 		},
 		"semantic_role_contract": {
@@ -419,6 +421,7 @@ func _observe_footsteps(delta: float) -> void:
 	var player := get_tree().get_first_node_in_group(&"player") as CharacterBody3D
 	if player != null:
 		_observe_retained_player_footsteps(player)
+	var audible_enemy_keys := _audible_enemy_step_keys()
 	var seen_actor_keys: Dictionary = {}
 	for node: Node in get_tree().get_nodes_in_group(&"fps_enemy"):
 		var enemy := node as CharacterBody3D
@@ -426,14 +429,16 @@ func _observe_footsteps(delta: float) -> void:
 			continue
 		var actor_key := String(enemy.get_path())
 		seen_actor_keys[actor_key] = true
-		_ensure_enemy_footstep_emitter(enemy)
 		var grounded := enemy.is_on_floor()
 		var speed := Vector2(enemy.velocity.x, enemy.velocity.z).length()
 		var mission_active: bool = enemy.get("mission_active") == true
 		var was_active: bool = _enemy_locomotion_active.get(actor_key, false) == true
+		var voice_budgeted := audible_enemy_keys.has(actor_key)
 		if was_active:
 			if not mission_active or not grounded:
 				_stop_enemy_locomotion_stream(actor_key, &"mission_inactive" if not mission_active else &"lost_grounding")
+			elif not voice_budgeted:
+				_stop_enemy_locomotion_stream(actor_key, &"voice_budget")
 			elif speed <= 0.18:
 				var idle_elapsed := float(_enemy_idle_elapsed.get(actor_key, 0.0)) + delta
 				_enemy_idle_elapsed[actor_key] = idle_elapsed
@@ -445,7 +450,7 @@ func _observe_footsteps(delta: float) -> void:
 				_enemy_step_remaining[actor_key] = remaining
 				if remaining <= 0.0:
 					_play_enemy_contact(enemy)
-		elif mission_active and grounded and speed > 0.62:
+		elif mission_active and grounded and speed > 0.62 and voice_budgeted:
 			_start_enemy_locomotion_stream(enemy)
 			_enemy_locomotion_active[actor_key] = true
 			_enemy_idle_elapsed[actor_key] = 0.0
@@ -457,6 +462,30 @@ func _observe_footsteps(delta: float) -> void:
 			_enemy_idle_elapsed.erase(actor_key)
 			_enemy_step_remaining.erase(actor_key)
 			_enemy_step_variant.erase(actor_key)
+
+
+func _audible_enemy_step_keys() -> Dictionary:
+	var listener := get_viewport().get_camera_3d()
+	var candidates: Array[Dictionary] = []
+	for node: Node in get_tree().get_nodes_in_group(&"fps_enemy"):
+		var enemy := node as CharacterBody3D
+		if enemy == null:
+			continue
+		if enemy.get("mission_active") != true or not enemy.is_on_floor():
+			continue
+		var speed := Vector2(enemy.velocity.x, enemy.velocity.z).length()
+		if speed <= 0.18:
+			continue
+		candidates.append({
+			"key": String(enemy.get_path()),
+			"distance": enemy.global_position.distance_to(listener.global_position) if listener != null else 0.0,
+		})
+	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("distance", 0.0)) < float(b.get("distance", 0.0)))
+	var result := {}
+	var limit := mini(ENEMY_FOOTSTEP_AUDIBLE_LIMIT, candidates.size())
+	for index in range(limit):
+		result[String(candidates[index].get("key", ""))] = true
+	return result
 
 
 func _start_enemy_locomotion_stream(actor: CharacterBody3D) -> void:
@@ -538,6 +567,7 @@ func _play_enemy_contact(actor: CharacterBody3D) -> void:
 		"mix_stages": mix,
 		"emitter_context": {"spatial": true, "owner": actor.get_path(), "owner_count": 1},
 		"concurrency": {"active": 1 if emitter.playing else 0, "limit": 1, "family": actor_key},
+		"listener_voice_budget": {"limit": ENEMY_FOOTSTEP_AUDIBLE_LIMIT, "budget_owner": &"nearest_tactical_enemy_steps"},
 		"cleanup_observed": false,
 		"cleanup_usec": 0,
 		"lifetime_seconds": emitter.stream.get_length(),
@@ -712,6 +742,7 @@ func _footstep_ownership_snapshot() -> Dictionary:
 			"playing": emitter.playing if is_instance_valid(emitter) else false,
 			"locomotion_active": _enemy_locomotion_active.get(actor_key, false) == true,
 			"continuous_stream": false,
+			"listener_voice_budget": {"limit": ENEMY_FOOTSTEP_AUDIBLE_LIMIT},
 			"duration_seconds": emitter.stream.get_length() if is_instance_valid(emitter) and emitter.stream != null else 0.0,
 			"mix_stages": _bus_stage_snapshot(emitter.bus, emitter.volume_db) if is_instance_valid(emitter) else {},
 		}
