@@ -44,6 +44,7 @@ var checkpoint_restore_count := 0
 var terminal_commit_count := 0
 var terminal_duplicate_submit_count := 0
 var terminal_event_id := ""
+var last_terminal_combat_freeze_receipt: Dictionary = {}
 var tester_countdown_zero_request_count := 0
 var elimination_count := 0
 var player_death_count := 0
@@ -140,6 +141,7 @@ func _initialize_mission_state() -> void:
 	terminal_commit_count = 0
 	terminal_duplicate_submit_count = 0
 	terminal_event_id = ""
+	last_terminal_combat_freeze_receipt.clear()
 	tester_countdown_zero_request_count = 0
 	tester_prepared_region = &""
 	tester_prepared_region_generation = 0
@@ -193,6 +195,8 @@ func reset_for_replay() -> bool:
 	_issue_run_epoch(&"new_deployment_lineage")
 	_propagate_run_epoch(true)
 	player.call(&"prepare_new_mission")
+	if enemy_roster != null:
+		enemy_roster.process_mode = Node.PROCESS_MODE_INHERIT
 	if not roster_snapshot.is_empty():
 		enemy_restore_epoch = int(enemy_roster.call(&"begin_restore_epoch")) if enemy_roster != null and enemy_roster.has_method(&"begin_restore_epoch") else -1
 		if enemy_restore_epoch < 0 or enemy_roster.call(&"apply_restore_snapshot", roster_snapshot, enemy_restore_epoch) != true:
@@ -949,6 +953,19 @@ func tester_commit_prepared_encounter(expected_region: StringName = &"", expecte
 		return receipt
 	var checkpoint_before := checkpoint_version
 	var timer_before := remaining_time
+	var roster_release: Dictionary = enemy_roster.call(
+		&"tester_release_prepared_region",
+		region_id,
+		tester_prepared_region_generation,
+	) if enemy_roster != null and enemy_roster.has_method(&"tester_release_prepared_region") else {}
+	if roster_release.get("accepted", false) != true:
+		receipt.merge({
+			"resolved": roster_release.get("resolved", false) == true,
+			"accepted": false,
+			"roster_preparation_release": roster_release,
+			"failure_reason": roster_release.get("failure_reason", &"roster_release_failed"),
+		}, true)
+		return receipt
 	var committed := _complete_capture(region_id)
 	receipt.merge({
 		"resolved": true,
@@ -959,11 +976,6 @@ func tester_commit_prepared_encounter(expected_region: StringName = &"", expecte
 		"failure_reason": &"" if committed else &"authoritative_capture_commit_failed",
 	}, true)
 	if committed:
-		var roster_release: Dictionary = enemy_roster.call(
-			&"tester_release_prepared_region",
-			region_id,
-			tester_prepared_region_generation,
-		) if enemy_roster != null and enemy_roster.has_method(&"tester_release_prepared_region") else {}
 		receipt["roster_preparation_release"] = roster_release
 		tester_prepared_region = &""
 		tester_prepared_region_generation = 0
@@ -1298,11 +1310,26 @@ func _submit_terminal(result: StringName, reason: StringName) -> void:
 	_active_capture = &""
 	_active_bomb_stage = false
 	terminal_event_id = "run-%06d:mission-%06d" % [run_epoch, event_sequence + 1]
+	last_terminal_combat_freeze_receipt = enemy_roster.call(&"freeze_terminal_combat", terminal_event_id, result) if enemy_roster != null and enemy_roster.has_method(&"freeze_terminal_combat") else {
+		"accepted": false,
+		"failure_reason": &"enemy_roster_freeze_unavailable",
+		"enemy_shot_cancellation_count": 0,
+	}
 	player.call(&"enter_terminal_lock", terminal_event_id)
 	weapon_controller.call(&"set_gameplay_input_enabled", false)
 	if enemy_roster != null:
 		enemy_roster.process_mode = Node.PROCESS_MODE_DISABLED
 	var bomb_origin := (get_node_or_null(charlie_path) as Node3D).global_position if get_node_or_null(charlie_path) is Node3D else player.global_position
+	var success_damage_probe := {}
+	if result == &"bomb_defused":
+		success_damage_probe = player.call(&"apply_damage", 1.0, {
+			"event_id": "%s:damage-fence-probe" % terminal_event_id,
+			"shot_id": "%s:damage-fence-probe" % terminal_event_id,
+			"source_team": &"enemy",
+			"source_path": "terminal-freeze-probe",
+			"source_position": bomb_origin,
+			"damage_class": &"terminal_success_freeze_probe",
+		})
 	if result == &"bomb_detonated":
 		_terminal_damage_in_progress = true
 		player.call(&"apply_authoritative_damage", float(player.get("health")) + float(player.get("max_health")), terminal_event_id, {
@@ -1321,6 +1348,9 @@ func _submit_terminal(result: StringName, reason: StringName) -> void:
 		"terminal_event_id": terminal_event_id,
 		"world_origin": bomb_origin,
 		"result_snapshot": last_result_snapshot,
+		"combat_freeze": last_terminal_combat_freeze_receipt,
+		"player_damage_rejection": success_damage_probe,
+		"enemy_shot_cancellation_count": int(last_terminal_combat_freeze_receipt.get("enemy_shot_cancellation_count", 0)),
 	})
 
 
@@ -1931,6 +1961,7 @@ func _mcp_state() -> Dictionary:
 		"terminal_commit_count": terminal_commit_count,
 		"terminal_duplicate_submit_count": terminal_duplicate_submit_count,
 		"terminal_event_id": terminal_event_id,
+		"last_terminal_combat_freeze_receipt": last_terminal_combat_freeze_receipt,
 		"tester_countdown_zero_request_count": tester_countdown_zero_request_count,
 		"tester_alpha_checkpoint_request_count": tester_alpha_checkpoint_request_count,
 		"last_tester_alpha_checkpoint_receipt": last_tester_alpha_checkpoint_receipt,

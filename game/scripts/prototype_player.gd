@@ -69,6 +69,7 @@ var _last_damage_event: Dictionary = {}
 var _damage_attempt_serial := 0
 var _last_damage_attempt: Dictionary = {}
 var _damage_attempt_history: Array[Dictionary] = []
+var _terminal_damage_rejection_count := 0
 var gameplay_input_enabled := true
 var terminal_locked := false
 var terminal_event_id := ""
@@ -796,6 +797,7 @@ func _reset_to_spawn(source: StringName = &"mission_setup") -> void:
 	_last_damage_event.clear()
 	_last_damage_attempt.clear()
 	_damage_attempt_history.clear()
+	_terminal_damage_rejection_count = 0
 	_last_stuck_diagnostic.clear()
 	_blocked_seconds = 0.0
 	_set_stance(false)
@@ -883,6 +885,7 @@ func reset_transient_state_for_restore() -> void:
 	_last_damage_event.clear()
 	_last_damage_attempt.clear()
 	_damage_attempt_history.clear()
+	_terminal_damage_rejection_count = 0
 	terminal_locked = false
 	terminal_event_id = ""
 	velocity = Vector3.ZERO
@@ -973,12 +976,40 @@ func validate_recovery_destination(target_transform: Transform3D, hostile_positi
 
 
 func apply_authoritative_damage(amount: float, damage_event_id := "", metadata: Dictionary = {}) -> bool:
+	var event_id := damage_event_id if not damage_event_id.is_empty() else String(metadata.get("event_id", metadata.get("shot_id", "")))
+	if event_id.is_empty():
+		event_id = "player-damage-%06d" % (_damage_serial + 1)
+	var damage_class := StringName(metadata.get("damage_class", &"ballistic"))
+	if terminal_locked and damage_class != &"bomb_terminal_explosion":
+		_terminal_damage_rejection_count += 1
+		_last_damage_attempt = metadata.duplicate(true)
+		_last_damage_attempt.merge({
+			"event_id": event_id,
+			"shot_id": String(metadata.get("shot_id", event_id)),
+			"amount": amount,
+			"health_before": health,
+			"health_after": health,
+			"max_health": max_health,
+			"applied": false,
+			"hit": false,
+			"killed": false,
+			"reason": &"terminal_damage_fence",
+			"receiver_path": String(get_path()) if is_inside_tree() else "",
+			"receiver_type": &"PrototypePlayer",
+			"health_authority": &"PrototypePlayer.health",
+			"terminal_event_id": terminal_event_id,
+			"terminal_locked": terminal_locked,
+			"rejection_count": _terminal_damage_rejection_count,
+			"attempt_serial": _damage_attempt_serial + 1,
+		}, true)
+		_damage_attempt_serial += 1
+		_damage_attempt_history.append(_last_damage_attempt.duplicate(true))
+		while _damage_attempt_history.size() > 12:
+			_damage_attempt_history.pop_front()
+		return false
 	if amount <= 0.0 or health <= 0.0:
 		return false
 	_damage_serial += 1
-	var event_id := damage_event_id if not damage_event_id.is_empty() else String(metadata.get("event_id", metadata.get("shot_id", "")))
-	if event_id.is_empty():
-		event_id = "player-damage-%06d" % _damage_serial
 	if _damage_commits.has(event_id):
 		return false
 	_damage_commits[event_id] = true
@@ -992,9 +1023,9 @@ func apply_authoritative_damage(amount: float, damage_event_id := "", metadata: 
 	_last_damage_event = {
 		"event_id": event_id,
 		"shot_id": String(metadata.get("shot_id", event_id)),
-		"source_path": String(metadata.get("source_path", "")),
-		"source_position": source_position,
-		"damage_class": StringName(metadata.get("damage_class", &"ballistic")),
+			"source_path": String(metadata.get("source_path", "")),
+			"source_position": source_position,
+			"damage_class": damage_class,
 		"amount": amount,
 		"severity": severity,
 		"severity_ratio": severity_ratio,
@@ -1121,9 +1152,10 @@ func _mcp_state() -> Dictionary:
 			"receiver_type": &"PrototypePlayer",
 			"health_authority": &"PrototypePlayer.health",
 			"event_id_deduplication": true,
-			"restore_epoch": restore_epoch,
-			"combat_death_locked": combat_death_locked,
-		},
+				"restore_epoch": restore_epoch,
+				"combat_death_locked": combat_death_locked,
+				"terminal_damage_rejection_count": _terminal_damage_rejection_count,
+			},
 		"axis_change_receipt": _last_look_receipt,
 		"position": global_position,
 		"velocity": velocity,
@@ -1178,7 +1210,8 @@ func _mcp_state() -> Dictionary:
 		"slide_contacts": _slide_contact_snapshot(),
 		"health": health,
 		"max_health": max_health,
-		"damage_commit_count": _damage_commits.size(),
+			"damage_commit_count": _damage_commits.size(),
+			"terminal_damage_rejection_count": _terminal_damage_rejection_count,
 		"last_damage_event": _last_damage_event,
 		"last_damage_attempt": _last_damage_attempt,
 		"damage_attempt_history": _damage_attempt_history.duplicate(true),

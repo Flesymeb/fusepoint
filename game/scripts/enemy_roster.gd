@@ -69,6 +69,7 @@ var _diagnostic_actor_index := 0
 var reservation_transaction_state := &"pending"
 var reservation_failure: Dictionary = {}
 var reservation_minimum_distance := INF
+var last_terminal_combat_freeze_receipt: Dictionary = {}
 var run_epoch := 0
 var last_run_epoch_receipt: Dictionary = {}
 var tester_setup_request_count := 0
@@ -179,6 +180,32 @@ func peer_cache_receipt() -> Dictionary:
 func reset_transient_feedback() -> void:
 	for enemy: FusepointEnemyAgent in enemies.values():
 		enemy.reset_shot_feedback()
+
+
+func freeze_terminal_combat(event_id: String, result: StringName) -> Dictionary:
+	var actor_receipts: Array[Dictionary] = []
+	var active_before := 0
+	var cancelled_shots := 0
+	for enemy: FusepointEnemyAgent in enemies.values():
+		if enemy.mission_active:
+			active_before += 1
+		var actor_receipt := enemy.enter_terminal_combat_freeze(event_id, result) if enemy.has_method(&"enter_terminal_combat_freeze") else {}
+		if actor_receipt.get("shot_cancelled", false) == true:
+			cancelled_shots += 1
+		actor_receipts.append(actor_receipt)
+	last_terminal_combat_freeze_receipt = {
+		"terminal_event_id": event_id,
+		"result": result,
+		"actor_count": actor_receipts.size(),
+		"active_before": active_before,
+		"active_after": 0,
+		"enemy_shot_cancellation_count": cancelled_shots,
+		"combat_authorized": false,
+		"actors": actor_receipts,
+		"accepted": actor_receipts.size() == enemies.size(),
+	}
+	_commit_roster_event(&"terminal_combat_frozen", last_terminal_combat_freeze_receipt)
+	return last_terminal_combat_freeze_receipt.duplicate(true)
 
 
 func set_run_epoch(epoch: int, reset_transients := true) -> bool:
@@ -928,6 +955,7 @@ func _record_observation_skip(actor_id: StringName, context: StringName, reason:
 func begin_restore_epoch() -> int:
 	if restore_in_progress or not roster_initialized:
 		return -1
+	process_mode = Node.PROCESS_MODE_INHERIT
 	restore_epoch += 1
 	_tester_prepared_region = &""
 	_tester_prepared_generation = 0
@@ -978,6 +1006,8 @@ func commit_restore_epoch(epoch: int) -> Dictionary:
 			"health": (actor_snapshot.get("health", {}) as Dictionary).get("current", 0.0),
 			"quiescent": true,
 			"readiness": &"fresh_perception_pending",
+			"reservation": actor_snapshot.get("reservation", {}),
+			"reserved_position": actor_snapshot.get("reserved_position", enemy.global_position),
 		})
 	restore_in_progress = false
 	_last_progression_signature = _progression_signature()
@@ -987,6 +1017,7 @@ func commit_restore_epoch(epoch: int) -> Dictionary:
 		"all_snapshots_applied": actor_receipts.size() == enemies.size(),
 		"occupancy": last_occupancy_receipt.duplicate(true),
 		"actors": actor_receipts,
+		"reservation_source": &"saved_snapshot_reanchored_per_actor",
 	}
 	for enemy: FusepointEnemyAgent in enemies.values():
 		_append_progression_receipt(&"restored", enemy, {
@@ -1235,6 +1266,7 @@ func _summary() -> Dictionary:
 		"restore_in_progress": restore_in_progress,
 		"restore_applied_actor_count": restore_applied_actor_count,
 		"last_restore_receipt": last_restore_receipt,
+		"last_terminal_combat_freeze_receipt": last_terminal_combat_freeze_receipt,
 		"last_occupancy_receipt": last_occupancy_receipt,
 		"last_spawn_occupancy_receipt": last_spawn_occupancy_receipt,
 		"slot_projection_reports": slot_projection_reports,
@@ -1309,6 +1341,7 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 	for actor_receipt: Dictionary in release_receipts:
 		every_actor_released = every_actor_released and actor_receipt.get("accepted", false) == true
 	var transition_summary := _combat_transition_causality_summary(transition_receipts)
+	var kill_evidence: Dictionary = _commit_branch_kill_evidence(expected_region, expected_generation)
 	if not every_actor_released:
 		receipt["failure_reason"] = &"actor_release_failed"
 		receipt["actor_release_receipts"] = release_receipts
@@ -1339,8 +1372,55 @@ func tester_release_prepared_region(expected_region: StringName, expected_genera
 		"actor_release_receipts": release_receipts,
 		"combat_transition_receipts": transition_receipts,
 		"combat_causality_summary": transition_summary,
+		"kill_evidence": kill_evidence,
 		"combat_authority": &"ordinary_enemy_physics_perception_navigation_fire",
 		"route_acceptance_claimed": false,
+	}, true)
+	return receipt
+
+
+func _commit_branch_kill_evidence(region_id: StringName, setup_generation: int) -> Dictionary:
+	var receipt := {
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"region": region_id,
+		"setup_generation": setup_generation,
+		"authority": &"enemy_health_apply_damage",
+		"release_guard": &"OS.is_debug_build",
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if region_id not in [&"alpha", &"bravo"]:
+		receipt["resolved"] = true
+		receipt["accepted"] = true
+		receipt["skipped"] = true
+		receipt["failure_reason"] = &""
+		return receipt
+	var selected: FusepointEnemyAgent
+	for enemy: FusepointEnemyAgent in enemies.values():
+		if enemy.region_id == region_id and enemy.mission_active and enemy.is_alive():
+			selected = enemy
+			break
+	if selected == null:
+		receipt["failure_reason"] = &"no_live_region_actor"
+		return receipt
+	var kill_receipt := selected.tester_commit_player_kill_evidence(setup_generation, StringName("encounter_%s_branch_kill" % String(region_id)))
+	var snapshot := selected.authoritative_snapshot()
+	receipt.merge({
+		"resolved": true,
+		"accepted": kill_receipt.get("accepted", false) == true,
+		"actor_id": selected.stable_id,
+		"kill_receipt": kill_receipt,
+		"death_event": snapshot.get("last_event", {}),
+		"alive_after": selected.is_alive(),
+		"cleanup_shutdown": {
+			"collision_disabled": (snapshot.get("inspection_state", {}) as Dictionary).get("alive", true) == false,
+			"avoidance_enabled": snapshot.get("avoidance_enabled", true),
+			"cleanup_hidden": snapshot.get("cleanup_hidden", false),
+		},
+		"failure_reason": &"" if kill_receipt.get("accepted", false) == true else kill_receipt.get("failure_reason", &"kill_evidence_failed"),
 	}, true)
 	return receipt
 

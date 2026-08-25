@@ -495,6 +495,37 @@ func _force_fixture_enemy_shot(setup_generation: int, mode: StringName, lethal: 
 	return attack
 
 
+func tester_commit_player_kill_evidence(setup_generation: int, reason: StringName) -> Dictionary:
+	var receipt := {
+		"actor_id": stable_id,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"setup_generation": setup_generation,
+		"reason": reason,
+		"release_guard": &"OS.is_debug_build",
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if setup_generation <= 0 or not mission_active or not is_alive():
+		receipt["failure_reason"] = &"actor_not_live_for_kill_evidence"
+		return receipt
+	var damage_report := _apply_tester_self_damage(true, setup_generation, reason)
+	var snapshot := authoritative_snapshot()
+	receipt.merge({
+		"resolved": true,
+		"accepted": damage_report.get("applied", false) == true and not is_alive(),
+		"damage_report": damage_report,
+		"snapshot": _fixture_snapshot_page(snapshot),
+		"death_event": snapshot.get("last_event", {}),
+		"health_after": (snapshot.get("health", {}) as Dictionary).get("current", 0.0),
+		"alive": snapshot.get("alive", true),
+		"failure_reason": &"" if damage_report.get("applied", false) == true and not is_alive() else &"authoritative_enemy_death_not_committed",
+	}, true)
+	return receipt
+
+
 func _apply_tester_self_damage(lethal: bool, setup_generation: int, reason: StringName) -> Dictionary:
 	if _health == null:
 		return {"accepted": false, "failure_reason": &"health_unavailable"}
@@ -898,11 +929,24 @@ func apply_checkpoint_snapshot(saved: Dictionary, epoch: int) -> bool:
 	if StringName(saved.get("region", region_id)) != region_id or StringName(saved.get("role", tactical_role)) != tactical_role or StringName(saved.get("route_slot", route_slot)) != route_slot:
 		push_error("Restore roster binding mismatch for %s" % stable_id)
 		return false
-	var saved_reserved: Vector3 = saved.get("reserved_position", reserved_position)
-	if not saved_reserved.is_equal_approx(reserved_position):
-		push_error("Restore reservation mismatch for %s" % stable_id)
-		return false
-	global_transform = saved.get("transform", global_transform)
+	var saved_transform: Transform3D = saved.get("transform", global_transform)
+	var saved_reserved: Vector3 = saved.get("reserved_position", saved_transform.origin)
+	global_transform = saved_transform
+	reserved_position = saved_reserved
+	_home_position = reserved_position + Vector3.UP * 0.04
+	_has_home_position = true
+	_route_reservation = {
+		"key": "%s:%s" % [String(region_id), String(route_slot)],
+		"actor_id": stable_id,
+		"slot": route_slot,
+		"position": reserved_position,
+		"desired_velocity": Vector3.ZERO,
+		"admitted_velocity": Vector3.ZERO,
+		"issued_frame": Engine.get_physics_frames(),
+		"expires_frame": Engine.get_physics_frames(),
+		"state": &"restored_static",
+		"restore_epoch": epoch,
+	}
 	_enforce_upright_navigation_root()
 	velocity = Vector3.ZERO
 	rounds_remaining = int(saved.get("ammo", magazine_size))
@@ -931,6 +975,38 @@ func apply_checkpoint_snapshot(saved: Dictionary, epoch: int) -> bool:
 	_restored_epoch = epoch
 	_restore_readiness = &"snapshot_applied"
 	return true
+
+
+func enter_terminal_combat_freeze(event_id: String, result: StringName) -> Dictionary:
+	var was_active := mission_active
+	var had_reservation := not _route_reservation.is_empty()
+	var shot_pending := _attack_remaining <= 0.05 or _fire_pose_remaining > 0.0 or not _pending_fixture_shot_context.is_empty()
+	_tester_prepared_hold = false
+	_tester_prepared_generation = 0
+	mission_active = false
+	velocity = Vector3.ZERO
+	reset_volatile_combat_state_for_restore()
+	_last_pre_shot_authorization.clear()
+	_pending_fixture_shot_context.clear()
+	_release_route_reservation()
+	if _navigation_agent != null:
+		_navigation_agent.avoidance_enabled = false
+		_navigation_agent.set_velocity_forced(Vector3.ZERO)
+	if _collision_shape != null:
+		_collision_shape.set_deferred("disabled", true)
+	_apply_activation_state()
+	_restore_readiness = &"terminal_frozen"
+	return {
+		"actor_id": stable_id,
+		"terminal_event_id": event_id,
+		"result": result,
+		"was_active": was_active,
+		"shot_cancelled": was_active and shot_pending,
+		"reservation_released": had_reservation,
+		"combat_authorized": false,
+		"collision_disabled": true,
+		"navigation_disabled": true,
+	}
 
 
 func finish_checkpoint_restore(epoch: int) -> bool:
