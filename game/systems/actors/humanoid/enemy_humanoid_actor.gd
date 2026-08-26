@@ -27,13 +27,10 @@ const PRIMARY_RIFLE_SCENE := preload("res://systems/actors/humanoid/assets/weapo
 const WEAPON_FAMILY := &"rifle"
 const RIFLE_FIRE_SECONDS := 0.18
 const RIFLE_RELOAD_SECONDS := 1.65
-const RIFLE_SOURCE_GRIP_OFFSET := Vector3(0.0, 2.0, 5.0)
+const RIFLE_SOURCE_POSITION := Vector3(0.0, -4.8, 5.0)
 const RIFLE_MUZZLE_LOCAL := Vector3(0.0, 5.4, 13.85)
-const RIFLE_SUPPORT_HAND_FORWARD_RATIO := 0.42
-const RIFLE_SOCKET_POSITION := Vector3(0.02, 0.04, -0.02)
-const RIFLE_SOCKET_LOW_READY_ROTATION := Vector3(-8.0, 90.0, 0.0)
-const RIFLE_SOCKET_SHOULDER_ROTATION := Vector3(-10.0, 90.0, 0.0)
-const RIFLE_SOCKET_RELOAD_ROTATION := Vector3(-10.0, 90.0, 0.0)
+const RIFLE_SOCKET_POSITION := Vector3(0.02, 0.02, -0.02)
+const RIFLE_SOCKET_ROTATION := Vector3(-90.0, 90.0, 0.0)
 const AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE := false
 const SKINS := {
 	"soldier_a": {
@@ -414,12 +411,6 @@ func _hips_translation_mode() -> String:
 
 func _apply_pose_and_ground() -> void:
 	_retargeter.apply_pose(_hips_translation_mode())
-	_apply_rifle_aim_overlay()
-	_apply_rifle_action_overlay()
-	_apply_weapon_pose_for_state()
-	_sync_weapon_attachment()
-	_apply_rifle_contact_overlay()
-	_sync_weapon_attachment()
 	_apply_ground_contact()
 
 
@@ -428,116 +419,6 @@ func set_aim_pitch(pitch_degrees: float) -> void:
 	if not is_equal_approx(clamped_pitch, _aim_pitch_degrees):
 		_aim_pitch_serial += 1
 	_aim_pitch_degrees = clamped_pitch
-
-
-func _apply_rifle_aim_overlay() -> void:
-	if _target_skeleton == null or current_state not in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD, MotionState.WALK, MotionState.RUN]:
-		return
-	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
-	var pitch_radians := deg_to_rad(_aim_pitch_degrees)
-	var ready_weight := 0.62 if current_state in [MotionState.IDLE, MotionState.WALK, MotionState.RUN] else 1.0
-	for overlay in [
-		{"bone": "spine_mid", "weight": 0.18},
-		{"bone": "chest", "weight": 0.34},
-		{"bone": "right_shoulder", "weight": 0.20},
-		{"bone": "left_shoulder", "weight": 0.20},
-	]:
-		var canonical := String(overlay["bone"])
-		if not mapping.has(canonical):
-			continue
-		var bone_index: int = mapping[canonical]
-		var base_rotation := _target_skeleton.get_bone_pose_rotation(bone_index)
-		var pitch_rotation := Quaternion(Vector3.RIGHT, pitch_radians * float(overlay["weight"]) * ready_weight)
-		_target_skeleton.set_bone_pose_rotation(bone_index, base_rotation * pitch_rotation)
-
-
-func _apply_rifle_action_overlay() -> void:
-	if _target_skeleton == null or current_state not in [MotionState.FIRE, MotionState.RELOAD]:
-		return
-	var duration := maxf(_rifle_action_duration, 0.001)
-	var progress := clampf(_rifle_action_elapsed / duration, 0.0, 1.0)
-	var pulse := sin(progress * PI)
-	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
-	if current_state == MotionState.FIRE:
-		_rotate_overlay_bone(mapping, "chest", Vector3.RIGHT, deg_to_rad(-3.5 * pulse))
-		_rotate_overlay_bone(mapping, "right_shoulder", Vector3.UP, deg_to_rad(-2.0 * pulse))
-		_rotate_overlay_bone(mapping, "left_shoulder", Vector3.UP, deg_to_rad(-1.25 * pulse))
-		return
-	# Break the support-hand contact toward the magazine well, then reseat it.
-	# The rifle remains attached to the firing hand, so the root and muzzle stay
-	# stable while the left arm performs the only reload displacement.
-	var reach := sin(progress * PI)
-	_rotate_overlay_bone(mapping, "left_shoulder", Vector3.FORWARD, deg_to_rad(-24.0 * reach))
-	_rotate_overlay_bone(mapping, "left_upper_arm", Vector3.RIGHT, deg_to_rad(18.0 * reach))
-	_rotate_overlay_bone(mapping, "left_lower_arm", Vector3.UP, deg_to_rad(32.0 * reach))
-	_rotate_overlay_bone(mapping, "left_hand", Vector3.FORWARD, deg_to_rad(-38.0 * reach))
-	_rotate_overlay_bone(mapping, "chest", Vector3.UP, deg_to_rad(3.5 * reach))
-
-
-func _rotate_overlay_bone(mapping: Dictionary, canonical: String, axis: Vector3, angle: float) -> void:
-	if not mapping.has(canonical) or is_zero_approx(angle):
-		return
-	var bone_index: int = mapping[canonical]
-	var base_rotation := _target_skeleton.get_bone_pose_rotation(bone_index)
-	_target_skeleton.set_bone_pose_rotation(bone_index, base_rotation * Quaternion(axis, angle))
-
-
-func _apply_weapon_pose_for_state() -> void:
-	if _weapon_root == null:
-		return
-	_weapon_root.position = RIFLE_SOCKET_POSITION
-	match current_state:
-		MotionState.AIM, MotionState.FIRE:
-			_weapon_root.rotation_degrees = RIFLE_SOCKET_SHOULDER_ROTATION
-		MotionState.RELOAD:
-			_weapon_root.rotation_degrees = RIFLE_SOCKET_RELOAD_ROTATION
-		_:
-			_weapon_root.rotation_degrees = RIFLE_SOCKET_LOW_READY_ROTATION
-
-
-func _apply_rifle_contact_overlay() -> void:
-	if _target_skeleton == null or _muzzle_marker == null or current_state not in [MotionState.IDLE, MotionState.WALK, MotionState.RUN, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD, MotionState.HIT]:
-		return
-	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
-	if not mapping.has("left_hand") or not mapping.has("right_hand"):
-		return
-	_target_skeleton.force_update_all_bone_transforms()
-	_apply_rifle_stock_height_overlay(mapping)
-	var right_hand_world: Vector3 = _bone_world_origin("right_hand")
-	var muzzle_world := _muzzle_marker.global_position
-	var hand_to_muzzle := muzzle_world - right_hand_world
-	if hand_to_muzzle.length() <= 0.1:
-		return
-	var support_target := right_hand_world.lerp(muzzle_world, RIFLE_SUPPORT_HAND_FORWARD_RATIO)
-	if current_state == MotionState.RELOAD:
-		var reload_reach := sin(clampf(_rifle_action_elapsed / maxf(_rifle_action_duration, 0.001), 0.0, 1.0) * PI)
-		support_target = support_target.lerp(right_hand_world.lerp(muzzle_world, 0.28) + global_transform.basis.y * 0.18, reload_reach)
-	var left_hand_index: int = mapping["left_hand"]
-	var left_pose := _target_skeleton.get_bone_global_pose(left_hand_index)
-	left_pose.origin = _target_skeleton.to_local(support_target)
-	_target_skeleton.set_bone_global_pose(left_hand_index, left_pose)
-	_target_skeleton.force_update_all_bone_transforms()
-	_sync_weapon_attachment()
-
-
-func _apply_rifle_stock_height_overlay(mapping: Dictionary) -> void:
-	if current_state not in [MotionState.WALK, MotionState.RUN, MotionState.RELOAD]:
-		return
-	if not mapping.has("right_hand"):
-		return
-	_sync_weapon_attachment()
-	var muzzle_height := _muzzle_marker.global_position.y - global_position.y
-	var target_muzzle_height := 1.55 if current_state == MotionState.RELOAD else 1.45
-	var lift := target_muzzle_height - muzzle_height
-	if lift <= 0.0:
-		return
-	var right_hand_index: int = mapping["right_hand"]
-	var right_pose := _target_skeleton.get_bone_global_pose(right_hand_index)
-	var current_world: Vector3 = _target_skeleton.to_global(right_pose.origin)
-	right_pose.origin = _target_skeleton.to_local(current_world + global_transform.basis.y * minf(lift, 0.95))
-	_target_skeleton.set_bone_global_pose(right_hand_index, right_pose)
-	_target_skeleton.force_update_all_bone_transforms()
-	_sync_weapon_attachment()
 
 
 func _apply_ground_contact() -> void:
@@ -645,16 +526,18 @@ func get_component_state() -> Dictionary:
 	var animation_length := player.current_animation_length if player != null else 0.0
 	var clip_name := _custom_clip if _custom_preview else String(STATE_CLIPS[current_state]["clip"])
 	var pistol_source_clip := "pistol" in clip_name.to_lower()
-	var procedural_rifle := _uses_procedural_rifle_semantic()
-	var component_socket_interim := procedural_rifle
+	var direct_rifle_binding := _uses_direct_rifle_binding_semantic()
+	var component_socket_baseline := direct_rifle_binding
 	var incompatible_fallback := _is_incompatible_rifle_fallback(current_state, clip_name)
 	var contact_report := rifle_contact_report()
 	var visible_rifle_ready: bool = contact_report.get("accepted", false) == true
 	var authored_rifle_clip := AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE and not pistol_source_clip
-	var family_compatible := procedural_rifle or (visible_rifle_ready and authored_rifle_clip and not incompatible_fallback)
-	var locomotion_source_requires_overlay := current_state in [MotionState.WALK, MotionState.RUN] and clip_name in ["Walk", "Jog_Fwd"]
+	# Source clip names are diagnostic metadata. The restored baseline is judged
+	# from the live socket/contact result, including for retained Pistol_* clips.
+	var family_compatible := visible_rifle_ready and not incompatible_fallback
+	var locomotion_source_requires_rendered_proof := current_state in [MotionState.WALK, MotionState.RUN] and clip_name in ["Walk", "Jog_Fwd"]
 	var socket_contact_status := &"accepted" if contact_report.get("accepted", false) == true else StringName(contact_report.get("failure_reason", &"socket_contact_unaccepted"))
-	var compatibility_disposition := _compatibility_disposition(pistol_source_clip, component_socket_interim, incompatible_fallback, family_compatible, visible_rifle_ready, locomotion_source_requires_overlay)
+	var compatibility_disposition := _compatibility_disposition(pistol_source_clip, component_socket_baseline, incompatible_fallback, family_compatible, visible_rifle_ready, locomotion_source_requires_rendered_proof)
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
@@ -663,7 +546,7 @@ func get_component_state() -> Dictionary:
 		"animation": clip_name,
 		"source_animation_semantic": StringName("source_%s" % clip_name.to_snake_case()),
 		"animation_semantic": _resolved_animation_semantic(),
-		"rifle_semantic_procedural": procedural_rifle,
+		"rifle_semantic_direct_binding": direct_rifle_binding,
 		"rifle_action_progress": clampf(_rifle_action_elapsed / maxf(_rifle_action_duration, 0.001), 0.0, 1.0) if _rifle_action_duration > 0.0 else 0.0,
 		"rifle_action_duration_seconds": _rifle_action_duration,
 		"rifle_action_elapsed_seconds": _rifle_action_elapsed,
@@ -679,16 +562,17 @@ func get_component_state() -> Dictionary:
 		"genuine_authored_rifle_clip": authored_rifle_clip,
 		"weapon_socket_contact_status": socket_contact_status,
 		"binding_strategy": {
-			"selected_strategy": &"restore_loop66_stable_visible_component_baseline_missing_authored_rifle_set",
+			"selected_strategy": &"loop66_direct_component_pose_and_socket_binding",
 			"rifle_ready_authored_clips_available": AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE,
 			"authored_rifle_clip_binding_status": &"missing_required_asset",
 			"visible_rifle_ready_binding": visible_rifle_ready,
 			"source_clip_truthful": true,
-			"locomotion_source_clip_requires_overlay_proof": locomotion_source_requires_overlay,
+			"locomotion_source_clip_requires_rendered_proof": locomotion_source_requires_rendered_proof,
 			"interim_issue_open": not AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE,
 			"root_transform_tuning_primary_fix": false,
 			"bone_attachment_pose_synced_before_contact_receipts": true,
-			"live_stock_height_overlay_before_foregrip_receipts": true,
+			"per_frame_pose_compensation": false,
+			"live_stock_height_overlay_before_foregrip_receipts": false,
 			"actor_root_dynamic_axes": ["yaw"],
 			"model_axis_adapter_fixed": true,
 			"pistol_source_clip_rejected": false,
@@ -716,25 +600,25 @@ func get_component_state() -> Dictionary:
 	}
 
 
-func _uses_procedural_rifle_semantic() -> bool:
+func _uses_direct_rifle_binding_semantic() -> bool:
 	return not _custom_preview and current_state in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD]
 
 
 func _compatibility_disposition(
 	pistol_source_clip: bool,
-	component_socket_interim: bool,
+	component_socket_baseline: bool,
 	incompatible_fallback: bool,
 	family_compatible: bool,
 	visible_rifle_ready: bool,
-	locomotion_source_requires_overlay: bool
+	locomotion_source_requires_rendered_proof: bool
 ) -> StringName:
-	if visible_rifle_ready and component_socket_interim:
+	if visible_rifle_ready and component_socket_baseline:
 		return &"loop66_visible_baseline_retained_source_clip_missing_authored_rifle_clips"
 	if pistol_source_clip:
 		return &"truthful_pistol_named_source_clip_missing_authored_rifle_clips"
 	if incompatible_fallback:
 		return &"incompatible_source_clip_rejected"
-	if family_compatible and locomotion_source_requires_overlay:
+	if family_compatible and locomotion_source_requires_rendered_proof:
 		return &"visible_two_hand_rifle_ready_locomotion_component_baseline"
 	if family_compatible:
 		return &"visible_two_hand_rifle_ready"
@@ -757,9 +641,9 @@ func _resolved_animation_semantic() -> StringName:
 		MotionState.IDLE:
 			return &"rifle_idle_ready"
 		MotionState.WALK:
-			return &"rifle_walk_ready_component_baseline_overlay"
+			return &"rifle_walk_ready_component_baseline"
 		MotionState.RUN:
-			return &"rifle_run_reposition_ready_component_baseline_overlay"
+			return &"rifle_run_reposition_ready_component_baseline"
 		MotionState.AIM:
 			return &"rifle_aim"
 		MotionState.FIRE:
@@ -818,7 +702,7 @@ func _attach_weapon() -> void:
 	# The authored origin sits below the receiver and behind the pistol grip.
 	# Rebase the intact rifle so the right-hand socket lands on the grip rather
 	# than on the model origin. The source has exactly one attached magazine.
-	source.position = RIFLE_SOURCE_GRIP_OFFSET
+	source.position = RIFLE_SOURCE_POSITION
 	weapon.add_child(source)
 	var muzzle := Marker3D.new()
 	muzzle.name = "Muzzle"
@@ -830,12 +714,14 @@ func _attach_weapon() -> void:
 	# as a grounded ~0.95 m rifle in world space.
 	weapon.scale = Vector3.ONE * 4.0
 	weapon.position = RIFLE_SOCKET_POSITION
-	weapon.rotation_degrees = RIFLE_SOCKET_LOW_READY_ROTATION
+	weapon.rotation_degrees = RIFLE_SOCKET_ROTATION
+	# Preserve the component's authored local roll. This is part of the accepted
+	# direct binding, not a frame-by-frame compensation layer.
+	weapon.rotate_object_local(Vector3.FORWARD, PI)
 	attachment.add_child(weapon)
 	_weapon_root = weapon
 	_weapon_source = source
 	_muzzle_marker = muzzle
-	_apply_weapon_pose_for_state()
 
 
 func rifle_contact_report() -> Dictionary:

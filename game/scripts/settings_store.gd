@@ -74,16 +74,21 @@ func apply_runtime() -> void:
 	_last_display_apply_receipt = {
 		"transaction_id": "display-apply-%06d" % _display_apply_serial,
 		"persisted_fullscreen": fullscreen_enabled,
+		"requested_mode": Window.MODE_EXCLUSIVE_FULLSCREEN if fullscreen_enabled else Window.MODE_WINDOWED,
+		"requested_physical_size": target_size,
 		"target_physical_size": target_size,
 		"size_before": size_before,
 		"mode_before": mode_before,
 		"size_after": window.size,
 		"mode_after": window.mode,
+		"viewport_size_after": window.get_visible_rect().size,
 		"ordered_steps": [&"physical_size", &"native_mode", &"physical_size_reaffirmed"] if fullscreen_enabled else [&"windowed_mode", &"physical_size"],
 		"content_scale_size": window.content_scale_size,
+		"content_scale_factor": window.content_scale_factor,
 		"render_scale_3d": window.scaling_3d_scale,
 		"committed_frame": Engine.get_process_frames(),
 	}
+	_record_display_settled_receipt.call_deferred(String(_last_display_apply_receipt["transaction_id"]))
 	AudioServer.set_bus_volume_db(0, linear_to_db(clampf(float(values["master_volume"]), 0.001, 1.0)))
 	var player := get_tree().get_first_node_in_group(&"player")
 	if player != null:
@@ -99,6 +104,22 @@ func apply_runtime() -> void:
 	var damage_feedback := get_node_or_null("../../PlayerDamageFeedback")
 	if damage_feedback != null and damage_feedback.has_method(&"apply_accessibility_settings"):
 		damage_feedback.call(&"apply_accessibility_settings", values)
+
+
+func _record_display_settled_receipt(transaction_id: String) -> void:
+	# Window mode and size may settle after the mode switch. Record the next
+	# process-frame values into the same transaction instead of issuing another
+	# display mutation or timing workaround.
+	if String(_last_display_apply_receipt.get("transaction_id", "")) != transaction_id:
+		return
+	var window := get_window()
+	_last_display_apply_receipt["settled_frame"] = Engine.get_process_frames()
+	_last_display_apply_receipt["settled_window_mode"] = window.mode
+	_last_display_apply_receipt["settled_window_size"] = window.size
+	_last_display_apply_receipt["settled_viewport_size"] = window.get_visible_rect().size
+	_last_display_apply_receipt["settled_content_scale_size"] = window.content_scale_size
+	_last_display_apply_receipt["settled_content_scale_factor"] = window.content_scale_factor
+	_last_display_apply_receipt["settled_render_scale_3d"] = window.scaling_3d_scale
 
 
 func snapshot() -> Dictionary:

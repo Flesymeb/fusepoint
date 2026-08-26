@@ -207,7 +207,6 @@ func _ready() -> void:
 	_assert_curated_menu_binding()
 	_set_gameplay_enabled(false)
 	_load_settings_controls()
-	settings_store.apply_runtime()
 	_apply_responsive_layout.call_deferred()
 	_show_page(STATE_TITLE)
 
