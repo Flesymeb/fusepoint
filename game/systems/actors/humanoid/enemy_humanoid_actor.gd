@@ -418,7 +418,9 @@ func _apply_pose_and_ground() -> void:
 	_apply_rifle_aim_overlay()
 	_apply_rifle_action_overlay()
 	_apply_weapon_pose_for_state()
+	_sync_weapon_attachment()
 	_apply_rifle_contact_overlay()
+	_sync_weapon_attachment()
 	_apply_ground_contact()
 
 
@@ -495,12 +497,13 @@ func _apply_weapon_pose_for_state() -> void:
 
 
 func _apply_rifle_contact_overlay() -> void:
-	if _target_skeleton == null or _muzzle_marker == null or current_state not in [MotionState.IDLE, MotionState.WALK, MotionState.RUN, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD]:
+	if _target_skeleton == null or _muzzle_marker == null or current_state not in [MotionState.IDLE, MotionState.WALK, MotionState.RUN, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD, MotionState.HIT]:
 		return
 	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
 	if not mapping.has("left_hand") or not mapping.has("right_hand"):
 		return
 	_target_skeleton.force_update_all_bone_transforms()
+	_apply_rifle_stock_height_overlay(mapping)
 	var right_hand_world: Vector3 = _bone_world_origin("right_hand")
 	var muzzle_world := _muzzle_marker.global_position
 	var hand_to_muzzle := muzzle_world - right_hand_world
@@ -515,6 +518,27 @@ func _apply_rifle_contact_overlay() -> void:
 	left_pose.origin = _target_skeleton.to_local(support_target)
 	_target_skeleton.set_bone_global_pose(left_hand_index, left_pose)
 	_target_skeleton.force_update_all_bone_transforms()
+	_sync_weapon_attachment()
+
+
+func _apply_rifle_stock_height_overlay(mapping: Dictionary) -> void:
+	if current_state not in [MotionState.WALK, MotionState.RUN, MotionState.RELOAD]:
+		return
+	if not mapping.has("right_hand"):
+		return
+	_sync_weapon_attachment()
+	var muzzle_height := _muzzle_marker.global_position.y - global_position.y
+	var target_muzzle_height := 1.55 if current_state == MotionState.RELOAD else 1.45
+	var lift := target_muzzle_height - muzzle_height
+	if lift <= 0.0:
+		return
+	var right_hand_index: int = mapping["right_hand"]
+	var right_pose := _target_skeleton.get_bone_global_pose(right_hand_index)
+	var current_world: Vector3 = _target_skeleton.to_global(right_pose.origin)
+	right_pose.origin = _target_skeleton.to_local(current_world + global_transform.basis.y * minf(lift, 0.95))
+	_target_skeleton.set_bone_global_pose(right_hand_index, right_pose)
+	_target_skeleton.force_update_all_bone_transforms()
+	_sync_weapon_attachment()
 
 
 func _apply_ground_contact() -> void:
@@ -654,7 +678,7 @@ func get_component_state() -> Dictionary:
 		"genuine_authored_rifle_clip": AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE and not pistol_source_clip,
 		"weapon_socket_contact_status": socket_contact_status,
 		"binding_strategy": {
-			"selected_strategy": &"restored_loop10_19_component_baseline_with_component_m4_socket",
+			"selected_strategy": &"product_wrapper_boneattachment_sync_with_component_m4_socket_stock_height_baseline",
 			"rifle_ready_authored_clips_available": AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE,
 			"authored_rifle_clip_binding_status": &"missing_required_asset",
 			"visible_rifle_ready_binding": family_compatible,
@@ -662,6 +686,8 @@ func get_component_state() -> Dictionary:
 			"locomotion_source_clip_requires_overlay_proof": locomotion_source_requires_overlay,
 			"interim_issue_open": not AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE,
 			"root_transform_tuning_primary_fix": false,
+			"bone_attachment_pose_synced_before_contact_receipts": true,
+			"live_stock_height_overlay_before_foregrip_receipts": true,
 			"actor_root_dynamic_axes": ["yaw"],
 			"model_axis_adapter_fixed": true,
 			"pistol_source_clip_rejected": pistol_source_clip and not component_socket_interim,
@@ -822,6 +848,7 @@ func rifle_contact_report() -> Dictionary:
 		return {"accepted": false, "failure_reason": &"missing_skeleton"}
 	if _weapon_attachment == null or _weapon_root == null or _muzzle_marker == null:
 		return {"accepted": false, "failure_reason": &"missing_weapon_socket"}
+	_sync_weapon_attachment()
 	var right_hand := _bone_world_origin("right_hand")
 	var left_hand := _bone_world_origin("left_hand")
 	if right_hand == null or left_hand == null:
@@ -883,6 +910,13 @@ func rifle_contact_report() -> Dictionary:
 		"visible_pose_evidence": visible_pose_evidence,
 		"forward_reference": &"component_actor_forward_axis",
 	}
+
+
+func _sync_weapon_attachment() -> void:
+	if _target_skeleton == null or _weapon_attachment == null:
+		return
+	_target_skeleton.force_update_all_bone_transforms()
+	_weapon_attachment.on_skeleton_update()
 
 
 func _bone_world_origin(canonical_bone: String) -> Variant:
