@@ -411,6 +411,8 @@ func _hips_translation_mode() -> String:
 
 func _apply_pose_and_ground() -> void:
 	_retargeter.apply_pose(_hips_translation_mode())
+	_apply_rifle_aim_overlay()
+	_apply_rifle_action_overlay()
 	_apply_ground_contact()
 
 
@@ -419,6 +421,57 @@ func set_aim_pitch(pitch_degrees: float) -> void:
 	if not is_equal_approx(clamped_pitch, _aim_pitch_degrees):
 		_aim_pitch_serial += 1
 	_aim_pitch_degrees = clamped_pitch
+
+
+func _apply_rifle_aim_overlay() -> void:
+	if _target_skeleton == null or current_state not in [MotionState.AIM, MotionState.FIRE]:
+		return
+	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
+	var pitch_radians := deg_to_rad(_aim_pitch_degrees)
+	for overlay in [
+		{"bone": "spine_mid", "weight": 0.18},
+		{"bone": "chest", "weight": 0.34},
+		{"bone": "right_shoulder", "weight": 0.20},
+		{"bone": "left_shoulder", "weight": 0.20},
+	]:
+		var canonical := String(overlay["bone"])
+		if not mapping.has(canonical):
+			continue
+		var bone_index: int = mapping[canonical]
+		var base_rotation := _target_skeleton.get_bone_pose_rotation(bone_index)
+		var pitch_rotation := Quaternion(Vector3.RIGHT, pitch_radians * float(overlay["weight"]))
+		_target_skeleton.set_bone_pose_rotation(bone_index, base_rotation * pitch_rotation)
+
+
+func _apply_rifle_action_overlay() -> void:
+	if _target_skeleton == null or current_state not in [MotionState.FIRE, MotionState.RELOAD]:
+		return
+	var duration := maxf(_rifle_action_duration, 0.001)
+	var progress := clampf(_rifle_action_elapsed / duration, 0.0, 1.0)
+	var pulse := sin(progress * PI)
+	var mapping := HumanoidBoneMapper.build_map(_target_skeleton)
+	if current_state == MotionState.FIRE:
+		_rotate_overlay_bone(mapping, "chest", Vector3.RIGHT, deg_to_rad(-3.5 * pulse))
+		_rotate_overlay_bone(mapping, "right_shoulder", Vector3.UP, deg_to_rad(-2.0 * pulse))
+		_rotate_overlay_bone(mapping, "left_shoulder", Vector3.UP, deg_to_rad(-1.25 * pulse))
+		return
+	# Break the support-hand contact toward the magazine well, then reseat it.
+	# The rifle remains attached to the firing hand, so the root and muzzle stay
+	# stable while the left arm performs the only reload displacement.
+	var reach := sin(progress * PI)
+	_rotate_overlay_bone(mapping, "left_shoulder", Vector3.FORWARD, deg_to_rad(-24.0 * reach))
+	_rotate_overlay_bone(mapping, "left_upper_arm", Vector3.RIGHT, deg_to_rad(18.0 * reach))
+	_rotate_overlay_bone(mapping, "left_lower_arm", Vector3.UP, deg_to_rad(32.0 * reach))
+	_rotate_overlay_bone(mapping, "left_hand", Vector3.FORWARD, deg_to_rad(-38.0 * reach))
+	_rotate_overlay_bone(mapping, "chest", Vector3.UP, deg_to_rad(3.5 * reach))
+
+
+func _rotate_overlay_bone(mapping: Dictionary, canonical: String, axis: Vector3, angle: float) -> void:
+	if not mapping.has(canonical) or is_zero_approx(angle):
+		return
+	var bone_index: int = mapping[canonical]
+	var base_rotation := _target_skeleton.get_bone_pose_rotation(bone_index)
+	_target_skeleton.set_bone_pose_rotation(bone_index, base_rotation * Quaternion(axis, angle))
 
 
 func _apply_ground_contact() -> void:
