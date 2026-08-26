@@ -168,6 +168,8 @@ var _curated_menu_instance: Control
 var _settings_component_row_height := SETTINGS_COMPONENT_ROW_HEIGHT
 var _curated_menu_start_count := 0
 var _last_curated_menu_lifecycle_receipt: Dictionary = {}
+var _result_icon_cache: Dictionary = {}
+var _result_icon_status: Dictionary = {}
 var _tester_setup_serial := 0
 var _last_tester_setup_receipt: Dictionary = {}
 var _tester_setup_history: Array[Dictionary] = []
@@ -2343,10 +2345,138 @@ func _add_result_cluster(path: NodePath, group_name: String, icon_kind: StringNa
 
 
 func _result_icon(kind: StringName) -> Texture2D:
-	var path := String(RESULT_ICON_PATHS.get(kind, ""))
-	if path.is_empty():
-		return null
-	return load(path) as Texture2D
+	_ensure_result_icon_cache()
+	return _result_icon_cache.get(kind) as Texture2D
+
+
+func _ensure_result_icon_cache() -> void:
+	if not _result_icon_cache.is_empty():
+		return
+	for kind: StringName in RESULT_ICON_PATHS.keys():
+		var texture := _make_result_icon_texture(kind)
+		_result_icon_cache[kind] = texture
+		_result_icon_status[kind] = {
+			"kind": kind,
+			"source": &"native_runtime_texture",
+			"candidate_source_path": RESULT_ICON_PATHS[kind],
+			"loadable": texture != null,
+			"resource_loader_used": false,
+		}
+
+
+func _make_result_icon_texture(kind: StringName) -> Texture2D:
+	var image := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	image.fill(Color(1.0, 1.0, 1.0, 0.0))
+	var ink := Color(1.0, 1.0, 1.0, 1.0)
+	match kind:
+		&"time":
+			_draw_icon_circle(image, Vector2i(32, 32), 23, ink, 4)
+			_draw_icon_line(image, Vector2i(32, 32), Vector2i(32, 17), ink, 4)
+			_draw_icon_line(image, Vector2i(32, 32), Vector2i(44, 39), ink, 4)
+		&"score":
+			_draw_icon_line(image, Vector2i(18, 50), Vector2i(46, 50), ink, 4)
+			_draw_icon_line(image, Vector2i(22, 50), Vector2i(17, 20), ink, 4)
+			_draw_icon_line(image, Vector2i(42, 50), Vector2i(47, 20), ink, 4)
+			_draw_icon_line(image, Vector2i(18, 21), Vector2i(46, 21), ink, 4)
+			_draw_icon_line(image, Vector2i(25, 27), Vector2i(32, 35), ink, 4)
+			_draw_icon_line(image, Vector2i(32, 35), Vector2i(41, 27), ink, 4)
+		&"rank":
+			_draw_icon_line(image, Vector2i(20, 52), Vector2i(20, 18), ink, 4)
+			_draw_icon_line(image, Vector2i(44, 52), Vector2i(44, 18), ink, 4)
+			_draw_icon_line(image, Vector2i(16, 52), Vector2i(48, 52), ink, 4)
+			_draw_icon_line(image, Vector2i(20, 18), Vector2i(32, 10), ink, 4)
+			_draw_icon_line(image, Vector2i(44, 18), Vector2i(32, 10), ink, 4)
+			_draw_icon_line(image, Vector2i(28, 28), Vector2i(36, 28), ink, 4)
+		&"kills":
+			_draw_icon_circle(image, Vector2i(32, 32), 22, ink, 3)
+			_draw_icon_line(image, Vector2i(14, 32), Vector2i(50, 32), ink, 4)
+			_draw_icon_line(image, Vector2i(32, 14), Vector2i(32, 50), ink, 4)
+			_draw_icon_circle(image, Vector2i(32, 32), 5, ink, 3)
+		&"deaths":
+			_draw_icon_line(image, Vector2i(20, 18), Vector2i(44, 46), ink, 5)
+			_draw_icon_line(image, Vector2i(44, 18), Vector2i(20, 46), ink, 5)
+			_draw_icon_circle(image, Vector2i(32, 32), 21, ink, 3)
+		&"restart":
+			_draw_icon_arc(image, Vector2i(32, 33), 20, -220.0, 75.0, ink, 4)
+			_draw_icon_line(image, Vector2i(31, 9), Vector2i(30, 22), ink, 4)
+			_draw_icon_line(image, Vector2i(31, 9), Vector2i(43, 16), ink, 4)
+		&"objective":
+			_draw_icon_polyline(image, [Vector2i(32, 8), Vector2i(56, 32), Vector2i(32, 56), Vector2i(8, 32), Vector2i(32, 8)], ink, 4)
+			_draw_icon_circle(image, Vector2i(32, 32), 8, ink, 4)
+		&"bomb":
+			_draw_icon_circle(image, Vector2i(31, 36), 17, ink, 4)
+			_draw_icon_line(image, Vector2i(41, 22), Vector2i(50, 13), ink, 4)
+			_draw_icon_line(image, Vector2i(48, 13), Vector2i(56, 9), ink, 3)
+			_draw_icon_line(image, Vector2i(50, 13), Vector2i(56, 17), ink, 3)
+		&"weapon":
+			_draw_icon_polyline(image, [Vector2i(7, 34), Vector2i(42, 34), Vector2i(50, 27), Vector2i(59, 27), Vector2i(59, 35), Vector2i(53, 35), Vector2i(48, 42), Vector2i(35, 42), Vector2i(30, 50), Vector2i(22, 50), Vector2i(26, 42), Vector2i(7, 42), Vector2i(7, 34)], ink, 4)
+			_draw_icon_line(image, Vector2i(39, 42), Vector2i(43, 54), ink, 4)
+		&"home":
+			_draw_icon_polyline(image, [Vector2i(12, 30), Vector2i(32, 13), Vector2i(52, 30)], ink, 4)
+			_draw_icon_line(image, Vector2i(18, 29), Vector2i(18, 52), ink, 4)
+			_draw_icon_line(image, Vector2i(46, 29), Vector2i(46, 52), ink, 4)
+			_draw_icon_line(image, Vector2i(18, 52), Vector2i(46, 52), ink, 4)
+			_draw_icon_line(image, Vector2i(29, 52), Vector2i(29, 39), ink, 4)
+			_draw_icon_line(image, Vector2i(35, 52), Vector2i(35, 39), ink, 4)
+		_:
+			_draw_icon_circle(image, Vector2i(32, 32), 20, ink, 4)
+	var texture := ImageTexture.create_from_image(image)
+	return texture
+
+
+func _draw_icon_polyline(image: Image, points: Array[Vector2i], color: Color, thickness := 3) -> void:
+	for index in range(maxi(points.size() - 1, 0)):
+		_draw_icon_line(image, points[index], points[index + 1], color, thickness)
+
+
+func _draw_icon_arc(image: Image, center: Vector2i, radius: int, start_degrees: float, end_degrees: float, color: Color, thickness := 3) -> void:
+	var last := Vector2i(
+		center.x + int(round(cos(deg_to_rad(start_degrees)) * radius)),
+		center.y + int(round(sin(deg_to_rad(start_degrees)) * radius))
+	)
+	for step in range(1, 38):
+		var t := float(step) / 37.0
+		var degrees := lerpf(start_degrees, end_degrees, t)
+		var next := Vector2i(
+			center.x + int(round(cos(deg_to_rad(degrees)) * radius)),
+			center.y + int(round(sin(deg_to_rad(degrees)) * radius))
+		)
+		_draw_icon_line(image, last, next, color, thickness)
+		last = next
+
+
+func _draw_icon_circle(image: Image, center: Vector2i, radius: int, color: Color, thickness := 3) -> void:
+	var last := Vector2i(center.x + radius, center.y)
+	for step in range(1, 65):
+		var angle := TAU * float(step) / 64.0
+		var next := Vector2i(center.x + int(round(cos(angle) * radius)), center.y + int(round(sin(angle) * radius)))
+		_draw_icon_line(image, last, next, color, thickness)
+		last = next
+
+
+func _draw_icon_line(image: Image, start: Vector2i, finish: Vector2i, color: Color, thickness := 3) -> void:
+	var delta := finish - start
+	var steps := maxi(abs(delta.x), abs(delta.y))
+	if steps <= 0:
+		_stamp_icon_pixel(image, start.x, start.y, color, thickness)
+		return
+	for step in range(steps + 1):
+		var t := float(step) / float(steps)
+		var x := int(round(lerpf(float(start.x), float(finish.x), t)))
+		var y := int(round(lerpf(float(start.y), float(finish.y), t)))
+		_stamp_icon_pixel(image, x, y, color, thickness)
+
+
+func _stamp_icon_pixel(image: Image, x: int, y: int, color: Color, thickness := 3) -> void:
+	var radius := maxi(1, int(ceil(float(thickness) * 0.5)))
+	for offset_y in range(-radius, radius + 1):
+		for offset_x in range(-radius, radius + 1):
+			if Vector2(offset_x, offset_y).length() > float(radius):
+				continue
+			var px := x + offset_x
+			var py := y + offset_y
+			if px >= 0 and py >= 0 and px < image.get_width() and py < image.get_height():
+				image.set_pixel(px, py, color)
 
 
 func _configure_result_action_buttons() -> void:
@@ -2553,6 +2683,7 @@ func _mcp_state() -> Dictionary:
 			"score": (_result_value(^"Root/Pages/ResultPage/Primary/ScoreGroup") as Label).text,
 			"rank": (_result_value(^"Root/Pages/ResultPage/Primary/RankGroup") as Label).text,
 			"authoritative_snapshot": mission.call(&"result_snapshot"),
+			"icon_registry": _result_icon_registry_snapshot(),
 			"hierarchy": {
 				"primary_container_type": ($Root/Pages/ResultPage/Primary as Control).get_class(),
 				"mission_metrics_container_type": ($Root/Pages/ResultPage/MissionMetrics as Control).get_class(),
@@ -2666,6 +2797,16 @@ func _mcp_state() -> Dictionary:
 		"terminal_result_receipts": _terminal_result_receipts.duplicate(true),
 		"terminal_result_receipt_count": _terminal_result_receipts.size(),
 		"terminal_presentation": terminal.snapshot(),
+	}
+
+
+func _result_icon_registry_snapshot() -> Dictionary:
+	_ensure_result_icon_cache()
+	return {
+		"contract": &"native_runtime_texture_registry",
+		"resource_loader_used": false,
+		"source_svg_paths_retained_for_authoring_only": RESULT_ICON_PATHS.duplicate(true),
+		"icons": _result_icon_status.duplicate(true),
 	}
 
 
