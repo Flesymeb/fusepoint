@@ -649,6 +649,7 @@ func snapshot() -> Dictionary:
 		"retained_run_order": _retained_run_order.duplicate(),
 		"retained_by_run": _retained_by_run.duplicate(true),
 		"clear_history": _clear_history.duplicate(true),
+		"tester_feedback_fixtures": _tester_feedback_fixture_snapshot(),
 		"footstep_receipts": mission_feedback_snapshot.get("footstep_receipts", []),
 		"footstep_ownership": mission_feedback_snapshot.get("footstep_ownership", {}),
 	}
@@ -725,6 +726,7 @@ func _mcp_state() -> Dictionary:
 		"duplicate_channel_count": _duplicate_channel_count,
 		"restore_epoch": _restore_epoch,
 		"clear_history": _clear_history.duplicate(true),
+		"tester_feedback_fixtures": full.get("tester_feedback_fixtures", {}),
 	}
 
 
@@ -737,6 +739,49 @@ func _retained_index() -> Dictionary:
 			family_counts[family] = (families[family] as Array).size()
 		index[run_epoch] = family_counts
 	return index
+
+
+func _tester_feedback_fixture_snapshot() -> Dictionary:
+	var weapon_receipt: Dictionary = _weapon.get("_last_tester_audio_receipt") if _weapon != null else {}
+	var weapon_history: Array = _weapon.get("_tester_audio_history") if _weapon != null else []
+	var shot_feedback_state: Dictionary = _shot_feedback.call(&"snapshot") if _shot_feedback != null and _shot_feedback.has_method(&"snapshot") else {}
+	var stem_status := {}
+	for receipt: Dictionary in weapon_history:
+		var stem := StringName(receipt.get("stem_id", &""))
+		if stem.is_empty():
+			continue
+		var entry: Dictionary = stem_status.get(stem, {
+			"stem_id": stem,
+			"prepare_accepted": false,
+			"advance_accepted": false,
+			"source_path": "",
+			"owner_path": "",
+			"latest_failure_reason": &"",
+		})
+		var accepted: bool = receipt.get("accepted", false) == true
+		var fixture_id := String(receipt.get("fixture_id", ""))
+		if "-advance-" in fixture_id:
+			entry["advance_accepted"] = accepted
+		else:
+			entry["prepare_accepted"] = accepted
+		entry["source_path"] = receipt.get("source_path", entry.get("source_path", ""))
+		entry["owner_path"] = str(receipt.get("owner_path", entry.get("owner_path", "")))
+		entry["latest_failure_reason"] = receipt.get("failure_reason", &"")
+		stem_status[stem] = entry
+	return {
+		"surface": &"debug_only_audio_vfx_stem_fixtures",
+		"presentation_only": true,
+		"authoritative_calls": [],
+		"release_guard": &"OS.is_debug_build",
+		"latest_weapon_receipt": weapon_receipt,
+		"stem_status": stem_status,
+		"history_count": weapon_history.size(),
+		"retained_player_report_owner_state": weapon_receipt.get("player_report_owner_state", {}),
+		"shot_feedback_last_fixture": shot_feedback_state.get("last_tester_feedback_receipt", {}),
+		"shot_feedback_history_count": (shot_feedback_state.get("tester_feedback_history", []) as Array).size(),
+		"active_voice_count": shot_feedback_state.get("active_audio_voice_count", 0),
+		"decoded_voice_count": shot_feedback_state.get("decoded_audio_voice_count", 0),
+	}
 
 
 func _receipt_summary(row: Dictionary) -> Dictionary:

@@ -147,6 +147,8 @@ var _briefing_input_history: Array[Dictionary] = []
 var _activation_serial := 0
 var _activation_frame := -1
 var _last_activation_receipt: Dictionary = {}
+var _deployment_input_serial := 0
+var _last_deployment_input_receipt: Dictionary = {}
 var _settings_focus_history: Array[Dictionary] = []
 var _last_settings_focus_receipt: Dictionary = {}
 var _curated_menu_instance: Control
@@ -490,13 +492,14 @@ func _input(event: InputEvent) -> void:
 	if _dispatch_tester_action_event(event):
 		get_viewport().set_input_as_handled()
 		return
-	if app_state == STATE_BRIEFING and not _briefing_complete and _is_physical_briefing_skip(event):
-		_complete_briefing(true)
-		_deploy()
+	if app_state == STATE_BRIEFING and _is_physical_briefing_skip(event):
+		if not _briefing_complete:
+			_complete_briefing(true, &"physical_skip_to_authorization")
+			_record_briefing_input(_briefing_caption_index, _briefing_cue_revealed, &"skip_to_authorize")
 		get_viewport().set_input_as_handled()
 		return
-	if app_state == STATE_BRIEFING and not _briefing_complete and _is_briefing_cue_advance(event):
-		_advance_briefing_cue()
+	if app_state == STATE_BRIEFING and _is_briefing_primary_input(event):
+		_briefing_primary_action()
 		get_viewport().set_input_as_handled()
 		return
 	if app_state == STATE_GAMEPLAY and event.is_action_pressed(&"restart"):
@@ -525,6 +528,17 @@ func _is_physical_briefing_skip(event: InputEvent) -> bool:
 	return event is InputEventKey and event.pressed and not event.echo and (
 		event.physical_keycode == KEY_G or event.keycode == KEY_G
 	)
+
+
+func _is_briefing_primary_input(event: InputEvent) -> bool:
+	if event.is_action_pressed(&"menu_accept"):
+		return true
+	if event is InputEventKey:
+		return event.pressed and not event.echo and (
+			event.physical_keycode in [KEY_SPACE, KEY_ENTER, KEY_KP_ENTER]
+			or event.keycode in [KEY_SPACE, KEY_ENTER, KEY_KP_ENTER]
+		)
+	return _is_briefing_cue_advance(event)
 
 
 func _tester_audio_stem_for_event(event: InputEvent) -> StringName:
@@ -1451,20 +1465,72 @@ func _deploy() -> void:
 	if app_state != STATE_BRIEFING or not _briefing_complete or _deployment_requested:
 		return
 	_deployment_requested = true
+	_deployment_input_serial += 1
+	var deployment_receipt := {
+		"deployment_input_id": "deployment-input-%06d" % _deployment_input_serial,
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"source": _last_input_family,
+		"source_state": app_state,
+		"briefing_complete": _briefing_complete,
+		"briefing_completion_source": _opening_completion_source,
+		"activation_receipt": _last_activation_receipt.duplicate(true),
+		"mission_state_before": mission.get("mission_state"),
+		"hud_enabled_before": hud.get("_hud_enabled"),
+		"gameplay_input_before": player.get("gameplay_input_enabled"),
+		"mouse_mode_before": Input.mouse_mode,
+		"committed_frame": Engine.get_process_frames(),
+	}
 	_restore_tester_opening_stream(&"deployment_authorized")
 	if not weapon.call(&"equip_loadout", _selected_weapon):
 		_deployment_requested = false
+		deployment_receipt["failure_reason"] = &"loadout_unavailable"
+		_last_deployment_input_receipt = deployment_receipt
 		$Root/Pages/BriefingPage/Error.text = "LOADOUT UNAVAILABLE — RETURN AND SELECT A VALID WEAPON"
 		return
 	if not mission.call(&"begin_deployment"):
 		_deployment_requested = false
+		deployment_receipt["failure_reason"] = &"mission_begin_deployment_rejected"
+		deployment_receipt["mission_state_after"] = mission.get("mission_state")
+		_last_deployment_input_receipt = deployment_receipt
 		$Root/Pages/BriefingPage/Error.text = "DEPLOYMENT ALREADY COMMITTED"
 		return
 	get_tree().paused = false
 	if not _show_page(STATE_DEPLOYMENT, &"deployment_committed", &"mission"):
+		_deployment_requested = false
+		deployment_receipt["failure_reason"] = &"deployment_page_handoff_rejected"
+		deployment_receipt["mission_state_after"] = mission.get("mission_state")
+		_last_deployment_input_receipt = deployment_receipt
 		return
 	_set_gameplay_enabled(true)
 	_show_page(STATE_GAMEPLAY, &"deployment_handoff", &"mission")
+	deployment_receipt.merge({
+		"resolved": true,
+		"accepted": (
+			app_state == STATE_GAMEPLAY
+			and StringName(mission.get("mission_state")) == &"active_gameplay"
+			and hud.get("_hud_enabled") == true
+			and player.get("gameplay_input_enabled") == true
+			and weapon.get("gameplay_input_enabled") == true
+			and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+			and not root.visible
+			and not pages.visible
+		),
+		"result_state": app_state,
+		"mission_state_after": mission.get("mission_state"),
+		"hud_enabled_after": hud.get("_hud_enabled"),
+		"gameplay_input_after": player.get("gameplay_input_enabled"),
+		"weapon_input_after": weapon.get("gameplay_input_enabled"),
+		"mouse_mode_after": Input.mouse_mode,
+		"shell_hidden": not root.visible and not pages.visible,
+		"mission_deployment_commit_count": mission.get("deployment_commit_count"),
+		"run_epoch": int(mission.get("run_epoch")),
+		"failure_reason": &"",
+	}, true)
+	if not deployment_receipt["accepted"]:
+		deployment_receipt["failure_reason"] = &"deployment_handoff_incomplete"
+	_last_deployment_input_receipt = deployment_receipt
 
 
 func _set_gameplay_enabled(enabled: bool) -> void:
@@ -2233,6 +2299,7 @@ func _mcp_state() -> Dictionary:
 			"briefing_manual_advance_count": _briefing_manual_advance_count,
 			"opening_completion_count": _opening_completion_count,
 			"deployment_requested": _deployment_requested,
+			"last_deployment_input_receipt": _last_deployment_input_receipt,
 			"last_tester_setup_receipt": _last_tester_setup_receipt,
 			"tester_opening_fallback_active": _tester_opening_fallback_active,
 			"tester_opening_fallback_generation": _tester_opening_fallback_generation,
@@ -2351,6 +2418,7 @@ func _mcp_state() -> Dictionary:
 		"opening_receipt_path": "res://art/source/cinematics/opening_fusepoint_daylight_i2v/generation_receipt.json",
 		"opening_audio_owner": _opening_audio_owner_receipt(),
 		"deployment_requested": _deployment_requested,
+		"last_deployment_input_receipt": _last_deployment_input_receipt,
 		"death_lock_remaining": _death_lock_remaining,
 		"active_recovery_epoch": _active_recovery_epoch,
 		"recovery_source": (mission.get("last_checkpoint_restore_receipt") as Dictionary).get("recovery_source", &"none"),
