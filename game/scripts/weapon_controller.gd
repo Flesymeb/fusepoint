@@ -1209,6 +1209,7 @@ func reset_transient_state_for_restore() -> void:
 func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 	_tester_audio_generation += 1
 	var generation := _tester_audio_generation
+	var authority_before := _feedback_fixture_authority_snapshot()
 	var receipt := {
 		"fixture_id": "tester-audio-%s-%06d" % [String(stem_id), generation],
 		"requested": true,
@@ -1241,7 +1242,11 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 			"normal_fire_path_used": false,
 			"normal_player_report_owner_count": 2,
 			"player_report_owner_state": _player_report_owner_state(),
-			"reset_isolation": {"authoritative_shot_committed": false, "diagnostic_owner_separate": false, "voice_started": false},
+			"reset_isolation": _feedback_fixture_isolation(authority_before, _feedback_fixture_authority_snapshot(), {
+				"authoritative_shot_committed": false,
+				"diagnostic_owner_separate": false,
+				"voice_started": false,
+			}),
 			"failure_reason": &"" if component_player != null and component_player.stream != null else &"component_player_unavailable",
 		}, true)
 	elif stem_id == &"product_adapter_report":
@@ -1255,7 +1260,10 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 			"normal_player_report_owner_count": 2,
 			"player_report_owner_state": _player_report_owner_state(),
 			"prepared_silent": true,
-			"reset_isolation": {"authoritative_shot_committed": false, "voice_started": false},
+			"reset_isolation": _feedback_fixture_isolation(authority_before, _feedback_fixture_authority_snapshot(), {
+				"authoritative_shot_committed": false,
+				"voice_started": false,
+			}),
 			"failure_reason": &"",
 		}, true)
 	else:
@@ -1273,13 +1281,18 @@ func tester_prepare_audio_stem(stem_id: StringName) -> Dictionary:
 		receipt["source_path"] = delegated.get("source_path", "")
 		receipt["owner_path"] = delegated.get("owner_path", "")
 		receipt["player_report_owner_state"] = _player_report_owner_state()
-		receipt["reset_isolation"] = delegated.get("reset_isolation", {})
+		receipt["reset_isolation"] = _feedback_fixture_isolation(
+			authority_before,
+			_feedback_fixture_authority_snapshot(),
+			delegated.get("reset_isolation", {})
+		)
 		receipt["failure_reason"] = delegated.get("failure_reason", &"")
 	return _store_tester_audio_receipt(receipt)
 
 
 func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) -> Dictionary:
 	var prepared := _last_tester_audio_receipt.duplicate(true)
+	var authority_before := _feedback_fixture_authority_snapshot()
 	var receipt := {
 		"fixture_id": "tester-audio-%s-advance-%06d" % [String(stem_id), expected_generation],
 		"requested": true,
@@ -1315,7 +1328,10 @@ func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) ->
 				"retained_component_owner": true,
 				"normal_player_report_owner_count": 2,
 				"player_report_owner_state": _player_report_owner_state(),
-				"reset_isolation": {"authoritative_shot_committed": false, "diagnostic_owner_separate": false},
+				"reset_isolation": _feedback_fixture_isolation(authority_before, _feedback_fixture_authority_snapshot(), {
+					"authoritative_shot_committed": false,
+					"diagnostic_owner_separate": false,
+				}),
 				"failure_reason": &"" if component_player.playing else &"playback_did_not_start",
 			}, true)
 	elif stem_id == &"product_adapter_report":
@@ -1327,7 +1343,10 @@ func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) ->
 			"voice_started": false,
 			"normal_player_report_owner_count": 2,
 			"player_report_owner_state": _player_report_owner_state(),
-			"reset_isolation": {"authoritative_shot_committed": false, "voice_started": false},
+			"reset_isolation": _feedback_fixture_isolation(authority_before, _feedback_fixture_authority_snapshot(), {
+				"authoritative_shot_committed": false,
+				"voice_started": false,
+			}),
 			"failure_reason": &"",
 		}, true)
 	else:
@@ -1340,7 +1359,11 @@ func tester_advance_audio_stem(stem_id: StringName, expected_generation: int) ->
 			"owner_path": delegated.get("owner_path", ""),
 			"delegated_feedback_receipt": delegated,
 			"player_report_owner_state": _player_report_owner_state(),
-			"reset_isolation": delegated.get("reset_isolation", {}),
+			"reset_isolation": _feedback_fixture_isolation(
+				authority_before,
+				_feedback_fixture_authority_snapshot(),
+				delegated.get("reset_isolation", {})
+			),
 			"failure_reason": delegated.get("failure_reason", &""),
 		}, true)
 	return _store_tester_audio_receipt(receipt)
@@ -1361,6 +1384,116 @@ func _store_tester_audio_receipt(receipt: Dictionary) -> Dictionary:
 	while _tester_audio_history.size() > 12:
 		_tester_audio_history.pop_front()
 	return _last_tester_audio_receipt.duplicate(true)
+
+
+func _feedback_fixture_authority_snapshot() -> Dictionary:
+	var weapon := _current_weapon()
+	var player := get_tree().get_first_node_in_group(&"player")
+	var mission := get_tree().get_first_node_in_group(&"mission_controller")
+	var matrix := get_tree().current_scene.get_node_or_null("CombatFeedbackMatrix") if get_tree().current_scene != null else null
+	var player_state: Dictionary = player.call(&"_mcp_state") if player != null and player.has_method(&"_mcp_state") else {}
+	var player_damage: Dictionary = player_state.get("damage_state", {})
+	var mission_state: Dictionary = mission.call(&"_mcp_state") if mission != null and mission.has_method(&"_mcp_state") else {}
+	var capture_points: Dictionary = mission_state.get("capture_points", {})
+	var matrix_state: Dictionary = matrix.call(&"_mcp_state") if matrix != null and matrix.has_method(&"_mcp_state") else {}
+	var active_latest: Dictionary = matrix_state.get("active_latest", {})
+	return {
+		"weapon": {
+			"equipped_id": _equipped_id,
+			"magazine": int(weapon.get("magazine", 0)),
+			"reserve": int(weapon.get("reserve", 0)),
+			"shot_serial": _shot_serial,
+			"shot_history_count": _shot_history.size(),
+			"last_shot_id": String(_last_shot.get("shot_id", "")),
+			"impact_history_count": _impact_history.size(),
+		},
+		"player": {
+			"health": float(player_state.get("health", player.get("health") if player != null else 0.0)),
+			"damage_commit_count": int(player_damage.get("commit_count", -1)),
+			"last_damage_event_id": String((player_damage.get("last_event", {}) as Dictionary).get("event_id", "")),
+			"death_locked": player_damage.get("combat_death_locked", false) == true,
+		},
+		"mission": {
+			"run_epoch": int(mission_state.get("run_epoch", mission.get("run_epoch") if mission != null else 0)),
+			"mission_state": StringName(mission_state.get("mission_state", mission.get("mission_state") if mission != null else &"")),
+			"remaining_time_floor": int(floor(float(mission_state.get("remaining_time", mission.get("remaining_time") if mission != null else 0.0)))),
+			"checkpoint_version": int(mission_state.get("checkpoint_version", mission.get("checkpoint_version") if mission != null else 0)),
+			"terminal_commit_count": int(mission_state.get("terminal_commit_count", mission.get("terminal_commit_count") if mission != null else 0)),
+			"elimination_count": int(mission_state.get("elimination_count", mission.get("elimination_count") if mission != null else 0)),
+			"player_death_count": int(mission_state.get("player_death_count", mission.get("player_death_count") if mission != null else 0)),
+			"capture_points": capture_points.duplicate(true),
+		},
+		"combat_feedback": {
+			"latest_event_id": String(matrix_state.get("latest_event_id", "")),
+			"cached_event_count": int(matrix_state.get("cached_event_count", 0)),
+			"active_latest_identity": String(active_latest.get("immutable_identity", "")),
+			"active_latest_family": StringName(active_latest.get("event_family", &"unknown")),
+			"active_latest_ammo_commit": int(active_latest.get("ammo_commit", -1)),
+		},
+	}
+
+
+func _feedback_fixture_isolation(before: Dictionary, after: Dictionary, extra := {}) -> Dictionary:
+	var before_weapon: Dictionary = before.get("weapon", {})
+	var after_weapon: Dictionary = after.get("weapon", {})
+	var before_player: Dictionary = before.get("player", {})
+	var after_player: Dictionary = after.get("player", {})
+	var before_mission: Dictionary = before.get("mission", {})
+	var after_mission: Dictionary = after.get("mission", {})
+	var before_matrix: Dictionary = before.get("combat_feedback", {})
+	var after_matrix: Dictionary = after.get("combat_feedback", {})
+	var isolation := (extra as Dictionary).duplicate(true)
+	isolation.merge({
+		"presentation_only": true,
+		"authoritative_calls": [],
+		"ammo_unchanged": (
+			before_weapon.get("magazine", -1) == after_weapon.get("magazine", -2)
+			and before_weapon.get("reserve", -1) == after_weapon.get("reserve", -2)
+			and before_weapon.get("equipped_id", &"") == after_weapon.get("equipped_id", &"")
+		),
+		"health_unchanged": before_player.get("health", -1.0) == after_player.get("health", -2.0),
+		"mission_unchanged": (
+			before_mission.get("mission_state", &"") == after_mission.get("mission_state", &"")
+			and before_mission.get("checkpoint_version", -1) == after_mission.get("checkpoint_version", -2)
+			and before_mission.get("terminal_commit_count", -1) == after_mission.get("terminal_commit_count", -2)
+			and before_mission.get("capture_points", {}) == after_mission.get("capture_points", {})
+		),
+		"score_unchanged": (
+			before_mission.get("elimination_count", -1) == after_mission.get("elimination_count", -2)
+			and before_mission.get("player_death_count", -1) == after_mission.get("player_death_count", -2)
+		),
+		"shot_ids_unchanged": (
+			before_weapon.get("shot_serial", -1) == after_weapon.get("shot_serial", -2)
+			and before_weapon.get("shot_history_count", -1) == after_weapon.get("shot_history_count", -2)
+			and before_weapon.get("last_shot_id", "") == after_weapon.get("last_shot_id", "#")
+		),
+		"damage_ids_unchanged": (
+			before_player.get("damage_commit_count", -1) == after_player.get("damage_commit_count", -2)
+			and before_player.get("last_damage_event_id", "") == after_player.get("last_damage_event_id", "#")
+		),
+		"death_ids_unchanged": (
+			before_mission.get("player_death_count", -1) == after_mission.get("player_death_count", -2)
+			and before_player.get("death_locked", false) == after_player.get("death_locked", true)
+		),
+		"active_latest_unchanged": before_matrix == after_matrix,
+		"timer_not_increased": int(after_mission.get("remaining_time_floor", 0)) <= int(before_mission.get("remaining_time_floor", 0)),
+		"before": before,
+		"after": after,
+	}, true)
+	isolation["accepted"] = (
+		isolation.get("presentation_only", false) == true
+		and (isolation.get("authoritative_calls", []) as Array).is_empty()
+		and isolation.get("ammo_unchanged", false) == true
+		and isolation.get("health_unchanged", false) == true
+		and isolation.get("mission_unchanged", false) == true
+		and isolation.get("score_unchanged", false) == true
+		and isolation.get("shot_ids_unchanged", false) == true
+		and isolation.get("damage_ids_unchanged", false) == true
+		and isolation.get("death_ids_unchanged", false) == true
+		and isolation.get("active_latest_unchanged", false) == true
+		and isolation.get("timer_not_increased", false) == true
+	)
+	return isolation
 
 
 func _visible_rig_audit() -> Dictionary:
