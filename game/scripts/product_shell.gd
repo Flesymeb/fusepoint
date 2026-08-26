@@ -39,6 +39,18 @@ const OPENING_VIDEO_PATH := "res://assets/cinematics/fusepoint_opening.ogv"
 const OPENING_VIDEO_AUDIO_RECEIPT := "res://assets/cinematics/fusepoint_opening_video_only_receipt.json"
 const OPENING_VIDEO_SHA256 := "e85d2381b9aa4ccb795d2fa1b614a8f97af7d16ec776be153ab1687042e2620f"
 const RESULT_SEMIBOLD_FONT: FontFile = preload("res://ui/shell/fps_menu_skin/fonts/BarlowCondensed-SemiBold.ttf")
+const RESULT_ICON_PATHS := {
+	&"time": "res://ui/hud/combat/result_icons/time.svg",
+	&"score": "res://ui/hud/combat/result_icons/score.svg",
+	&"rank": "res://ui/hud/combat/result_icons/rank.svg",
+	&"kills": "res://ui/hud/combat/result_icons/kills.svg",
+	&"deaths": "res://ui/hud/combat/result_icons/deaths.svg",
+	&"restart": "res://ui/hud/combat/result_icons/restart.svg",
+	&"objective": "res://ui/hud/combat/result_icons/objective.svg",
+	&"bomb": "res://ui/hud/combat/result_icons/bomb.svg",
+	&"weapon": "res://ui/hud/combat/result_icons/weapon.svg",
+	&"home": "res://ui/hud/combat/result_icons/home.svg",
+}
 const NON_PAGE_STATES: Array[StringName] = [STATE_DEPLOYMENT, STATE_GAMEPLAY, STATE_VICTORY, STATE_DETONATION]
 const LIFECYCLE_TABLE := {
 	&"title": {"predecessors":[&"title",&"loadout",&"briefing",&"settings",&"pause",&"death_recovery",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/TitlePage/Menu/StartButton"},
@@ -188,6 +200,7 @@ func _ready() -> void:
 	briefing_video.finished.connect(_on_opening_video_finished)
 	briefing_video.loop = false
 	_build_result_page_clusters()
+	_configure_result_action_buttons()
 	_assert_curated_menu_binding()
 	_set_gameplay_enabled(false)
 	_load_settings_controls()
@@ -1692,6 +1705,10 @@ func _set_rect(control_path: NodePath, rect: Rect2) -> void:
 
 func _apply_responsive_layout() -> void:
 	var viewport := root.size
+	var window_size := Vector2(get_window().size)
+	if window_size.x > 0.0 and window_size.y > 0.0 and (window_size.x < viewport.x or window_size.y < viewport.y):
+		viewport = window_size
+		root.size = viewport
 	if viewport.x <= 0.0 or viewport.y <= 0.0:
 		return
 	var margin := Vector2(maxf(viewport.x * SAFE_AREA_RATIO, 32.0), maxf(viewport.y * SAFE_AREA_RATIO, 24.0))
@@ -1743,12 +1760,14 @@ func _apply_responsive_layout() -> void:
 	_set_rect(^"Root/Pages/DeathPage/Menu", Rect2(Vector2(safe.position.x + 16.0, safe.end.y - 120.0), Vector2(720.0, 72.0)))
 	var result_origin := safe.position + Vector2(16.0, 10.0)
 	var result_width := minf(safe.size.x - 32.0, 1440.0)
+	var metric_height := 132.0 if expanded else 92.0
+	var breakdown_height := 116.0 if expanded else maxf(88.0, safe.size.y - 512.0)
 	_set_rect(^"Root/Pages/ResultPage/Outcome", Rect2(result_origin, Vector2(result_width, 64.0)))
 	_set_rect(^"Root/Pages/ResultPage/Reason", Rect2(result_origin + Vector2(0.0, 66.0), Vector2(result_width, 30.0)))
 	_set_rect(^"Root/Pages/ResultPage/Primary", Rect2(result_origin + Vector2(0.0, 116.0), Vector2(result_width, 106.0)))
-	_set_rect(^"Root/Pages/ResultPage/MissionMetrics", Rect2(result_origin + Vector2(0.0, 242.0), Vector2(result_width, 92.0)))
-	_set_rect(^"Root/Pages/ResultPage/BreakdownTitle", Rect2(result_origin + Vector2(0.0, 354.0), Vector2(result_width, 26.0)))
-	_set_rect(^"Root/Pages/ResultPage/Breakdown", Rect2(result_origin + Vector2(0.0, 386.0), Vector2(result_width, maxf(88.0, safe.size.y - 512.0))))
+	_set_rect(^"Root/Pages/ResultPage/MissionMetrics", Rect2(result_origin + Vector2(0.0, 238.0), Vector2(result_width, metric_height)))
+	_set_rect(^"Root/Pages/ResultPage/BreakdownTitle", Rect2(result_origin + Vector2(0.0, 252.0 + metric_height), Vector2(result_width, 26.0)))
+	_set_rect(^"Root/Pages/ResultPage/Breakdown", Rect2(result_origin + Vector2(0.0, 282.0 + metric_height), Vector2(result_width, breakdown_height)))
 	_set_rect(^"Root/Pages/ResultPage/Menu", Rect2(Vector2(safe.position.x + 16.0, safe.end.y - 94.0), Vector2(820.0, 70.0)))
 
 
@@ -2230,33 +2249,44 @@ func _on_terminal_presentation_completed(event_id: String, result: StringName) -
 
 
 func _build_result_page_clusters() -> void:
+	_clear_result_container(^"Root/Pages/ResultPage/Primary")
 	_clear_result_container(^"Root/Pages/ResultPage/MissionMetrics")
 	_clear_result_container(^"Root/Pages/ResultPage/Breakdown")
+	($Root/Pages/ResultPage/Primary as HBoxContainer).add_theme_constant_override("h_separation", 38)
+	($Root/Pages/ResultPage/MissionMetrics as GridContainer).columns = 4
+	($Root/Pages/ResultPage/MissionMetrics as GridContainer).add_theme_constant_override("h_separation", 24)
+	($Root/Pages/ResultPage/MissionMetrics as GridContainer).add_theme_constant_override("v_separation", 10)
+	($Root/Pages/ResultPage/Breakdown as GridContainer).columns = 5
+	($Root/Pages/ResultPage/Breakdown as GridContainer).add_theme_constant_override("h_separation", 20)
+	($Root/Pages/ResultPage/Breakdown as GridContainer).add_theme_constant_override("v_separation", 8)
 	var metric_color := Color(0.97, 0.98, 0.94, 1.0)
 	var cool_color := Color(0.2, 0.92, 0.82, 1.0)
 	var warn_color := Color(0.9, 0.75, 0.38, 1.0)
 	var hot_color := Color(1.0, 0.27, 0.18, 1.0)
-	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Remaining", "TIME", "00:00", warn_color, 132.0, 26, 13)
-	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Eliminations", "KILLS", "0", metric_color, 106.0, 26, 13)
-	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Deaths", "DEATHS", "0", hot_color, 96.0, 26, 13)
-	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Restarts", "RESTARTS", "0", metric_color, 106.0, 26, 13)
-	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Alpha", "ALPHA", "A HOSTILE", cool_color, 118.0, 24, 13)
-	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Bravo", "BRAVO", "B HOSTILE", cool_color, 118.0, 24, 13)
-	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Charlie", "CHARLIE", "C 0/3", warn_color, 118.0, 24, 13)
-	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Loadout", "LOADOUT", "AK74M", metric_color, 110.0, 24, 13)
+	_add_result_cluster(^"Root/Pages/ResultPage/Primary", "TimeGroup", &"time", "ELAPSED", "00:00", metric_color, 240.0, 46, 13, 38.0)
+	_add_result_cluster(^"Root/Pages/ResultPage/Primary", "ScoreGroup", &"score", "SCORE", "0", warn_color, 240.0, 46, 13, 38.0)
+	_add_result_cluster(^"Root/Pages/ResultPage/Primary", "RankGroup", &"rank", "RECENT RUN", "--", cool_color, 210.0, 46, 13, 38.0)
+	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Remaining", &"time", "TIME", "00:00", warn_color, 244.0, 26, 13, 28.0)
+	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Eliminations", &"kills", "KILLS", "0", metric_color, 184.0, 26, 13, 28.0)
+	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Deaths", &"deaths", "DEATHS", "0", hot_color, 172.0, 26, 13, 28.0)
+	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Restarts", &"restart", "RESTARTS", "0", metric_color, 184.0, 26, 13, 28.0)
+	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Alpha", &"objective", "ALPHA", "A HOSTILE", cool_color, 210.0, 24, 13, 28.0)
+	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Bravo", &"objective", "BRAVO", "B HOSTILE", cool_color, 210.0, 24, 13, 28.0)
+	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Charlie", &"bomb", "CHARLIE", "C 0/3", warn_color, 190.0, 24, 13, 28.0)
+	_add_result_cluster(^"Root/Pages/ResultPage/MissionMetrics", "Loadout", &"weapon", "LOADOUT", "AK74M", metric_color, 200.0, 24, 13, 30.0)
 	for entry: Dictionary in [
-		{"name": "Time", "caption": "TIME"},
-		{"name": "Alpha", "caption": "A KEY"},
-		{"name": "Bravo", "caption": "B KEY"},
-		{"name": "Eliminations", "caption": "KILL"},
-		{"name": "Diagnosis", "caption": "DIAG"},
-		{"name": "Isolation", "caption": "ISO"},
-		{"name": "Detonator", "caption": "DET"},
-		{"name": "Deaths", "caption": "DEATH"},
-		{"name": "Restarts", "caption": "RESET"},
-		{"name": "Record", "caption": "BEST"},
+		{"name": "Time", "caption": "TIME", "icon": &"time"},
+		{"name": "Alpha", "caption": "A KEY", "icon": &"objective"},
+		{"name": "Bravo", "caption": "B KEY", "icon": &"objective"},
+		{"name": "Eliminations", "caption": "KILL", "icon": &"kills"},
+		{"name": "Diagnosis", "caption": "DIAG", "icon": &"bomb"},
+		{"name": "Isolation", "caption": "ISO", "icon": &"bomb"},
+		{"name": "Detonator", "caption": "DET", "icon": &"bomb"},
+		{"name": "Deaths", "caption": "DEATH", "icon": &"deaths"},
+		{"name": "Restarts", "caption": "RESET", "icon": &"restart"},
+		{"name": "Record", "caption": "BEST", "icon": &"rank"},
 	]:
-		_add_result_cluster(^"Root/Pages/ResultPage/Breakdown", String(entry["name"]), String(entry["caption"]), "0", metric_color, 86.0, 19, 11)
+		_add_result_cluster(^"Root/Pages/ResultPage/Breakdown", String(entry["name"]), StringName(entry["icon"]), String(entry["caption"]), "0", metric_color, 154.0, 19, 11, 22.0)
 
 
 func _clear_result_container(path: NodePath) -> void:
@@ -2268,15 +2298,29 @@ func _clear_result_container(path: NodePath) -> void:
 		child.free()
 
 
-func _add_result_cluster(path: NodePath, group_name: String, caption: String, value: String, color: Color, min_width: float, value_size: int, caption_size: int) -> void:
+func _add_result_cluster(path: NodePath, group_name: String, icon_kind: StringName, caption: String, value: String, color: Color, min_width: float, value_size: int, caption_size: int, icon_size: float) -> void:
 	var parent := get_node_or_null(path)
 	if parent == null:
 		return
-	var group := VBoxContainer.new()
+	var group := HBoxContainer.new()
 	group.name = group_name
 	group.custom_minimum_size = Vector2(min_width, 0.0)
 	group.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	group.add_theme_constant_override("separation", -1)
+	group.add_theme_constant_override("separation", 8)
+	group.set_meta("result_metric_id", group_name)
+	group.set_meta("icon_kind", String(icon_kind))
+	var icon := TextureRect.new()
+	icon.name = "Icon"
+	icon.custom_minimum_size = Vector2(icon_size, icon_size)
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.texture = _result_icon(icon_kind)
+	icon.modulate = color
+	group.add_child(icon)
+	var stack := VBoxContainer.new()
+	stack.name = "Stack"
+	stack.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	stack.add_theme_constant_override("separation", -1)
 	var value_label := Label.new()
 	value_label.name = "Value"
 	value_label.text = value
@@ -2292,13 +2336,41 @@ func _add_result_cluster(path: NodePath, group_name: String, caption: String, va
 	caption_label.clip_text = false
 	caption_label.add_theme_font_size_override("font_size", caption_size)
 	caption_label.add_theme_color_override("font_color", Color(0.62, 0.7, 0.71, 1.0))
-	group.add_child(value_label)
-	group.add_child(caption_label)
+	stack.add_child(value_label)
+	stack.add_child(caption_label)
+	group.add_child(stack)
 	parent.add_child(group)
 
 
+func _result_icon(kind: StringName) -> Texture2D:
+	var path := String(RESULT_ICON_PATHS.get(kind, ""))
+	if path.is_empty():
+		return null
+	return load(path) as Texture2D
+
+
+func _configure_result_action_buttons() -> void:
+	var buttons := {
+		^"Root/Pages/ResultPage/Menu/ReplayButton": &"restart",
+		^"Root/Pages/ResultPage/Menu/RestartButton": &"restart",
+		^"Root/Pages/ResultPage/Menu/HomeButton": &"home",
+	}
+	for path: NodePath in buttons.keys():
+		var button := get_node_or_null(path) as Button
+		if button == null:
+			continue
+		button.icon = _result_icon(buttons[path])
+		button.icon_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		button.expand_icon = false
+
+
 func _result_value(path: NodePath) -> Label:
-	return get_node_or_null(path) as Label
+	var node := get_node_or_null(path)
+	if node is Label:
+		return node as Label
+	if node != null:
+		return node.find_child("Value", true, false) as Label
+	return null
 
 
 func _set_result_value(path: NodePath, text: String, color := Color(-1.0, -1.0, -1.0, -1.0)) -> void:
@@ -2308,6 +2380,13 @@ func _set_result_value(path: NodePath, text: String, color := Color(-1.0, -1.0, 
 	label.text = text
 	if color.a >= 0.0:
 		label.add_theme_color_override("font_color", color)
+
+
+func _set_result_caption(path: NodePath, text: String) -> void:
+	var node := get_node_or_null(path)
+	var label := node.find_child("Caption", true, false) as Label if node != null else null
+	if label != null:
+		label.text = text
 
 
 func _result_time(seconds: int) -> String:
@@ -2324,10 +2403,16 @@ func _result_cluster_snapshot(path: NodePath) -> Array[Dictionary]:
 		if group == null:
 			continue
 		var value := group.get_node_or_null("Value") as Label
+		if value == null:
+			value = group.find_child("Value", true, false) as Label
 		var caption := group.get_node_or_null("Caption") as Label
+		if caption == null:
+			caption = group.find_child("Caption", true, false) as Label
 		output.append({
 			"path": str(group.get_path()),
 			"type": group.get_class(),
+			"result_metric_id": String(group.get_meta("result_metric_id", "")),
+			"icon_kind": String(group.get_meta("icon_kind", "")),
 			"value": value.text if value != null else "",
 			"caption": caption.text if caption != null else "",
 			"rect": group.get_global_rect(),
@@ -2347,38 +2432,38 @@ func _show_result(result: StringName) -> void:
 	var remaining := int(snapshot.get("remaining_seconds", 0))
 	var completion := int(snapshot.get("completion_seconds", 0))
 	var rank := int(snapshot.get("leaderboard_rank", 0))
-	var rank_text := "—" if rank <= 0 else "#%d" % rank
+	var rank_text := "--" if rank <= 0 else "#%d" % rank
 	var cyan := Color(0.2, 0.92, 0.82, 1.0)
 	var amber := Color(0.9, 0.75, 0.38, 1.0)
 	var red := Color(1.0, 0.27, 0.18, 1.0)
 	$Root/Pages/ResultPage/Reason.text = "ROCKET BAY PRESERVED  •  DETONATOR REMOVED" if success else "DETONATION CONFIRMED  •  KESTREL RIDGE LOST"
-	$Root/Pages/ResultPage/Primary/TimeGroup/Value.text = _result_time(completion)
-	$Root/Pages/ResultPage/Primary/TimeGroup/Caption.text = "COMPLETION" if success else "ELAPSED"
-	$Root/Pages/ResultPage/Primary/ScoreGroup/Value.text = "%d" % int(snapshot.get("score", 0))
-	$Root/Pages/ResultPage/Primary/RankGroup/Value.text = rank_text
-	$Root/Pages/ResultPage/Primary/RankGroup/Caption.text = "LOCAL RECORD" if success else "RECENT RUN"
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Remaining/Value", _result_time(remaining), amber)
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Eliminations/Value", "%d" % int(snapshot.get("eliminations", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Deaths/Value", "%d" % int(snapshot.get("deaths", 0)), red)
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Restarts/Value", "%d" % int(snapshot.get("restart_count", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Alpha/Value", "A %s" % ("SECURED" if snapshot.get("alpha_captured", false) else "HOSTILE"), cyan if snapshot.get("alpha_captured", false) else red)
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Bravo/Value", "B %s" % ("SECURED" if snapshot.get("bravo_captured", false) else "HOSTILE"), cyan if snapshot.get("bravo_captured", false) else red)
+	_set_result_value(^"Root/Pages/ResultPage/Primary/TimeGroup", _result_time(completion))
+	_set_result_caption(^"Root/Pages/ResultPage/Primary/TimeGroup", "COMPLETION" if success else "ELAPSED")
+	_set_result_value(^"Root/Pages/ResultPage/Primary/ScoreGroup", "%d" % int(snapshot.get("score", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/Primary/RankGroup", rank_text)
+	_set_result_caption(^"Root/Pages/ResultPage/Primary/RankGroup", "LOCAL RECORD" if success else "RECENT RUN")
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Remaining", _result_time(remaining), amber)
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Eliminations", "%d" % int(snapshot.get("eliminations", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Deaths", "%d" % int(snapshot.get("deaths", 0)), red)
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Restarts", "%d" % int(snapshot.get("restart_count", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Alpha", "A %s" % ("SECURED" if snapshot.get("alpha_captured", false) else "HOSTILE"), cyan if snapshot.get("alpha_captured", false) else red)
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Bravo", "B %s" % ("SECURED" if snapshot.get("bravo_captured", false) else "HOSTILE"), cyan if snapshot.get("bravo_captured", false) else red)
 	var completed_stages := 0
 	for stage_key: String in ["diagnosis", "power_isolation", "detonator_removal"]:
 		if int(components.get(stage_key, 0)) > 0:
 			completed_stages += 1
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Charlie/Value", "C %d/3" % completed_stages, cyan if completed_stages >= 3 else amber)
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Loadout/Value", String(snapshot.get("selected_loadout", &"ak74m")).to_upper())
-	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Time/Value", "%+d" % int(components.get("time", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Alpha/Value", "%+d" % int(components.get("alpha", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Bravo/Value", "%+d" % int(components.get("bravo", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Eliminations/Value", "%+d" % int(components.get("eliminations", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Diagnosis/Value", "%+d" % int(components.get("diagnosis", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Isolation/Value", "%+d" % int(components.get("power_isolation", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Detonator/Value", "%+d" % int(components.get("detonator_removal", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Deaths/Value", "%+d" % int(components.get("deaths", 0)), red)
-	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Restarts/Value", "%+d" % int(components.get("checkpoint_restarts", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Record/Value", "%+.1fs" % float(snapshot.get("fastest_success_delta", 0.0)) if success and rank > 1 else "NEW BEST" if success else "—", cyan if success else amber)
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Charlie", "C %d/3" % completed_stages, cyan if completed_stages >= 3 else amber)
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Loadout", String(snapshot.get("selected_loadout", &"ak74m")).to_upper())
+	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Time", "%+d" % int(components.get("time", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Alpha", "%+d" % int(components.get("alpha", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Bravo", "%+d" % int(components.get("bravo", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Eliminations", "%+d" % int(components.get("eliminations", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Diagnosis", "%+d" % int(components.get("diagnosis", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Isolation", "%+d" % int(components.get("power_isolation", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Detonator", "%+d" % int(components.get("detonator_removal", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Deaths", "%+d" % int(components.get("deaths", 0)), red)
+	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Restarts", "%+d" % int(components.get("checkpoint_restarts", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/Breakdown/Record", "%+.1fs" % float(snapshot.get("fastest_success_delta", 0.0)) if success and rank > 1 else "NEW BEST" if success else "--", cyan if success else amber)
 	var retry_button := $Root/Pages/ResultPage/Menu/RestartButton as Button
 	retry_button.visible = not success and remaining > 0 and (not (mission.get("deployment_snapshot") as Dictionary).is_empty() or int(mission.get("checkpoint_version")) > 0)
 	_show_page(STATE_SUCCESS_RESULT if success else STATE_FAILURE_RESULT, &"terminal_presentation_completed", &"terminal")
@@ -2396,23 +2481,23 @@ func _prime_terminal_result_page(result: StringName) -> void:
 	$Root/Pages/ResultPage/Outcome.text = "MISSION COMPLETE" if success else "MISSION FAILED"
 	$Root/Pages/ResultPage/Outcome.modulate = Color(0.2, 0.92, 0.82) if success else Color(1.0, 0.27, 0.18)
 	$Root/Pages/ResultPage/Reason.text = "ROCKET BAY PRESERVED  •  DETONATOR REMOVED" if success else "DETONATION CONFIRMED  •  KESTREL RIDGE LOST"
-	$Root/Pages/ResultPage/Primary/TimeGroup/Value.text = _result_time(completion)
-	$Root/Pages/ResultPage/Primary/TimeGroup/Caption.text = "COMPLETION" if success else "ELAPSED"
-	$Root/Pages/ResultPage/Primary/ScoreGroup/Value.text = "%d" % int(snapshot.get("score", 0))
-	$Root/Pages/ResultPage/Primary/RankGroup/Value.text = "—" if int(snapshot.get("leaderboard_rank", 0)) <= 0 else "#%d" % int(snapshot.get("leaderboard_rank", 0))
-	$Root/Pages/ResultPage/Primary/RankGroup/Caption.text = "LOCAL RECORD" if success else "RECENT RUN"
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Remaining/Value", _result_time(remaining), amber)
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Eliminations/Value", "%d" % int(snapshot.get("eliminations", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Deaths/Value", "%d" % int(snapshot.get("deaths", 0)), red)
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Restarts/Value", "%d" % int(snapshot.get("restart_count", 0)))
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Alpha/Value", "A %s" % ("SECURED" if snapshot.get("alpha_captured", false) else "HOSTILE"), cyan if snapshot.get("alpha_captured", false) else red)
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Bravo/Value", "B %s" % ("SECURED" if snapshot.get("bravo_captured", false) else "HOSTILE"), cyan if snapshot.get("bravo_captured", false) else red)
+	_set_result_value(^"Root/Pages/ResultPage/Primary/TimeGroup", _result_time(completion))
+	_set_result_caption(^"Root/Pages/ResultPage/Primary/TimeGroup", "COMPLETION" if success else "ELAPSED")
+	_set_result_value(^"Root/Pages/ResultPage/Primary/ScoreGroup", "%d" % int(snapshot.get("score", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/Primary/RankGroup", "--" if int(snapshot.get("leaderboard_rank", 0)) <= 0 else "#%d" % int(snapshot.get("leaderboard_rank", 0)))
+	_set_result_caption(^"Root/Pages/ResultPage/Primary/RankGroup", "LOCAL RECORD" if success else "RECENT RUN")
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Remaining", _result_time(remaining), amber)
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Eliminations", "%d" % int(snapshot.get("eliminations", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Deaths", "%d" % int(snapshot.get("deaths", 0)), red)
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Restarts", "%d" % int(snapshot.get("restart_count", 0)))
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Alpha", "A %s" % ("SECURED" if snapshot.get("alpha_captured", false) else "HOSTILE"), cyan if snapshot.get("alpha_captured", false) else red)
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Bravo", "B %s" % ("SECURED" if snapshot.get("bravo_captured", false) else "HOSTILE"), cyan if snapshot.get("bravo_captured", false) else red)
 	var completed_stages := 0
 	for stage_key: String in ["diagnosis", "power_isolation", "detonator_removal"]:
 		if int(components.get(stage_key, 0)) > 0:
 			completed_stages += 1
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Charlie/Value", "C %d/3" % completed_stages, cyan if completed_stages >= 3 else amber)
-	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Loadout/Value", String(snapshot.get("selected_loadout", &"ak74m")).to_upper())
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Charlie", "C %d/3" % completed_stages, cyan if completed_stages >= 3 else amber)
+	_set_result_value(^"Root/Pages/ResultPage/MissionMetrics/Loadout", String(snapshot.get("selected_loadout", &"ak74m")).to_upper())
 
 
 func _mcp_state() -> Dictionary:
@@ -2464,9 +2549,9 @@ func _mcp_state() -> Dictionary:
 			"visible": app_state in [STATE_SUCCESS_RESULT, STATE_FAILURE_RESULT],
 			"outcome": $Root/Pages/ResultPage/Outcome.text,
 			"reason": $Root/Pages/ResultPage/Reason.text,
-			"time": $Root/Pages/ResultPage/Primary/TimeGroup/Value.text,
-			"score": $Root/Pages/ResultPage/Primary/ScoreGroup/Value.text,
-			"rank": $Root/Pages/ResultPage/Primary/RankGroup/Value.text,
+			"time": (_result_value(^"Root/Pages/ResultPage/Primary/TimeGroup") as Label).text,
+			"score": (_result_value(^"Root/Pages/ResultPage/Primary/ScoreGroup") as Label).text,
+			"rank": (_result_value(^"Root/Pages/ResultPage/Primary/RankGroup") as Label).text,
 			"authoritative_snapshot": mission.call(&"result_snapshot"),
 			"hierarchy": {
 				"primary_container_type": ($Root/Pages/ResultPage/Primary as Control).get_class(),

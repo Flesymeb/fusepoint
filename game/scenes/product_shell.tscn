@@ -722,7 +722,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0.004, 0.012, 0.016, 0.62)
+color = Color(0.004, 0.012, 0.016, 0.36)
 [node name="Outcome" type="Label" parent="Root/Pages/ResultPage"]
 offset_left = 72.0
 offset_top = 44.0
@@ -797,7 +797,7 @@ theme_override_colors/font_color = Color(0.62, 0.7, 0.71, 1)
 theme_override_font_sizes/font_size = 13
 text = "LOCAL RANK"
 
-[node name="MissionMetrics" type="HBoxContainer" parent="Root/Pages/ResultPage"]
+[node name="MissionMetrics" type="GridContainer" parent="Root/Pages/ResultPage"]
 offset_left = 72.0
 offset_top = 300.0
 offset_right = 1208.0
@@ -813,7 +813,7 @@ offset_bottom = 448.0
 theme_override_colors/font_color = Color(0.62, 0.7, 0.71, 1)
 theme_override_font_sizes/font_size = 13
 text = "SCORE COMPONENTS"
-[node name="Breakdown" type="HBoxContainer" parent="Root/Pages/ResultPage"]
+[node name="Breakdown" type="GridContainer" parent="Root/Pages/ResultPage"]
 offset_left = 72.0
 offset_top = 454.0
 offset_right = 1208.0
@@ -829,12 +829,12 @@ theme_override_constants/separation = 14
 [node name="ReplayButton" type="Button" parent="Root/Pages/ResultPage/Menu"]
 custom_minimum_size = Vector2(260, 52)
 layout_mode = 2
-text = "REPLAY OPERATION"
+text = "REPLAY"
 [node name="RestartButton" type="Button" parent="Root/Pages/ResultPage/Menu"]
 visible = false
 custom_minimum_size = Vector2(260, 52)
 layout_mode = 2
-text = "RESTART LAST CHECKPOINT"
+text = "RESTART"
 [node name="HomeButton" type="Button" parent="Root/Pages/ResultPage/Menu"]
 custom_minimum_size = Vector2(180, 52)
 layout_mode = 2

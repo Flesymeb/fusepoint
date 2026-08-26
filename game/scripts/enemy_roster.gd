@@ -697,6 +697,8 @@ func _prepared_combat_stage_for(enemy: FusepointEnemyAgent, staged_index: int) -
 
 
 func _advance_combat_stage_for(enemy: FusepointEnemyAgent, staged_index: int) -> StringName:
+	if enemy.region_id == &"alpha" and staged_index == 0:
+		return &"nonlethal_player_hit"
 	if staged_index == 2:
 		return &"lethal_player_hit"
 	if enemy.tactical_role == &"defender" and staged_index == 0:

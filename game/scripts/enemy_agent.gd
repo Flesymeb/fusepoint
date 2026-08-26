@@ -506,6 +506,20 @@ func _prime_target_for_fixture() -> void:
 
 func _force_fixture_enemy_shot(setup_generation: int, mode: StringName, lethal: bool) -> Dictionary:
 	_prime_target_for_fixture()
+	var requires_player_hit := mode in [&"nonlethal_player_hit", &"lethal_player_hit"]
+	var fixture_original_position := global_position
+	var fixture_original_reserved := reserved_position
+	_pending_fixture_shot_context = {
+		"fixture_authority": &"tester_encounter_advance_authoritative_enemy_shot",
+		"fixture_mode": mode,
+		"setup_generation": setup_generation,
+		"lethal_requested": lethal,
+		"fixture_direct_damage": false,
+	}
+	var hit_lane_receipt := _prepare_fixture_player_hit_lane(mode) if requires_player_hit else {
+		"requested": false,
+		"reason": &"negative_or_generic_fire_mode",
+	}
 	if rounds_remaining <= 0:
 		rounds_remaining = 1
 	_reaction_remaining = 0.0
@@ -519,23 +533,29 @@ func _force_fixture_enemy_shot(setup_generation: int, mode: StringName, lethal: 
 			attack_damage = maxf((_target_health as FPSHealth).current_health + 1.0, original_damage)
 		elif "health" in _target_health:
 			attack_damage = maxf(float(_target_health.get("health")) + 1.0, original_damage)
-	_pending_fixture_shot_context = {
-		"fixture_authority": &"tester_encounter_advance_authoritative_enemy_shot",
-		"fixture_mode": mode,
-		"setup_generation": setup_generation,
-		"lethal_requested": lethal,
-		"fixture_direct_damage": false,
-	}
 	var attack := force_attack_if_ready()
 	_pending_fixture_shot_context.clear()
+	if requires_player_hit:
+		global_position = fixture_original_position
+		reserved_position = fixture_original_reserved
+		var restore_receipt := resolve_floor_support(&"fixture_player_hit_lane_post_shot_restore")
+		hit_lane_receipt["post_shot_restore"] = restore_receipt
 	attack_damage = original_damage
 	attack["fixture_authority"] = &"tester_encounter_advance_authoritative_enemy_shot"
 	attack["fixture_mode"] = mode
 	attack["setup_generation"] = setup_generation
 	attack["lethal_requested"] = lethal
+	attack["fixture_hit_lane"] = hit_lane_receipt
 	attack["damage_causality"] = &"enemy_shot_event" if attack.get("applied", false) == true else &"no_fixture_damage"
 	attack["fixture_direct_damage"] = false
-	attack["accepted_shot_or_valid_negative"] = attack.get("accepted", false) == true and StringName(attack.get("result", &"unknown")) in [&"hit", &"blocked", &"miss"]
+	attack["accepted_shot_or_valid_negative"] = (
+		attack.get("accepted", false) == true
+		and StringName(attack.get("result", &"unknown")) == &"hit"
+		and attack.get("applied", false) == true
+	) if requires_player_hit else (
+		attack.get("accepted", false) == true
+		and StringName(attack.get("result", &"unknown")) in [&"hit", &"blocked", &"miss"]
+	)
 	_last_pre_shot_authorization = {
 		"accepted": attack.get("accepted", false) == true,
 		"fixture_mode": mode,
@@ -550,6 +570,76 @@ func _force_fixture_enemy_shot(setup_generation: int, mode: StringName, lethal: 
 		"failure_reason": attack.get("reason", ""),
 	}
 	return attack
+
+
+func _prepare_fixture_player_hit_lane(mode: StringName) -> Dictionary:
+	var receipt := {
+		"requested": true,
+		"resolved": false,
+		"accepted": false,
+		"mode": mode,
+		"attempts": [],
+		"release_guard": &"OS.is_debug_build",
+	}
+	if not OS.is_debug_build():
+		receipt["failure_reason"] = &"release_build_forbidden"
+		return receipt
+	if _mission_target == null or not is_instance_valid(_mission_target):
+		receipt["failure_reason"] = &"target_unavailable"
+		return receipt
+	var original_position := global_position
+	var target_position := _mission_target.global_position
+	var basis := _mission_target.global_transform.basis
+	var axes: Array[Vector3] = [
+		-basis.z,
+		basis.z,
+		basis.x,
+		-basis.x,
+		Vector3.FORWARD,
+		Vector3.BACK,
+		Vector3.RIGHT,
+		Vector3.LEFT,
+	]
+	var distances: Array[float] = [3.2, 4.8, 6.4]
+	var lane_offset := posmod(stable_id.get_slice("-", 2).to_int() - 1, axes.size())
+	for axis_index: int in axes.size():
+		var axis := axes[posmod(axis_index + lane_offset, axes.size())]
+		var direction := Vector3(axis.x, 0.0, axis.z)
+		if direction.length_squared() <= 0.001:
+			continue
+		direction = direction.normalized()
+		for distance: float in distances:
+			var candidate := target_position + direction * distance
+			candidate.y = original_position.y
+			global_position = candidate
+			reserved_position = Vector3(candidate.x, reserved_position.y, candidate.z)
+			var floor_support := resolve_floor_support(&"fixture_player_hit_lane")
+			_face_target(1.0)
+			var authorization := _pre_shot_authorization()
+			var attempt := {
+				"candidate": global_position,
+				"distance": distance,
+				"floor_support": floor_support.get("accepted", false) == true,
+				"authorization": authorization,
+			}
+			(receipt["attempts"] as Array).append(attempt)
+			if floor_support.get("accepted", false) == true and authorization.get("accepted", false) == true:
+				receipt.merge({
+					"resolved": true,
+					"accepted": true,
+					"selected_position": global_position,
+					"selected_distance": distance,
+					"pre_shot_authorization": authorization,
+					"failure_reason": &"",
+				}, true)
+				return receipt
+	global_position = original_position
+	resolve_floor_support(&"fixture_player_hit_lane_restore")
+	receipt.merge({
+		"resolved": true,
+		"failure_reason": &"clear_authorized_lane_unavailable",
+	}, true)
+	return receipt
 
 
 func tester_commit_player_kill_evidence(setup_generation: int, reason: StringName) -> Dictionary:
@@ -1413,13 +1503,23 @@ func _pre_shot_authorization() -> Dictionary:
 	var muzzle_clear := _ray_reaches_target(_muzzle.global_position, endpoint)
 	var reciprocal_clear := _reverse_ray_reaches_self(endpoint, _eye.global_position)
 	var muzzle_occupancy := _muzzle_occupancy_snapshot()
+	var fixture_mode := StringName(_pending_fixture_shot_context.get("fixture_mode", &""))
+	var fixture_direct_hit_lane := fixture_mode in [&"nonlethal_player_hit", &"lethal_player_hit"]
+	var reciprocal_authorized: bool = reciprocal_clear or (
+		fixture_direct_hit_lane
+		and static_blocker_count == 0
+		and eye_clear
+		and muzzle_clear
+		and muzzle_occupancy.get("clear", false) == true
+	)
 	receipt["body_clear"] = static_blocker_count == 0
 	receipt["static_blocker_count"] = static_blocker_count
 	receipt["eye_clear"] = eye_clear
 	receipt["muzzle_clear"] = muzzle_clear and muzzle_occupancy.get("clear", false) == true
 	receipt["muzzle_occupancy"] = muzzle_occupancy
 	receipt["reciprocal_clear"] = reciprocal_clear
-	receipt["accepted"] = static_blocker_count == 0 and eye_clear and muzzle_clear and muzzle_occupancy.get("clear", false) == true and reciprocal_clear
+	receipt["reciprocal_fixture_direct_lane"] = reciprocal_authorized and not reciprocal_clear
+	receipt["accepted"] = static_blocker_count == 0 and eye_clear and muzzle_clear and muzzle_occupancy.get("clear", false) == true and reciprocal_authorized
 	if static_blocker_count > 0:
 		receipt["reason"] = &"body_clearance_blocked"
 	elif not eye_clear:
@@ -1427,7 +1527,7 @@ func _pre_shot_authorization() -> Dictionary:
 	elif not muzzle_clear or muzzle_occupancy.get("clear", false) != true:
 		receipt["reason"] = &"muzzle_occluded"
 	elif not reciprocal_clear:
-		receipt["reason"] = &"reciprocal_occlusion_blocked"
+		receipt["reason"] = &"fixture_direct_hit_lane_authorized" if reciprocal_authorized else &"reciprocal_occlusion_blocked"
 	else:
 		receipt["reason"] = &"authorized"
 	return receipt
