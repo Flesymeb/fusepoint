@@ -650,10 +650,11 @@ func get_component_state() -> Dictionary:
 	var incompatible_fallback := _is_incompatible_rifle_fallback(current_state, clip_name)
 	var contact_report := rifle_contact_report()
 	var visible_rifle_ready: bool = contact_report.get("accepted", false) == true
-	var family_compatible := visible_rifle_ready and not incompatible_fallback and (not pistol_source_clip or component_socket_interim)
+	var authored_rifle_clip := AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE and not pistol_source_clip
+	var family_compatible := visible_rifle_ready and authored_rifle_clip and not incompatible_fallback
 	var locomotion_source_requires_overlay := current_state in [MotionState.WALK, MotionState.RUN] and clip_name in ["Walk", "Jog_Fwd"]
 	var socket_contact_status := &"accepted" if contact_report.get("accepted", false) == true else StringName(contact_report.get("failure_reason", &"socket_contact_unaccepted"))
-	var compatibility_disposition := _compatibility_disposition(pistol_source_clip, component_socket_interim, incompatible_fallback, family_compatible, locomotion_source_requires_overlay)
+	var compatibility_disposition := _compatibility_disposition(pistol_source_clip, component_socket_interim, incompatible_fallback, family_compatible, visible_rifle_ready, locomotion_source_requires_overlay)
 	return {
 		"skin_id": current_skin_id,
 		"state": state_name(),
@@ -675,13 +676,13 @@ func get_component_state() -> Dictionary:
 		"weapon_family_compatible": family_compatible,
 		"compatibility_disposition": compatibility_disposition,
 		"raw_source_clip_weapon_label": &"pistol_named_component_clip" if pistol_source_clip else &"unlabeled_locomotion_or_reaction_clip",
-		"genuine_authored_rifle_clip": AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE and not pistol_source_clip,
+		"genuine_authored_rifle_clip": authored_rifle_clip,
 		"weapon_socket_contact_status": socket_contact_status,
 		"binding_strategy": {
 			"selected_strategy": &"product_wrapper_boneattachment_sync_with_component_m4_socket_stock_height_baseline",
 			"rifle_ready_authored_clips_available": AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE,
 			"authored_rifle_clip_binding_status": &"missing_required_asset",
-			"visible_rifle_ready_binding": family_compatible,
+			"visible_rifle_ready_binding": visible_rifle_ready,
 			"source_clip_truthful": true,
 			"locomotion_source_clip_requires_overlay_proof": locomotion_source_requires_overlay,
 			"interim_issue_open": not AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE,
@@ -728,13 +729,14 @@ func _compatibility_disposition(
 	component_socket_interim: bool,
 	incompatible_fallback: bool,
 	family_compatible: bool,
+	visible_rifle_ready: bool,
 	locomotion_source_requires_overlay: bool
 ) -> StringName:
 	if pistol_source_clip and not component_socket_interim:
 		return &"pistol_source_clip_rejected"
 	if incompatible_fallback:
 		return &"incompatible_source_clip_rejected"
-	if family_compatible and component_socket_interim:
+	if visible_rifle_ready and component_socket_interim:
 		return &"component_m4_socket_interim_missing_authored_rifle_clips"
 	if family_compatible and locomotion_source_requires_overlay:
 		return &"visible_two_hand_rifle_ready_locomotion_component_baseline"

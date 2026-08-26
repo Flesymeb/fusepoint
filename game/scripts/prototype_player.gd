@@ -141,12 +141,12 @@ func _ready() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not gameplay_input_enabled:
-		return
 	# Input.mouse_mode is the engine authority. Reconcile the retained player
 	# flag at the raw-input boundary so a shell/page lifecycle transition cannot
 	# leave captured motion gated behind a stale internal boolean.
 	_reconcile_mouse_capture(&"raw_input")
+	if not gameplay_input_enabled:
+		return
 	if event is InputEventMouseButton:
 		var mouse_button := event as InputEventMouseButton
 		if mouse_button.pressed and mouse_button.button_index == MOUSE_BUTTON_LEFT and not _mouse_captured:
@@ -1094,6 +1094,19 @@ func set_gameplay_input_enabled(enabled: bool) -> void:
 	else:
 		_sync_grounded_foley(&"gameplay_disabled")
 		_release_mouse()
+
+
+func force_mouse_capture_reconcile(source: StringName = &"external_lifecycle_sync") -> Dictionary:
+	var observed := _reconcile_mouse_capture(source)
+	return {
+		"source": source,
+		"mouse_captured": _mouse_captured,
+		"engine_mouse_captured": observed,
+		"input_mouse_mode": Input.mouse_mode,
+		"gameplay_input_enabled": gameplay_input_enabled,
+		"sync_count": _mouse_capture_sync_serial,
+		"last_sync_receipt": _last_mouse_capture_sync_receipt,
+	}
 
 
 func prepare_new_mission() -> void:

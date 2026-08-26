@@ -742,12 +742,11 @@ theme_override_constants/outline_size = 3
 theme_override_font_sizes/font_size = 16
 text = "ROCKET BAY PRESERVED  •  DETONATOR REMOVED"
 
-[node name="Primary" type="GridContainer" parent="Root/Pages/ResultPage"]
+[node name="Primary" type="HBoxContainer" parent="Root/Pages/ResultPage"]
 offset_left = 72.0
 offset_top = 164.0
 offset_right = 1208.0
 offset_bottom = 274.0
-columns = 3
 theme_override_constants/h_separation = 72
 
 [node name="TimeGroup" type="VBoxContainer" parent="Root/Pages/ResultPage/Primary"]
@@ -798,57 +797,13 @@ theme_override_colors/font_color = Color(0.62, 0.7, 0.71, 1)
 theme_override_font_sizes/font_size = 13
 text = "LOCAL RANK"
 
-[node name="MissionMetrics" type="GridContainer" parent="Root/Pages/ResultPage"]
+[node name="MissionMetrics" type="HBoxContainer" parent="Root/Pages/ResultPage"]
 offset_left = 72.0
 offset_top = 300.0
 offset_right = 1208.0
 offset_bottom = 392.0
-columns = 4
 theme_override_constants/h_separation = 34
 theme_override_constants/v_separation = 12
-[node name="Remaining" type="Label" parent="Root/Pages/ResultPage/MissionMetrics"]
-custom_minimum_size = Vector2(230, 0)
-layout_mode = 2
-theme_override_font_sizes/font_size = 17
-text = "04:18  REMAINING"
-[node name="Eliminations" type="Label" parent="Root/Pages/ResultPage/MissionMetrics"]
-custom_minimum_size = Vector2(190, 0)
-layout_mode = 2
-theme_override_font_sizes/font_size = 17
-text = "12  ELIMINATIONS"
-[node name="Deaths" type="Label" parent="Root/Pages/ResultPage/MissionMetrics"]
-custom_minimum_size = Vector2(170, 0)
-layout_mode = 2
-theme_override_font_sizes/font_size = 17
-text = "0  DEATHS"
-[node name="Restarts" type="Label" parent="Root/Pages/ResultPage/MissionMetrics"]
-custom_minimum_size = Vector2(180, 0)
-layout_mode = 2
-theme_override_font_sizes/font_size = 17
-text = "0  RESTARTS"
-[node name="Alpha" type="Label" parent="Root/Pages/ResultPage/MissionMetrics"]
-custom_minimum_size = Vector2(230, 0)
-layout_mode = 2
-theme_override_colors/font_color = Color(0.2, 0.92, 0.82, 1)
-theme_override_font_sizes/font_size = 16
-text = "A  •  ALPHA  SECURED"
-[node name="Bravo" type="Label" parent="Root/Pages/ResultPage/MissionMetrics"]
-custom_minimum_size = Vector2(190, 0)
-layout_mode = 2
-theme_override_colors/font_color = Color(0.2, 0.92, 0.82, 1)
-theme_override_font_sizes/font_size = 16
-text = "B  •  BRAVO  SECURED"
-[node name="Charlie" type="Label" parent="Root/Pages/ResultPage/MissionMetrics"]
-custom_minimum_size = Vector2(270, 0)
-layout_mode = 2
-theme_override_colors/font_color = Color(0.9, 0.75, 0.38, 1)
-theme_override_font_sizes/font_size = 16
-text = "C  •  3 / 3 DEFUSAL"
-[node name="Loadout" type="Label" parent="Root/Pages/ResultPage/MissionMetrics"]
-custom_minimum_size = Vector2(180, 0)
-layout_mode = 2
-theme_override_font_sizes/font_size = 16
-text = "AK74M  LOADOUT"
 
 [node name="BreakdownTitle" type="Label" parent="Root/Pages/ResultPage"]
 offset_left = 72.0
@@ -858,85 +813,13 @@ offset_bottom = 448.0
 theme_override_colors/font_color = Color(0.62, 0.7, 0.71, 1)
 theme_override_font_sizes/font_size = 13
 text = "SCORE COMPONENTS"
-[node name="Breakdown" type="GridContainer" parent="Root/Pages/ResultPage"]
+[node name="Breakdown" type="HBoxContainer" parent="Root/Pages/ResultPage"]
 offset_left = 72.0
 offset_top = 454.0
 offset_right = 1208.0
 offset_bottom = 554.0
-columns = 10
 theme_override_constants/h_separation = 16
 theme_override_constants/v_separation = 8
-
-[node name="TimeLabel" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-layout_mode = 2
-text = "TIME"
-[node name="TimeValue" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-custom_minimum_size = Vector2(92, 0)
-layout_mode = 2
-text = "+2580"
-[node name="AlphaLabel" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-layout_mode = 2
-text = "ALPHA"
-[node name="AlphaValue" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-custom_minimum_size = Vector2(92, 0)
-layout_mode = 2
-text = "+500"
-[node name="BravoLabel" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-layout_mode = 2
-text = "BRAVO"
-[node name="BravoValue" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-custom_minimum_size = Vector2(92, 0)
-layout_mode = 2
-text = "+500"
-[node name="ElimsLabel" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-layout_mode = 2
-text = "ELIMS"
-[node name="ElimsValue" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-custom_minimum_size = Vector2(92, 0)
-layout_mode = 2
-text = "+1200"
-[node name="DiagnosisLabel" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-layout_mode = 2
-text = "DIAGNOSE"
-[node name="DiagnosisValue" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-custom_minimum_size = Vector2(92, 0)
-layout_mode = 2
-text = "+250"
-[node name="IsolationLabel" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-layout_mode = 2
-text = "ISOLATE"
-[node name="IsolationValue" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-custom_minimum_size = Vector2(92, 0)
-layout_mode = 2
-text = "+250"
-[node name="DetonatorLabel" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-layout_mode = 2
-text = "DETONATOR"
-[node name="DetonatorValue" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-custom_minimum_size = Vector2(92, 0)
-layout_mode = 2
-text = "+1000"
-[node name="DeathsLabel" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-layout_mode = 2
-text = "DEATHS"
-[node name="DeathsValue" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-custom_minimum_size = Vector2(92, 0)
-layout_mode = 2
-text = "0"
-[node name="RestartsLabel" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-layout_mode = 2
-text = "RESTARTS"
-[node name="RestartsValue" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-custom_minimum_size = Vector2(92, 0)
-layout_mode = 2
-text = "0"
-[node name="RecordLabel" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-layout_mode = 2
-text = "BEST Δ"
-[node name="RecordValue" type="Label" parent="Root/Pages/ResultPage/Breakdown"]
-custom_minimum_size = Vector2(92, 0)
-layout_mode = 2
-text = "—"
 [node name="Menu" type="HBoxContainer" parent="Root/Pages/ResultPage"]
 offset_left = 72.0
 offset_top = 610.0
