@@ -105,6 +105,7 @@ var _muzzle: Node3D
 var _presentation: Node
 var _death_audio: AudioStreamPlayer3D
 var _target_health: Node
+var _last_pre_shot_authorization: Dictionary = {}
 var _home_position := Vector3.ZERO
 var _has_home_position := false
 var _last_seen_target_position := Vector3.ZERO
@@ -1217,26 +1218,41 @@ func _drive_locomotion_presentation(state: StringName) -> void:
 
 func _perform_attack() -> Dictionary:
 	if not _is_facing_target():
-		return {
+		var facing_rejection := {
 			"applied": false,
 			"reason": "not_facing_target",
 			"facing_error_degrees": _facing_error_degrees(),
 		}
+		_last_pre_shot_authorization = _shot_authorization_receipt(false, String(facing_rejection["reason"]), {}, Vector3.ZERO, Vector3.ZERO)
+		return facing_rejection
+	if not _has_line_of_sight():
+		var sight_rejection := {
+			"applied": false,
+			"reason": "line_of_fire_blocked",
+			"facing_error_degrees": _facing_error_degrees(),
+		}
+		_last_pre_shot_authorization = _shot_authorization_receipt(false, String(sight_rejection["reason"]), {}, Vector3.ZERO, Vector3.ZERO)
+		return sight_rejection
 	if rounds_remaining <= 0:
 		_begin_reload()
-		return {"applied": false, "reason": "reload_started"}
+		var reload_rejection := {"applied": false, "reason": "reload_started"}
+		_last_pre_shot_authorization = _shot_authorization_receipt(false, String(reload_rejection["reason"]), {}, Vector3.ZERO, Vector3.ZERO)
+		return reload_rejection
 	_set_ai_state(AIState.FIRE)
 	_fire_pose_remaining = fire_pose_seconds
 	_attack_remaining = attack_interval
 	rounds_remaining -= 1
 	_attack_sequence += 1
 	_attack_attempts_on_current_target += 1
+	var committed_frame := Engine.get_process_frames()
+	var committed_usec := Time.get_ticks_usec()
 	var shot_id := "run-%06d:enemy:%s:%06d" % [run_epoch, name, _attack_sequence]
 	var shot_origin := _muzzle.global_position if _muzzle != null else global_position
 	var shot_endpoint := _target_aim_position(target) if target != null else shot_origin - global_basis.z
 	var shot_direction := shot_origin.direction_to(shot_endpoint)
 	var trace := _resolve_attack_trace(shot_origin, shot_endpoint)
 	var result := StringName(trace.get("result", &"miss"))
+	_last_pre_shot_authorization = _shot_authorization_receipt(true, "accepted_%s" % String(result), trace, shot_origin, shot_endpoint)
 	var receiver_path := String(_target_health.get_path()) if _target_health != null and is_instance_valid(_target_health) and _target_health.is_inside_tree() else ""
 	var receiver_type := StringName(_target_health.get_class()) if _target_health != null and is_instance_valid(_target_health) else &"none"
 	if _target_health != null and _target_health.has_method(&"apply_damage") and not _target_health is FPSHealth:
@@ -1246,6 +1262,8 @@ func _perform_attack() -> Dictionary:
 		"event_id": shot_id,
 		"shot_id": shot_id,
 		"run_epoch": run_epoch,
+		"committed_frame": committed_frame,
+		"committed_at_usec": committed_usec,
 		"source_team": attack_team,
 		"source_path": String(get_path()) if is_inside_tree() else "",
 		"damage": attack_damage,
@@ -1268,6 +1286,18 @@ func _perform_attack() -> Dictionary:
 		"health_authority": &"FPSHealth" if _target_health is FPSHealth else &"PrototypePlayer.health" if receiver_type == &"PrototypePlayer" else &"none",
 		"applied": false,
 		"reason": "resolved_%s" % String(result),
+		"authoritative_resolution": {
+			"single_event_id": shot_id,
+			"ammo_consumed_before_feedback": true,
+			"ammo_commit_count": 1,
+			"visibility_checked": true,
+			"facing_checked": true,
+			"static_world_occlusion_checked": true,
+			"trace_resolved_once": true,
+			"damage_resolved_once": result == &"hit",
+			"muzzle_origin_source": &"enemy_muzzle_socket" if _muzzle != null else &"enemy_root_fallback",
+			"pre_shot_authorization": _last_pre_shot_authorization.duplicate(true),
+		},
 	}
 	if result == &"hit" and target != null and _target_health != null:
 		report = _target_health.call("apply_damage", attack_damage, report)
@@ -1285,12 +1315,46 @@ func _perform_attack() -> Dictionary:
 		report["ammo_commit"] = 1
 		report["event_id"] = shot_id
 		report["shot_id"] = shot_id
+		report["committed_frame"] = committed_frame
+		report["committed_at_usec"] = committed_usec
 		report["receiver_path"] = receiver_path
 		report["receiver_type"] = receiver_type
 		report["health_authority"] = &"FPSHealth" if _target_health is FPSHealth else &"PrototypePlayer.health"
+		report["authoritative_resolution"] = {
+			"single_event_id": shot_id,
+			"ammo_consumed_before_feedback": true,
+			"ammo_commit_count": 1,
+			"visibility_checked": true,
+			"facing_checked": true,
+			"static_world_occlusion_checked": true,
+			"trace_resolved_once": true,
+			"damage_resolved_once": true,
+			"muzzle_origin_source": &"enemy_muzzle_socket" if _muzzle != null else &"enemy_root_fallback",
+			"pre_shot_authorization": _last_pre_shot_authorization.duplicate(true),
+		}
 	last_attack_report = report
 	attack_resolved.emit(report)
 	return report
+
+
+func _shot_authorization_receipt(accepted: bool, reason: String, trace: Dictionary, origin: Vector3, endpoint: Vector3) -> Dictionary:
+	return {
+		"accepted": accepted,
+		"reason": reason,
+		"frame": Engine.get_process_frames(),
+		"usec": Time.get_ticks_usec(),
+		"target_path": String(target.get_path()) if target != null and is_instance_valid(target) and target.is_inside_tree() else "",
+		"target_visible": _can_detect_target(target) if target != null and is_instance_valid(target) else false,
+		"facing_target": _is_facing_target(),
+		"facing_error_degrees": _facing_error_degrees(),
+		"rounds_remaining_before_commit": rounds_remaining + (1 if accepted else 0),
+		"muzzle_origin": origin,
+		"endpoint": endpoint,
+		"result": trace.get("result", &"not_resolved"),
+		"surface_kind": trace.get("surface_kind", &"unknown"),
+		"static_world_occlusion_checked": accepted,
+		"damage_permitted": accepted and StringName(trace.get("result", &"miss")) == &"hit",
+	}
 
 
 func _resolve_attack_trace(origin: Vector3, endpoint: Vector3) -> Dictionary:
@@ -1473,7 +1537,7 @@ func _on_damaged(event: Dictionary) -> void:
 		_set_ai_state(AIState.HURT)
 
 
-func receive_squad_alert(attacker: Node3D, threat_position: Vector3, source: FPSCombatEnemy) -> bool:
+func receive_squad_alert(attacker: Node3D, threat_position: Vector3, source: Node) -> bool:
 	if not is_physics_processing() or _health == null or _health.is_dead or source == null or source == self:
 		return false
 	if not _is_same_squad(source):
@@ -1507,18 +1571,21 @@ func _broadcast_squad_alert(event: Dictionary) -> void:
 	if attacker == null:
 		attacker = _find_target_near_threat(threat_position)
 	for node: Node in get_tree().get_nodes_in_group(squad_alert_group):
-		if not node is FPSCombatEnemy or node == self:
+		if node == self or not node.has_method(&"receive_squad_alert"):
 			continue
-		var ally := node as FPSCombatEnemy
-		if global_position.distance_to(ally.global_position) > squad_alert_radius:
+		var ally := node as Node3D
+		if ally == null or global_position.distance_to(ally.global_position) > squad_alert_radius:
 			continue
-		ally.receive_squad_alert(attacker, threat_position, self)
+		ally.call(&"receive_squad_alert", attacker, threat_position, self)
 
 
-func _is_same_squad(other: FPSCombatEnemy) -> bool:
-	if other == null or other._health == null or _health == null:
+func _is_same_squad(other: Node) -> bool:
+	if other == null or _health == null:
 		return false
-	return other._health.team == _health.team
+	var other_health := other.get("_health") as FPSHealth
+	if other_health == null:
+		return false
+	return other_health.team == _health.team
 
 
 func _on_died(event: Dictionary) -> void:

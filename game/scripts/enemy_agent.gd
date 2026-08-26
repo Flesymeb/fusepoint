@@ -1,5 +1,5 @@
 class_name FusepointEnemyAgent
-extends FPSCombatEnemy
+extends "res://systems/combat/core/fps_combat_enemy.gd"
 
 signal authoritative_enemy_event(event: Dictionary)
 
@@ -57,7 +57,6 @@ var reserved_position := Vector3.ZERO
 var _aim_pitch_degrees := 0.0
 var _upright_correction_count := 0
 var _route_reservation: Dictionary = {}
-var _last_pre_shot_authorization: Dictionary = {}
 var _pending_fixture_shot_context: Dictionary = {}
 var _last_progress_position := Vector3.ZERO
 var _stalled_seconds := 0.0

@@ -5,6 +5,7 @@ signal roster_ready(summary: Dictionary)
 signal roster_event_committed(event: Dictionary)
 
 const ENEMY_SCENE := preload("res://scenes/enemy_agent.tscn")
+const FPS_COMBAT_ENEMY_SCRIPT := preload("res://systems/combat/core/fps_combat_enemy.gd")
 const REGION_ORDER: Array[StringName] = [&"alpha", &"bravo", &"charlie"]
 const ACTOR_CAPSULE_RADIUS := 0.4
 const RESERVATION_CLEARANCE := 0.6
@@ -362,7 +363,7 @@ func _build_reservation_plan(nav_map: RID) -> Array[Dictionary]:
 		var source: Dictionary = ROSTER[index]
 		var entry := source.duplicate(true)
 		entry["index"] = index
-		entry["difficulty"] = FPSCombatEnemy.Difficulty.MEDIUM if index < 8 else FPSCombatEnemy.Difficulty.HARD
+		entry["difficulty"] = FPS_COMBAT_ENEMY_SCRIPT.Difficulty.MEDIUM if index < 8 else FPS_COMBAT_ENEMY_SCRIPT.Difficulty.HARD
 		var objective := _objective_for(StringName(entry["region"]))
 		var requested: Vector3 = objective.global_position - Vector3.UP * 1.2 + (entry["offset"] as Vector3)
 		var primary_projection: Vector3 = NavigationServer3D.map_get_closest_point(nav_map, requested)
@@ -816,7 +817,7 @@ func _observer_offsets_for(region_id: StringName) -> Array[Vector3]:
 
 func _animation_binding_strategy() -> Dictionary:
 	return {
-		"selected_strategy": &"neutral_standing_baseline_with_state_driven_rifle_socket_overlay",
+		"selected_strategy": &"restored_loop10_19_component_baseline_with_component_m4_socket",
 		"strategies_compared": [
 			&"restore_last_visually_accepted_baseline",
 			&"repair_current_wrapper_binding",
@@ -826,9 +827,9 @@ func _animation_binding_strategy() -> Dictionary:
 		"local_component": &"quaternius_ual1_ual2_retargeted_humanoid",
 		"rifle_ready_authored_clips_available": false,
 		"authored_rifle_clip_binding_status": &"missing_required_asset",
-		"combat_clip_disposition": &"idle_aim_fire_reload_use_neutral_body_plus_rifle_overlay",
+		"combat_clip_disposition": &"component_baseline_uses_truthfully_reported_pistol_named_clips_with_m4_socket",
 		"root_tilt_strategy": &"actor_root_pitch_roll_locked_fixture_reachable",
-		"issue_disposition": &"living_rifle_states_bound_to_rifle_compatible_adapter_mapping",
+		"issue_disposition": &"interim_regression_repair_missing_genuine_rifle_clip_set",
 	}
 
 

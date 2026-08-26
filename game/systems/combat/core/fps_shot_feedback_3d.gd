@@ -123,6 +123,7 @@ func show_shot(event: Dictionary) -> bool:
 	_last_presentation = {
 		"shot_id": shot_id,
 		"event_identity": event_identity,
+		"immutable_event_id": String(event.get("event_id", shot_id)),
 		"run_epoch": int(event.get("run_epoch", current_run_epoch)),
 		"source_actor": String(event.get("actor_id", event.get("source_path", ""))),
 		"source_weapon": String(event.get("weapon_id", "")),
@@ -131,6 +132,9 @@ func show_shot(event: Dictionary) -> bool:
 		"target_path": String(event.get("target_path", "")),
 		"ammo_commit": int(event.get("ammo_commit", 0)),
 		"damage_applied": event.get("applied", false) == true,
+		"authoritative_resolution": (event.get("authoritative_resolution", {}) as Dictionary).duplicate(true),
+		"feedback_bound_to_authority": not (event.get("authoritative_resolution", {}) as Dictionary).is_empty(),
+		"single_event_record_observed": String(event.get("event_id", shot_id)) == shot_id,
 		"occlusion_outcome": result,
 		"muzzle_position": from,
 		"hit_position": to,
