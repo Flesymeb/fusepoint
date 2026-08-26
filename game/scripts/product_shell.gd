@@ -493,9 +493,7 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 	if app_state == STATE_BRIEFING and _is_physical_briefing_skip(event):
-		if not _briefing_complete:
-			_complete_briefing(true, &"physical_skip_to_authorization")
-			_record_briefing_input(_briefing_caption_index, _briefing_cue_revealed, &"skip_to_authorize")
+		_physical_skip_briefing_and_deploy()
 		get_viewport().set_input_as_handled()
 		return
 	if app_state == STATE_BRIEFING and _is_briefing_primary_input(event):
@@ -1427,6 +1425,32 @@ func _record_briefing_input(cue_before: int, revealed_before: bool, action: Stri
 	_briefing_input_history.append(_last_briefing_input_receipt.duplicate(true))
 	while _briefing_input_history.size() > 12:
 		_briefing_input_history.pop_front()
+
+
+func _physical_skip_briefing_and_deploy() -> void:
+	if app_state != STATE_BRIEFING:
+		return
+	var cue_before := _briefing_caption_index
+	var revealed_before := _briefing_cue_revealed
+	if not _briefing_complete:
+		_complete_briefing(true, &"physical_g_skip_one_step_deploy")
+	_record_briefing_input(cue_before, revealed_before, &"physical_g_skip_and_deploy")
+	_deploy()
+	_last_briefing_input_receipt.merge({
+		"deploy_requested_same_activation": true,
+		"deployment_input_receipt": _last_deployment_input_receipt.duplicate(true),
+		"result_state": app_state,
+		"mission_state_after": mission.get("mission_state"),
+		"gameplay_input_after": player.get("gameplay_input_enabled"),
+		"mouse_mode_after": Input.mouse_mode,
+		"accepted": (
+			app_state == STATE_GAMEPLAY
+			and StringName(mission.get("mission_state")) == &"active_gameplay"
+			and _last_deployment_input_receipt.get("accepted", false) == true
+		),
+	}, true)
+	if not _briefing_input_history.is_empty():
+		_briefing_input_history[-1] = _last_briefing_input_receipt.duplicate(true)
 
 
 func _toggle_opening_pause() -> void:

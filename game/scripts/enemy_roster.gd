@@ -856,9 +856,13 @@ func _combat_actor_page_from_snapshots(snapshots: Array[Dictionary]) -> Array[Di
 			"presentation_state": snapshot.get("presentation_state", &"inactive"),
 			"animation_clip": snapshot.get("animation_name", ""),
 			"animation_semantic": snapshot.get("animation_semantic", &""),
+			"genuine_authored_rifle_clip": presentation.get("genuine_authored_rifle_clip", false),
+			"compatibility_disposition": presentation.get("compatibility_disposition", &""),
+			"raw_source_clip_weapon_label": presentation.get("raw_source_clip_weapon_label", &""),
 			"weapon_family_compatible": presentation.get("weapon_family_compatible", false),
 			"weapon_socket_bound": presentation.get("weapon_socket_bound", presentation.get("socket_bound", false)),
 			"weapon_socket_contact_status": presentation.get("weapon_socket_contact_status", &"unreported"),
+			"binding_strategy": presentation.get("binding_strategy", {}),
 			"rifle_contact": presentation.get("rifle_contact", {}),
 			"nearest_neighbor_spacing": snapshot.get("nearest_neighbor_distance", -1.0),
 			"occupancy": {
@@ -879,6 +883,8 @@ func _combat_observation_matrix_from_snapshots(snapshots: Array[Dictionary]) -> 
 	var authorized_count := 0
 	var alive_count := 0
 	var compatible_count := 0
+	var genuine_authored_rifle_clip_count := 0
+	var interim_missing_rifle_asset_count := 0
 	var socket_bound_count := 0
 	var rifle_contact_accepted_count := 0
 	var visible_pose_failure_count := 0
@@ -892,6 +898,9 @@ func _combat_observation_matrix_from_snapshots(snapshots: Array[Dictionary]) -> 
 		alive_count += 1 if snapshot.get("alive", false) else 0
 		var presentation: Dictionary = snapshot.get("presentation", {})
 		compatible_count += 1 if presentation.get("weapon_family_compatible", false) else 0
+		genuine_authored_rifle_clip_count += 1 if presentation.get("genuine_authored_rifle_clip", false) else 0
+		var binding_strategy: Dictionary = presentation.get("binding_strategy", {})
+		interim_missing_rifle_asset_count += 1 if binding_strategy.get("interim_issue_open", false) == true else 0
 		socket_bound_count += 1 if presentation.get("weapon_socket_bound", presentation.get("socket_bound", false)) else 0
 		var rifle_contact: Dictionary = presentation.get("rifle_contact", {})
 		rifle_contact_accepted_count += 1 if rifle_contact.get("accepted", false) else 0
@@ -908,6 +917,8 @@ func _combat_observation_matrix_from_snapshots(snapshots: Array[Dictionary]) -> 
 		"target_visible_count": visible_count,
 		"fire_authorized_count": authorized_count,
 		"weapon_family_compatible_count": compatible_count,
+		"genuine_authored_rifle_clip_count": genuine_authored_rifle_clip_count,
+		"interim_missing_required_rifle_asset_count": interim_missing_rifle_asset_count,
 		"weapon_socket_bound_count": socket_bound_count,
 		"rifle_contact_accepted_count": rifle_contact_accepted_count,
 		"visible_pose_failure_count": visible_pose_failure_count,
@@ -919,7 +930,8 @@ func _combat_observation_matrix_from_snapshots(snapshots: Array[Dictionary]) -> 
 			&"target_visible", &"fire_authorized", &"ammo", &"reload_state",
 			&"health", &"alive", &"presentation_state", &"nearest_neighbor_spacing",
 			&"occupancy", &"weapon_socket_bound", &"weapon_socket_contact_status",
-			&"rifle_contact", &"last_shot_id", &"last_damage_event_id",
+			&"rifle_contact", &"genuine_authored_rifle_clip", &"compatibility_disposition",
+			&"last_shot_id", &"last_damage_event_id",
 		],
 	}
 
@@ -1219,6 +1231,35 @@ func _commit_roster_event(kind: StringName, payload: Dictionary) -> void:
 	roster_event_committed.emit(event)
 
 
+func _region_distribution_summary(region_filter: StringName = &"") -> Dictionary:
+	var summary := {
+		"region_counts": {&"alpha": 0, &"bravo": 0, &"charlie": 0},
+		"route_pressure_counts": {&"alpha": 0, &"bravo": 0, &"charlie": 0},
+		"role_counts": {},
+		"slot_count": 0,
+		"stable_identity_count": enemies.size(),
+	}
+	var slots := {}
+	for enemy: FusepointEnemyAgent in enemies.values():
+		if not region_filter.is_empty() and region_filter != &"all" and enemy.region_id != region_filter:
+			continue
+		summary["region_counts"][enemy.region_id] = int(summary["region_counts"].get(enemy.region_id, 0)) + 1
+		if enemy.route_pressure:
+			summary["route_pressure_counts"][enemy.region_id] = int(summary["route_pressure_counts"].get(enemy.region_id, 0)) + 1
+		var role_key := StringName("%s:%s" % [String(enemy.region_id), String(enemy.tactical_role)])
+		summary["role_counts"][role_key] = int(summary["role_counts"].get(role_key, 0)) + 1
+		slots[enemy.route_slot] = true
+	summary["slot_count"] = slots.size()
+	summary["prd_contract"] = {
+		"alpha_count": 3,
+		"bravo_count": 5,
+		"charlie_count": 10,
+		"total_count": 18,
+		"minimum_route_pressure": {&"alpha": 1, &"bravo": 2, &"charlie": 4},
+	}
+	return summary
+
+
 func _summary() -> Dictionary:
 	_refresh_qualification_live_state()
 	var qualification := _qualification_summary()
@@ -1241,6 +1282,8 @@ func _summary() -> Dictionary:
 			"region": enemy.region_id,
 			"role": enemy.tactical_role,
 			"route_slot": enemy.route_slot,
+			"route_pressure": enemy.route_pressure,
+			"roster_index": enemy.roster_index,
 			"active": enemy.mission_active,
 			"alive": enemy.is_alive(),
 		})
@@ -1283,6 +1326,7 @@ func _summary() -> Dictionary:
 		"observation_skip_history": observation_skip_history.duplicate(true),
 		"region_counts": region_counts,
 		"route_pressure_counts": route_pressure_counts,
+		"distribution_summary": _region_distribution_summary(),
 		"active_count": active_count,
 		"alive_count": alive_count,
 		"activation_sequence": activation_sequence,
@@ -1606,6 +1650,9 @@ func _compact_actor_state(enemy: FusepointEnemyAgent) -> Dictionary:
 		"action": snapshot.get("action", &"idle"),
 		"animation_semantic": snapshot.get("animation_semantic", &""),
 		"animation_name": snapshot.get("animation_name", ""),
+		"genuine_authored_rifle_clip": (snapshot.get("presentation", {}) as Dictionary).get("genuine_authored_rifle_clip", false),
+		"compatibility_disposition": (snapshot.get("presentation", {}) as Dictionary).get("compatibility_disposition", &""),
+		"raw_source_clip_weapon_label": (snapshot.get("presentation", {}) as Dictionary).get("raw_source_clip_weapon_label", &""),
 		"animation_normalized_time": snapshot.get("animation_normalized_time", 0.0),
 		"animation_playing": snapshot.get("animation_playing", false),
 		"animation_state_change_count": snapshot.get("animation_state_change_count", 0),
@@ -1616,6 +1663,7 @@ func _compact_actor_state(enemy: FusepointEnemyAgent) -> Dictionary:
 		"weapon_socket_contact_status": snapshot.get("weapon_socket_contact_status", &"unreported"),
 		"weapon_attached": snapshot.get("weapon_attached", false),
 		"rifle_contact": snapshot.get("rifle_contact", {}),
+		"binding_strategy": (snapshot.get("presentation", {}) as Dictionary).get("binding_strategy", {}),
 		"root_pitch_degrees": snapshot.get("root_pitch_degrees", 0.0),
 		"root_roll_degrees": snapshot.get("root_roll_degrees", 0.0),
 		"root_upright": snapshot.get("root_upright", false),

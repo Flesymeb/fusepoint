@@ -773,23 +773,33 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 	var actor_ids: Array[String] = []
 	var distinct_roles := {}
 	var distinct_slots := {}
+	var route_pressure_count := 0
 	for actor: Dictionary in roster_state.get("actor_index", []):
 		if region_id != &"all" and StringName(actor.get("region", &"")) != region_id:
 			continue
 		actor_ids.append(String(actor.get("id", "")))
 		distinct_roles[String(actor.get("role", ""))] = true
 		distinct_slots[String(actor.get("slot", actor.get("route_slot", "")))] = true
+		if actor.get("route_pressure", false) == true:
+			route_pressure_count += 1
 	actor_ids.sort()
+	var minimum_route_pressure := 1 if region_id == &"alpha" else 2 if region_id == &"bravo" else 4 if region_id == &"charlie" else 7
+	var minimum_role_count := 3 if region_id == &"alpha" else 4 if region_id == &"bravo" else 5 if region_id == &"charlie" else 5
 	var frontier_after := _fixture_progression_frontier()
 	var validation := {
 		"roster_accepted": progression.get("accepted", false) == true,
 		"region_matched": StringName(progression.get("active_region", &"")) == region_id,
 		"active_count_matched": int(progression.get("active_count", 0)) == expected_count,
 		"actor_id_count_matched": actor_ids.size() == expected_count,
+		"stable_identity_count_matched": int(roster_state.get("stable_identity_count", 0)) == 18,
+		"slot_distribution_met": distinct_slots.size() == expected_count,
+		"role_distribution_met": distinct_roles.size() >= minimum_role_count,
+		"route_pressure_met": route_pressure_count >= minimum_route_pressure,
 		"frontier_unchanged": frontier_after == frontier_before,
 		"terminal_unchanged": terminal_commit_count == terminal_before,
 		"observation_matrix_present": not (progression.get("observation_matrix", {}) as Dictionary).is_empty(),
 		"actor_state_page_present": not (progression.get("actor_state_page", []) as Array).is_empty(),
+		"checkpoint_payload_fields_present": _checkpoint_payload_contract_valid(),
 	}
 	var accepted: bool = not validation.values().has(false)
 	if not accepted:
@@ -811,6 +821,8 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 		"stable_actor_ids": actor_ids,
 		"distinct_role_count": distinct_roles.size(),
 		"distinct_slot_count": distinct_slots.size(),
+		"route_pressure_count": route_pressure_count,
+		"region_distribution": roster_state.get("distribution_summary", {}),
 		"validation": validation,
 		"prerequisite_commits": [],
 		"observer_relocation": observer_relocation,
@@ -824,6 +836,8 @@ func tester_prepare_encounter(region_id: StringName) -> Dictionary:
 			"terminal_state_unchanged": terminal_commit_count == terminal_before,
 			"capture_points_unchanged": frontier_after == frontier_before,
 			"stable_identity_count": int(roster_state.get("stable_identity_count", 0)),
+			"distinct_route_slot_count": distinct_slots.size(),
+			"route_pressure_count": route_pressure_count,
 			"no_actor_killed": int(progression.get("active_alive_count", 0)) == expected_count,
 			"route_acceptance_claimed": false,
 			"player_relocated": observer_relocation.get("accepted", false) == true,
@@ -1720,11 +1734,24 @@ func _valid_checkpoint_snapshot(snapshot: Dictionary) -> bool:
 	for actor: Variant in roster_snapshot.values():
 		if not actor is Dictionary:
 			return false
-		var actor_id := StringName((actor as Dictionary).get("id", &""))
+		var actor_dictionary := actor as Dictionary
+		for actor_key in ["id", "region", "role", "route_slot", "active", "alive", "ammo", "health", "transform", "reserved_position", "activation_sequence"]:
+			if not actor_dictionary.has(actor_key):
+				return false
+		if not actor_dictionary["transform"] is Transform3D:
+			return false
+		if not actor_dictionary["health"] is Dictionary:
+			return false
+		var actor_id := StringName(actor_dictionary.get("id", &""))
 		if actor_id == &"" or unique_ids.has(actor_id):
 			return false
 		unique_ids[actor_id] = true
 	return unique_ids.size() == 18
+
+
+func _checkpoint_payload_contract_valid() -> bool:
+	var snapshot := _build_snapshot()
+	return _valid_checkpoint_snapshot(snapshot)
 
 
 func _enemy_positions_from_snapshot(roster_snapshot: Dictionary) -> Array:
