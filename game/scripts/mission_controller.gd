@@ -1979,8 +1979,8 @@ func _mcp_state() -> Dictionary:
 		"last_run_epoch_receipt": last_run_epoch_receipt,
 		"tester_fixture_summary": {
 			"encounter_branch_id": last_tester_encounter_receipt.get("branch_id", &""),
-			"encounter_generation": tester_prepared_region_generation,
-			"encounter_prepared_region": tester_prepared_region,
+			"encounter_generation": last_tester_encounter_receipt.get("setup_generation", tester_prepared_region_generation),
+			"encounter_prepared_region": last_tester_encounter_receipt.get("prepared_region", tester_prepared_region),
 			"encounter_accepted": last_tester_encounter_receipt.get("accepted", false),
 			"encounter_failure_reason": last_tester_encounter_receipt.get("failure_reason", &""),
 			"terminal_branch_id": last_tester_terminal_receipt.get("branch_id", &""),
@@ -2001,8 +2001,8 @@ func _mcp_state() -> Dictionary:
 		# bounded MCP digests always expose the current generation and disposition.
 		"tester_fixture_state": {
 			"encounter_branch_id": last_tester_encounter_receipt.get("branch_id", &""),
-			"encounter_setup_generation": tester_prepared_region_generation,
-			"encounter_prepared_region": tester_prepared_region,
+			"encounter_setup_generation": last_tester_encounter_receipt.get("setup_generation", tester_prepared_region_generation),
+			"encounter_prepared_region": last_tester_encounter_receipt.get("prepared_region", tester_prepared_region),
 			"encounter_requested": last_tester_encounter_receipt.get("requested", false),
 			"encounter_resolved": last_tester_encounter_receipt.get("resolved", false),
 			"encounter_accepted": last_tester_encounter_receipt.get("accepted", false),

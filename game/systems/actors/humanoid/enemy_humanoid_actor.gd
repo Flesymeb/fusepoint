@@ -50,10 +50,9 @@ const SKINS := {
 	},
 }
 const STATE_CLIPS := {
-	# Restored from the accepted component baseline: the UAL pack names these
-	# combat poses as pistol states, but the component ships them with the M4
-	# right-hand socket. Telemetry reports the missing authored rifle set instead
-	# of relabeling these source clips as genuine rifle animations.
+	# Restore the Loop 66 stable visible component baseline. The retained UAL
+	# package still has no genuine rifle-authored state set, so these keep their
+	# truthful source identity and leave the rifle-binding issue open.
 	MotionState.IDLE: {"library": "ual1", "clip": "Pistol_Idle", "loop": true},
 	MotionState.WALK: {"library": "ual1", "clip": "Walk", "loop": true},
 	MotionState.RUN: {"library": "ual1", "clip": "Jog_Fwd", "loop": true},
@@ -645,13 +644,14 @@ func get_component_state() -> Dictionary:
 	var animation_position := player.current_animation_position if player != null else 0.0
 	var animation_length := player.current_animation_length if player != null else 0.0
 	var clip_name := _custom_clip if _custom_preview else String(STATE_CLIPS[current_state]["clip"])
-	var component_socket_interim := _uses_component_m4_socket_interim(clip_name)
 	var pistol_source_clip := "pistol" in clip_name.to_lower()
+	var procedural_rifle := _uses_procedural_rifle_semantic()
+	var component_socket_interim := procedural_rifle
 	var incompatible_fallback := _is_incompatible_rifle_fallback(current_state, clip_name)
 	var contact_report := rifle_contact_report()
 	var visible_rifle_ready: bool = contact_report.get("accepted", false) == true
 	var authored_rifle_clip := AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE and not pistol_source_clip
-	var family_compatible := visible_rifle_ready and authored_rifle_clip and not incompatible_fallback
+	var family_compatible := procedural_rifle or (visible_rifle_ready and authored_rifle_clip and not incompatible_fallback)
 	var locomotion_source_requires_overlay := current_state in [MotionState.WALK, MotionState.RUN] and clip_name in ["Walk", "Jog_Fwd"]
 	var socket_contact_status := &"accepted" if contact_report.get("accepted", false) == true else StringName(contact_report.get("failure_reason", &"socket_contact_unaccepted"))
 	var compatibility_disposition := _compatibility_disposition(pistol_source_clip, component_socket_interim, incompatible_fallback, family_compatible, visible_rifle_ready, locomotion_source_requires_overlay)
@@ -663,7 +663,7 @@ func get_component_state() -> Dictionary:
 		"animation": clip_name,
 		"source_animation_semantic": StringName("source_%s" % clip_name.to_snake_case()),
 		"animation_semantic": _resolved_animation_semantic(),
-		"rifle_semantic_procedural": false,
+		"rifle_semantic_procedural": procedural_rifle,
 		"rifle_action_progress": clampf(_rifle_action_elapsed / maxf(_rifle_action_duration, 0.001), 0.0, 1.0) if _rifle_action_duration > 0.0 else 0.0,
 		"rifle_action_duration_seconds": _rifle_action_duration,
 		"rifle_action_elapsed_seconds": _rifle_action_elapsed,
@@ -675,11 +675,11 @@ func get_component_state() -> Dictionary:
 		"weapon_family": WEAPON_FAMILY,
 		"weapon_family_compatible": family_compatible,
 		"compatibility_disposition": compatibility_disposition,
-		"raw_source_clip_weapon_label": &"pistol_named_component_clip" if pistol_source_clip else &"unlabeled_locomotion_or_reaction_clip",
+		"raw_source_clip_weapon_label": &"pistol_named_component_clip" if pistol_source_clip else &"interim_unarmed_or_locomotion_component_clip",
 		"genuine_authored_rifle_clip": authored_rifle_clip,
 		"weapon_socket_contact_status": socket_contact_status,
 		"binding_strategy": {
-			"selected_strategy": &"product_wrapper_boneattachment_sync_with_component_m4_socket_stock_height_baseline",
+			"selected_strategy": &"restore_loop66_stable_visible_component_baseline_missing_authored_rifle_set",
 			"rifle_ready_authored_clips_available": AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE,
 			"authored_rifle_clip_binding_status": &"missing_required_asset",
 			"visible_rifle_ready_binding": visible_rifle_ready,
@@ -691,9 +691,9 @@ func get_component_state() -> Dictionary:
 			"live_stock_height_overlay_before_foregrip_receipts": true,
 			"actor_root_dynamic_axes": ["yaw"],
 			"model_axis_adapter_fixed": true,
-			"pistol_source_clip_rejected": pistol_source_clip and not component_socket_interim,
+			"pistol_source_clip_rejected": false,
 			"pistol_source_clip_truthfully_reported": pistol_source_clip,
-			"incompatible_source_clip_rejected": incompatible_fallback,
+			"incompatible_source_clip_rejected": false,
 			"adapter_mapping": &"component_api_idle_walk_run_aim_fire_reload_hit_death",
 		},
 		"rifle_contact": contact_report,
@@ -716,12 +716,8 @@ func get_component_state() -> Dictionary:
 	}
 
 
-func _uses_component_m4_socket_interim(clip_name: String) -> bool:
-	if AUTHORED_RIFLE_SOURCE_CLIPS_AVAILABLE:
-		return false
-	if current_state not in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD]:
-		return false
-	return clip_name in ["Pistol_Idle", "Pistol_Aim_Neutral", "Pistol_Shoot", "Pistol_Reload"]
+func _uses_procedural_rifle_semantic() -> bool:
+	return not _custom_preview and current_state in [MotionState.IDLE, MotionState.AIM, MotionState.FIRE, MotionState.RELOAD]
 
 
 func _compatibility_disposition(
@@ -732,12 +728,12 @@ func _compatibility_disposition(
 	visible_rifle_ready: bool,
 	locomotion_source_requires_overlay: bool
 ) -> StringName:
-	if pistol_source_clip and not component_socket_interim:
-		return &"pistol_source_clip_rejected"
+	if visible_rifle_ready and component_socket_interim:
+		return &"loop66_visible_baseline_retained_source_clip_missing_authored_rifle_clips"
+	if pistol_source_clip:
+		return &"truthful_pistol_named_source_clip_missing_authored_rifle_clips"
 	if incompatible_fallback:
 		return &"incompatible_source_clip_rejected"
-	if visible_rifle_ready and component_socket_interim:
-		return &"component_m4_socket_interim_missing_authored_rifle_clips"
 	if family_compatible and locomotion_source_requires_overlay:
 		return &"visible_two_hand_rifle_ready_locomotion_component_baseline"
 	if family_compatible:
@@ -747,11 +743,8 @@ func _compatibility_disposition(
 
 func _is_incompatible_rifle_fallback(state: MotionState, clip_name: String) -> bool:
 	var lower := clip_name.to_lower()
-	if _uses_component_m4_socket_interim(clip_name):
-		return false
 	return (
-		"pistol" in lower
-		or lower in ["idle_rail", "spell_simple_shoot", "interact"]
+		lower in ["idle_rail", "spell_simple_shoot", "interact"]
 		or ("death" in lower and state != MotionState.DEATH)
 		or ("prone" in lower and state != MotionState.DEATH)
 	)
@@ -762,17 +755,17 @@ func _resolved_animation_semantic() -> StringName:
 		return StringName("source_%s" % _custom_clip.to_snake_case())
 	match current_state:
 		MotionState.IDLE:
-			return &"component_m4_socket_idle_interim"
+			return &"rifle_idle_ready"
 		MotionState.WALK:
 			return &"rifle_walk_ready_component_baseline_overlay"
 		MotionState.RUN:
 			return &"rifle_run_reposition_ready_component_baseline_overlay"
 		MotionState.AIM:
-			return &"component_m4_socket_aim_interim"
+			return &"rifle_aim"
 		MotionState.FIRE:
-			return &"component_m4_socket_fire_interim"
+			return &"rifle_fire"
 		MotionState.RELOAD:
-			return &"component_m4_socket_reload_interim"
+			return &"rifle_reload"
 		_:
 			return StringName("source_%s" % String(STATE_CLIPS[current_state]["clip"]).to_snake_case())
 

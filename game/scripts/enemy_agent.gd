@@ -548,13 +548,21 @@ func _force_fixture_enemy_shot(setup_generation: int, mode: StringName, lethal: 
 	attack["fixture_hit_lane"] = hit_lane_receipt
 	attack["damage_causality"] = &"enemy_shot_event" if attack.get("applied", false) == true else &"no_fixture_damage"
 	attack["fixture_direct_damage"] = false
+	var shot_result: StringName = StringName(attack.get("result", &"unknown"))
+	var accepted_negative: bool = attack.get("accepted", false) == true and shot_result in [&"blocked", &"miss"]
+	attack["requested_player_hit_resolved"] = (
+		shot_result == &"hit"
+		and attack.get("applied", false) == true
+	) if requires_player_hit else false
 	attack["accepted_shot_or_valid_negative"] = (
 		attack.get("accepted", false) == true
-		and StringName(attack.get("result", &"unknown")) == &"hit"
-		and attack.get("applied", false) == true
+		and (
+			attack["requested_player_hit_resolved"] == true
+			or accepted_negative
+		)
 	) if requires_player_hit else (
 		attack.get("accepted", false) == true
-		and StringName(attack.get("result", &"unknown")) in [&"hit", &"blocked", &"miss"]
+		and shot_result in [&"hit", &"blocked", &"miss"]
 	)
 	_last_pre_shot_authorization = {
 		"accepted": attack.get("accepted", false) == true,

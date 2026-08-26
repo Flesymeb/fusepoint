@@ -183,6 +183,7 @@ var _tester_opening_fallback_generation := 0
 var _tester_opening_original_stream: VideoStream
 var _last_tester_opening_reset_receipt: Dictionary = {}
 var _tester_action_dispatch_frames: Dictionary = {}
+var _responsive_layout_active := false
 
 
 func _ready() -> void:
@@ -1579,8 +1580,11 @@ func _set_gameplay_enabled(enabled: bool) -> void:
 	weapon.call(&"set_gameplay_input_enabled", enabled)
 	roster.process_mode = Node.PROCESS_MODE_INHERIT if enabled else Node.PROCESS_MODE_DISABLED
 	hud.call(&"set_hud_enabled", enabled)
-	if enabled and player.has_method(&"force_mouse_capture_reconcile"):
-		player.call(&"force_mouse_capture_reconcile", &"product_shell_gameplay_handoff")
+	if player.has_method(&"force_mouse_capture_reconcile"):
+		player.call(
+			&"force_mouse_capture_reconcile",
+			&"product_shell_gameplay_handoff" if enabled else &"product_shell_page_handoff"
+		)
 
 
 func _reset_hud_lifecycle_feedback(reason: StringName) -> Dictionary:
@@ -1706,12 +1710,18 @@ func _set_rect(control_path: NodePath, rect: Rect2) -> void:
 
 
 func _apply_responsive_layout() -> void:
-	var viewport := root.size
-	var window_size := Vector2(get_window().size)
-	if window_size.x > 0.0 and window_size.y > 0.0 and (window_size.x < viewport.x or window_size.y < viewport.y):
-		viewport = window_size
-		root.size = viewport
+	if _responsive_layout_active:
+		return
+	_responsive_layout_active = true
+	var viewport := _visible_viewport_size()
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	root.position = Vector2.ZERO
+	root.size = viewport
+	pages.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	pages.position = Vector2.ZERO
+	pages.size = viewport
 	if viewport.x <= 0.0 or viewport.y <= 0.0:
+		_responsive_layout_active = false
 		return
 	var margin := Vector2(maxf(viewport.x * SAFE_AREA_RATIO, 32.0), maxf(viewport.y * SAFE_AREA_RATIO, 24.0))
 	var safe := Rect2(margin, viewport - margin * 2.0)
@@ -1771,6 +1781,15 @@ func _apply_responsive_layout() -> void:
 	_set_rect(^"Root/Pages/ResultPage/BreakdownTitle", Rect2(result_origin + Vector2(0.0, 252.0 + metric_height), Vector2(result_width, 26.0)))
 	_set_rect(^"Root/Pages/ResultPage/Breakdown", Rect2(result_origin + Vector2(0.0, 282.0 + metric_height), Vector2(result_width, breakdown_height)))
 	_set_rect(^"Root/Pages/ResultPage/Menu", Rect2(Vector2(safe.position.x + 16.0, safe.end.y - 94.0), Vector2(820.0, 70.0)))
+	_responsive_layout_active = false
+
+
+func _visible_viewport_size() -> Vector2:
+	var viewport_size := get_viewport().get_visible_rect().size
+	var window_size := Vector2(get_window().size)
+	if viewport_size.x <= 0.0 or viewport_size.y <= 0.0:
+		viewport_size = window_size
+	return viewport_size
 
 
 func _cancel_settings() -> void:
@@ -2025,7 +2044,7 @@ func _record_transition_rejection(action: StringName, reason: StringName) -> voi
 
 
 func _layout_snapshot() -> Dictionary:
-	var viewport_size := root.size
+	var viewport_size := _visible_viewport_size()
 	var safe_margin := viewport_size * SAFE_AREA_RATIO
 	var safe_rect := Rect2(safe_margin, viewport_size - safe_margin * 2.0)
 	var violations: Array[String] = []

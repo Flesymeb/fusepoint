@@ -819,7 +819,7 @@ func _observer_offsets_for(region_id: StringName) -> Array[Vector3]:
 
 func _animation_binding_strategy() -> Dictionary:
 	return {
-		"selected_strategy": &"restored_loop10_19_component_baseline_with_component_m4_socket",
+		"selected_strategy": &"restore_loop66_stable_visible_component_baseline_missing_authored_rifle_set",
 		"strategies_compared": [
 			&"restore_last_visually_accepted_baseline",
 			&"repair_current_wrapper_binding",
@@ -829,7 +829,7 @@ func _animation_binding_strategy() -> Dictionary:
 		"local_component": &"quaternius_ual1_ual2_retargeted_humanoid",
 		"rifle_ready_authored_clips_available": false,
 		"authored_rifle_clip_binding_status": &"missing_required_asset",
-		"combat_clip_disposition": &"component_baseline_uses_truthfully_reported_pistol_named_clips_with_m4_socket",
+		"combat_clip_disposition": &"loop66_visible_baseline_retained_source_clip_truthful;not_final_rifle_semantics",
 		"root_tilt_strategy": &"actor_root_pitch_roll_locked_fixture_reachable",
 		"issue_disposition": &"interim_regression_repair_missing_genuine_rifle_clip_set",
 	}

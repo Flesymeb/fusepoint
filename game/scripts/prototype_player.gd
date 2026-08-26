@@ -70,7 +70,7 @@ var _damage_attempt_serial := 0
 var _last_damage_attempt: Dictionary = {}
 var _damage_attempt_history: Array[Dictionary] = []
 var _terminal_damage_rejection_count := 0
-var gameplay_input_enabled := true
+var gameplay_input_enabled := false
 var terminal_locked := false
 var terminal_event_id := ""
 var combat_death_locked := false
@@ -136,7 +136,7 @@ func _ready() -> void:
 	safe_margin = 0.03
 	max_slides = 8
 	_configure_authoritative_foley_owner()
-	_capture_mouse()
+	_release_mouse()
 	_begin_look_observation_generation(&"initial_ready")
 
 
@@ -734,6 +734,9 @@ func _configure_authoritative_foley_owner() -> void:
 
 
 func _capture_mouse() -> void:
+	if not _can_request_mouse_capture():
+		_reconcile_mouse_capture(&"player_capture_request_rejected")
+		return
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_reconcile_mouse_capture(&"player_capture_request")
 
@@ -741,6 +744,10 @@ func _capture_mouse() -> void:
 func _release_mouse() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_reconcile_mouse_capture(&"player_release_request")
+
+
+func _can_request_mouse_capture() -> bool:
+	return is_inside_tree() and gameplay_input_enabled and not terminal_locked and not combat_death_locked
 
 
 func _reconcile_mouse_capture(source: StringName) -> bool:
@@ -1097,9 +1104,14 @@ func set_gameplay_input_enabled(enabled: bool) -> void:
 
 
 func force_mouse_capture_reconcile(source: StringName = &"external_lifecycle_sync") -> Dictionary:
+	if _can_request_mouse_capture() and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	elif not _can_request_mouse_capture() and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	var observed := _reconcile_mouse_capture(source)
 	return {
 		"source": source,
+		"capture_request_allowed": _can_request_mouse_capture(),
 		"mouse_captured": _mouse_captured,
 		"engine_mouse_captured": observed,
 		"input_mouse_mode": Input.mouse_mode,
