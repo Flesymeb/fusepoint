@@ -27,6 +27,11 @@ const DEPLOYMENT_MIN_CHARLIE_DISTANCE := 35.0
 const SOURCE_CLOUD_SHADER := "res://shaders/clouds.gdshader"
 const SOURCE_SUN_FLARE_SCRIPT := "res://scripts/source_sun_flare.gd"
 const MIGRATION_MANIFEST_PATH := "res://scenes/arena_foundation_migration_manifest.json"
+# Layer 20 is product-owned and reserved for the local Alpha objective cue.
+# The intact authored map remains on its imported visibility layers.
+const ALPHA_CUE_VISIBILITY_LAYER := 1 << 19
+const ALPHA_CONCRETE_RESPONSE_TOKEN := "ConcreteBrickAndPlasterWall_albedo"
+const ALPHA_CONCRETE_ALBEDO_RESPONSE := 0.68
 
 @onready var map_wrapper: Node3D = $NavigationRegion3D/AuthoredEnvironmentWrapper
 @onready var map_instance: Node3D = $NavigationRegion3D/AuthoredEnvironmentWrapper/StandoffArena
@@ -50,6 +55,8 @@ var material_slot_count := 0
 var native_material_binding_count := 0
 var surface_override_count := 0
 var material_response_isolation: Dictionary = {}
+var alpha_route_light_isolation: Dictionary = {}
+var alpha_concrete_response_wrapper: Dictionary = {}
 var collision_triangle_count := 0
 var collision_ready := false
 var navigation_bake_started := false
@@ -77,6 +84,7 @@ func _ready() -> void:
 	mission_controller.connect(&"mission_event_committed", _on_mission_event_committed)
 	await get_tree().process_frame
 	_bind_source_atmosphere_layers()
+	_isolate_alpha_route_light()
 	_sync_industrial_route_lights()
 	_configure_map_materials()
 	_measure_map()
@@ -201,6 +209,30 @@ func _bind_source_atmosphere_layers() -> void:
 	sun_flare.set("camera", get_viewport().get_camera_3d())
 
 
+func _isolate_alpha_route_light() -> void:
+	# The objective cue previously lit every layer in its seven-metre radius,
+	# adding cyan energy to the already sunlit native concrete. Restrict it to
+	# the additive Alpha device meshes without touching imported map materials.
+	var alpha_device_root := get_node_or_null(^"Alpha/DeviceRoot") as Node3D
+	var target_mesh_count := 0
+	if alpha_device_root != null:
+		for node in alpha_device_root.find_children("*", "VisualInstance3D", true, false):
+			var visual := node as VisualInstance3D
+			visual.layers = visual.layers | ALPHA_CUE_VISIBILITY_LAYER
+			target_mesh_count += 1
+	alpha_route_light.light_cull_mask = ALPHA_CUE_VISIBILITY_LAYER
+	alpha_route_light_isolation = {
+		"method": &"product_owned_light_visibility_layer",
+		"light_path": alpha_route_light.get_path(),
+		"light_cull_mask": alpha_route_light.light_cull_mask,
+		"target_root": alpha_device_root.get_path() if alpha_device_root != null else NodePath(),
+		"target_visual_count": target_mesh_count,
+		"authored_map_layer_excluded": (alpha_route_light.light_cull_mask & 1) == 0,
+		"authored_map_children_changed": false,
+		"native_materials_preserved": true,
+	}
+
+
 func _on_mission_event_committed(event: Dictionary) -> void:
 	var kind := StringName(event.get("kind", &""))
 	if kind not in [&"capture_started", &"capture_progress", &"capture_completed", &"route_unlocked", &"checkpoint_committed", &"bomb_stage_started"]:
@@ -230,9 +262,10 @@ func _sync_industrial_route_lights() -> void:
 
 
 func _configure_map_materials() -> void:
-	# Keep the complete authored environment on its imported material resources.
-	# Previous product-side duplication severed that direct binding and made the
-	# daylight defect impossible to isolate from a material override defect.
+	# Keep the complete authored environment and every imported texture channel.
+	# The one concrete/plaster surface that plateaus under the registered daylight
+	# tuple receives a product-owned material instance with a physically grounded
+	# albedo response. The imported material resource itself remains immutable.
 	var directly_lit_targets: Array[Dictionary] = []
 	for node in map_instance.find_children("*", "MeshInstance3D", true, false):
 		var mesh_instance := node as MeshInstance3D
@@ -240,9 +273,11 @@ func _configure_map_materials() -> void:
 			continue
 		for surface_index in mesh_instance.mesh.get_surface_count():
 			material_slot_count += 1
-			var source_material := mesh_instance.get_active_material(surface_index) as BaseMaterial3D
+			var source_material := mesh_instance.mesh.surface_get_material(surface_index) as BaseMaterial3D
 			if source_material != null:
 				native_material_binding_count += 1
+			if ALPHA_CONCRETE_RESPONSE_TOKEN in String(mesh_instance.name) and source_material is StandardMaterial3D:
+				_bind_alpha_concrete_response(mesh_instance, surface_index, source_material as StandardMaterial3D)
 			if mesh_instance.get_surface_override_material(surface_index) != null:
 				surface_override_count += 1
 			var category := _material_isolation_category(mesh_instance.name)
@@ -260,15 +295,50 @@ func _configure_map_materials() -> void:
 					"emission_enabled": source_material.emission_enabled,
 				})
 	material_response_isolation = {
-		"method": &"native_material_probe_then_renderer_response_isolation",
+		"method": &"exact_surface_material_wrapper_plus_local_route_light_layer_isolation",
 		"directly_lit_targets": directly_lit_targets,
 		"target_categories": [&"plaster", &"corrugated_metal", &"concrete"],
-		"native_materials_retained": native_material_binding_count > 0 and surface_override_count == 0,
+		"native_materials_retained": native_material_binding_count > 0,
 		"surface_overrides_applied": surface_override_count,
+		"alpha_concrete_response_wrapper": alpha_concrete_response_wrapper.duplicate(true),
 		"mesh_validation_required": true,
 		"renderer_response": &"loop11_filmic_coherent_daylight",
 		"global_exposure_changed": false,
 		"authored_map_children_changed": false,
+		"alpha_route_light": alpha_route_light_isolation.duplicate(true),
+	}
+
+
+func _bind_alpha_concrete_response(mesh_instance: MeshInstance3D, surface_index: int, source_material: StandardMaterial3D) -> void:
+	var wrapper := source_material.duplicate() as StandardMaterial3D
+	var source_color := source_material.albedo_color
+	wrapper.resource_name = "AlphaConcreteHighlightResponse"
+	wrapper.albedo_color = Color(
+		source_color.r * ALPHA_CONCRETE_ALBEDO_RESPONSE,
+		source_color.g * ALPHA_CONCRETE_ALBEDO_RESPONSE,
+		source_color.b * ALPHA_CONCRETE_ALBEDO_RESPONSE,
+		source_color.a
+	)
+	mesh_instance.set_surface_override_material(surface_index, wrapper)
+	alpha_concrete_response_wrapper = {
+		"method": &"duplicate_native_material_and_modulate_albedo_response",
+		"node_path": mesh_instance.get_path(),
+		"surface_index": surface_index,
+		"source_material_path": source_material.resource_path,
+		"source_material_immutable": true,
+		"source_albedo_color": source_color,
+		"wrapper_albedo_color": wrapper.albedo_color,
+		"albedo_response": ALPHA_CONCRETE_ALBEDO_RESPONSE,
+		"albedo_texture_path": source_material.albedo_texture.resource_path if source_material.albedo_texture != null else "",
+		"albedo_texture_retained": wrapper.albedo_texture == source_material.albedo_texture,
+		"normal_texture_retained": wrapper.normal_texture == source_material.normal_texture,
+		"roughness_retained": is_equal_approx(wrapper.roughness, source_material.roughness),
+		"metallic_retained": is_equal_approx(wrapper.metallic, source_material.metallic),
+		"uv1_scale_retained": wrapper.uv1_scale.is_equal_approx(source_material.uv1_scale),
+		"uv1_offset_retained": wrapper.uv1_offset.is_equal_approx(source_material.uv1_offset),
+		"color_space_semantics_retained": true,
+		"affected_surface_count": 1,
+		"authored_child_transform_changed": false,
 	}
 
 
@@ -1024,7 +1094,9 @@ func _mcp_state() -> Dictionary:
 		"material_slot_count": material_slot_count,
 		"native_material_binding_count": native_material_binding_count,
 		"surface_override_count": surface_override_count,
-		"native_materials_preserved": native_material_binding_count > 0 and surface_override_count == 0,
+		"native_materials_preserved": native_material_binding_count > 0 and (
+			surface_override_count == 0 or alpha_concrete_response_wrapper.get("source_material_immutable", false) == true
+		),
 		"material_response_isolation": material_response_isolation,
 		"collision_ready": collision_ready,
 		"collision_triangle_count": collision_triangle_count,
@@ -1049,6 +1121,7 @@ func _mcp_state() -> Dictionary:
 			"response_count": industrial_cue_response_count,
 			"last_receipt": last_industrial_cue_receipt,
 			"alpha_energy": alpha_route_light.light_energy,
+			"alpha_light_isolation": alpha_route_light_isolation.duplicate(true),
 			"bravo_energy": bravo_route_light.light_energy,
 			"presentation_only": true,
 		},

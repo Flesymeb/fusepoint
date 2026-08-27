@@ -51,6 +51,15 @@ const RESULT_ICON_PATHS := {
 	&"weapon": "res://ui/hud/combat/result_icons/weapon.svg",
 	&"home": "res://ui/hud/combat/result_icons/home.svg",
 }
+const LOADOUT_SILHOUETTE_PATHS := {
+	&"ak74m": "res://ui/hud/combat/weapon_silhouettes/ak74m.svg",
+	&"saiga12": "res://ui/hud/combat/weapon_silhouettes/saiga12.svg",
+}
+const LOADOUT_STAT_ICON_PATHS := [
+	"res://ui/shell/loadout/icons/magazine.svg",
+	"res://ui/shell/loadout/icons/fire_mode.svg",
+	"res://ui/shell/loadout/icons/role.svg",
+]
 const NON_PAGE_STATES: Array[StringName] = [STATE_DEPLOYMENT, STATE_GAMEPLAY, STATE_VICTORY, STATE_DETONATION]
 const LIFECYCLE_TABLE := {
 	&"title": {"predecessors":[&"title",&"loadout",&"briefing",&"settings",&"pause",&"death_recovery",&"success_result",&"failure_result"], "authority":&"shell", "blocking":true, "focus":"Root/Pages/TitlePage/Menu/StartButton"},
@@ -193,6 +202,7 @@ func _ready() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pages.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_instantiate_curated_menu_component()
+	_configure_loadout_identity_inputs()
 	_connect_controls()
 	player.player_died.connect(_on_player_died)
 	mission.mission_event_committed.connect(_on_mission_event_committed)
@@ -247,6 +257,17 @@ func _connect_controls() -> void:
 	_configure_shell_navigation()
 	_configure_settings_navigation()
 	_configure_settings_layout_contract()
+
+
+func _configure_loadout_identity_inputs() -> void:
+	for identity_path: NodePath in [
+		^"Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity",
+		^"Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity",
+	]:
+		var identity := get_node(identity_path) as Control
+		identity.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		for node in identity.find_children("*", "Control", true, false):
+			(node as Control).mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 func _configure_shell_navigation() -> void:
@@ -1327,12 +1348,26 @@ func _open_loadout() -> void:
 
 
 func _select_weapon(weapon_id: StringName) -> void:
+	if weapon_id not in LOADOUT_SILHOUETTE_PATHS:
+		return
 	_selected_weapon = weapon_id
 	var ak := $Root/Pages/LoadoutPage/Content/Weapons/AKButton as Button
 	var saiga := $Root/Pages/LoadoutPage/Content/Weapons/SaigaButton as Button
 	ak.button_pressed = weapon_id == &"ak74m"
 	saiga.button_pressed = weapon_id == &"saiga12"
 	$Root/Pages/LoadoutPage/Content/Selection.text = "SELECTED  •  %s" % ("AK-74M ASSAULT" if weapon_id == &"ak74m" else "SAIGA-12 BREACH")
+	_sync_loadout_identity_visuals()
+
+
+func _sync_loadout_identity_visuals() -> void:
+	for weapon_id: StringName in [&"ak74m", &"saiga12"]:
+		var button_path := ^"Root/Pages/LoadoutPage/Content/Weapons/AKButton" if weapon_id == &"ak74m" else ^"Root/Pages/LoadoutPage/Content/Weapons/SaigaButton"
+		var button := get_node(button_path) as Button
+		var selected := weapon_id == _selected_weapon
+		var silhouette := button.get_node(^"Identity/Silhouette") as TextureRect
+		var divider := button.get_node(^"Identity/Divider") as ColorRect
+		silhouette.modulate = Color(1.0, 0.86, 0.43, 1.0) if selected else Color(0.72, 0.8, 0.8, 0.72)
+		divider.color = Color(0.18, 0.88, 0.94, 0.92) if selected else Color(0.3, 0.42, 0.43, 0.42)
 
 
 func _start_loading() -> void:
@@ -1751,7 +1786,8 @@ func _apply_responsive_layout() -> void:
 	_set_rect(^"Root/Pages/TitlePage/Menu", Rect2(safe.position + Vector2(24.0, 292.0), Vector2(430.0, 238.0)))
 	_set_rect(^"Root/Pages/TitlePage/Status", Rect2(safe.position + Vector2(28.0, safe.size.y - 64.0), Vector2(560.0, 58.0)))
 	_set_rect(^"Root/Pages/LoadoutPage/Header", Rect2(safe.position + Vector2(0.0, 4.0), Vector2(safe.size.x, 62.0)))
-	_set_rect(^"Root/Pages/LoadoutPage/Content", Rect2(safe.position + Vector2(0.0, 82.0), Vector2(620.0, safe.size.y - 88.0)))
+	var loadout_content_width := clampf(safe.size.x - 520.0, 620.0, 1180.0)
+	_set_rect(^"Root/Pages/LoadoutPage/Content", Rect2(safe.position + Vector2(0.0, 82.0), Vector2(loadout_content_width, safe.size.y - 88.0)))
 	_set_rect(^"Root/Pages/LoadoutPage/RoutePlate", Rect2(Vector2(safe.end.x - 448.0, safe.position.y + 82.0), Vector2(448.0, safe.size.y - 88.0)))
 	_set_rect(^"Root/Pages/LoadingPage/Title", Rect2(Vector2(safe.position.x, safe.end.y - 198.0), Vector2(840.0, 60.0)))
 	_set_rect(^"Root/Pages/LoadingPage/Detail", Rect2(Vector2(safe.position.x, safe.end.y - 130.0), Vector2(930.0, 64.0)))
@@ -2659,6 +2695,7 @@ func _mcp_state() -> Dictionary:
 		"route_plate_visible": $Root/Pages/LoadoutPage/RoutePlate.is_visible_in_tree(),
 		"gameplay_surface_clear": app_state != STATE_GAMEPLAY or (not root.visible and not pages.visible),
 		"selected_weapon": _selected_weapon,
+		"loadout_weapon_identity": _loadout_identity_state(),
 		"focused_control": str(focused.get_path()) if focused != null else "",
 		"applied_ui_scale": _applied_ui_scale,
 		"shell_lifecycle_summary": {
@@ -2815,6 +2852,34 @@ func _mcp_state() -> Dictionary:
 		"terminal_result_receipts": _terminal_result_receipts.duplicate(true),
 		"terminal_result_receipt_count": _terminal_result_receipts.size(),
 		"terminal_presentation": terminal.snapshot(),
+	}
+
+
+func _loadout_identity_state() -> Dictionary:
+	var variants: Array[Dictionary] = []
+	for weapon_id: StringName in [&"ak74m", &"saiga12"]:
+		var button_path := ^"Root/Pages/LoadoutPage/Content/Weapons/AKButton" if weapon_id == &"ak74m" else ^"Root/Pages/LoadoutPage/Content/Weapons/SaigaButton"
+		var button := get_node(button_path) as Button
+		var silhouette := button.get_node(^"Identity/Silhouette") as TextureRect
+		variants.append({
+			"weapon_id": weapon_id,
+			"silhouette_path": silhouette.texture.resource_path if silhouette.texture != null else "",
+			"visible": silhouette.is_visible_in_tree(),
+			"selected": weapon_id == _selected_weapon,
+			"focused": button.has_focus(),
+			"rect": button.get_global_rect(),
+		})
+	return {
+		"family_id": &"operator_loadout_weapon_identity",
+		"source_variants": 2,
+		"runtime_variants": 2,
+		"maximum_single_variant_share": 0.5,
+		"native_transparent_vector": true,
+		"silhouette_paths": LOADOUT_SILHOUETTE_PATHS.duplicate(true),
+		"stat_icon_paths": LOADOUT_STAT_ICON_PATHS.duplicate(),
+		"focus_equips_weapon": false,
+		"confirmation_authority": &"_start_loading_then_deployment_equip_loadout",
+		"variants": variants,
 	}
 
 

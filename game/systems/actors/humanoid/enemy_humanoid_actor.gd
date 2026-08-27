@@ -105,6 +105,8 @@ var _aim_pitch_degrees := 0.0
 var _aim_pitch_serial := 0
 var _rifle_action_elapsed := 0.0
 var _rifle_action_duration := 0.0
+var _weapon_binding_generation := 0
+var _weapon_teardown_count := 0
 
 
 func _ready() -> void:
@@ -148,9 +150,7 @@ func set_skin(skin_id: String) -> bool:
 		return false
 	if _model_holder == null:
 		_build_holders()
-	if _skin_instance != null:
-		_skin_instance.queue_free()
-		_skin_instance = null
+	_teardown_visible_skin()
 	var skin_data: Dictionary = SKINS[skin_id]
 	_skin_instance = (skin_data["scene"] as PackedScene).instantiate() as Node3D
 	_skin_instance.name = "ActiveSkin"
@@ -165,6 +165,9 @@ func set_skin(skin_id: String) -> bool:
 	if not binding_report["accepted"]:
 		push_error("Skin %s lacks required humanoid bones: %s" % [skin_id, binding_report["target"]["missing"]])
 		return false
+	# Retarget the current semantic pose before the socket is created. This keeps
+	# BoneAttachment3D initialization deterministic for both skin skeletons.
+	_apply_pose_and_ground()
 	if equip_weapon and skin_data.get("attach_weapon", true) == true:
 		_attach_weapon()
 	skin_changed.emit(skin_id, binding_report)
@@ -174,8 +177,7 @@ func set_skin(skin_id: String) -> bool:
 func set_custom_skin(scene: PackedScene, skin_id := "custom", model_scale := 1.0, allow_experimental_rig := false) -> bool:
 	if scene == null:
 		return false
-	if _skin_instance != null:
-		_skin_instance.queue_free()
+	_teardown_visible_skin()
 	_skin_instance = scene.instantiate() as Node3D
 	_skin_instance.name = "ActiveSkin"
 	_skin_instance.scale = Vector3.ONE * model_scale
@@ -186,6 +188,8 @@ func set_custom_skin(scene: PackedScene, skin_id := "custom", model_scale := 1.0
 		return false
 	current_skin_id = skin_id
 	_refresh_binding_report(_source_skeletons[_active_library], allow_experimental_rig)
+	if binding_report["accepted"]:
+		_apply_pose_and_ground()
 	if binding_report["accepted"] and equip_weapon:
 		_attach_weapon()
 	skin_changed.emit(skin_id, binding_report)
@@ -391,8 +395,32 @@ func _loop_mode_name(loop_mode: int) -> String:
 
 
 func set_weapon_visible(is_visible: bool) -> void:
-	if _weapon_attachment != null:
+	if is_instance_valid(_weapon_attachment):
 		_weapon_attachment.visible = is_visible
+
+
+func _teardown_visible_skin() -> void:
+	_detach_weapon()
+	if is_instance_valid(_skin_instance):
+		var skin_parent := _skin_instance.get_parent()
+		if skin_parent != null:
+			skin_parent.remove_child(_skin_instance)
+		_skin_instance.queue_free()
+	_skin_instance = null
+	_target_skeleton = null
+
+
+func _detach_weapon() -> void:
+	if is_instance_valid(_weapon_attachment):
+		var attachment_parent := _weapon_attachment.get_parent()
+		if attachment_parent != null:
+			attachment_parent.remove_child(_weapon_attachment)
+		_weapon_attachment.queue_free()
+		_weapon_teardown_count += 1
+	_weapon_attachment = null
+	_weapon_root = null
+	_weapon_source = null
+	_muzzle_marker = null
 
 
 func state_name() -> String:
@@ -647,9 +675,30 @@ func get_component_state() -> Dictionary:
 		"weapon_socket_bound": _weapon_attachment != null,
 		"socket_bone": String(_weapon_attachment.bone_name) if _weapon_attachment != null else "",
 		"weapon_attached": _weapon_attachment != null and _weapon_attachment.get_node_or_null("PrimaryRifle") != null,
+		"direct_instance_lifecycle": _weapon_instance_counts(),
 		"locomotion_playback_scale": _locomotion_playback_scale,
 		"state_change_count": _state_change_count,
 		"binding": binding_report,
+	}
+
+
+func _weapon_instance_counts() -> Dictionary:
+	var socket_count := 0
+	var rifle_count := 0
+	var muzzle_count := 0
+	if is_instance_valid(_target_skeleton):
+		for child in _target_skeleton.get_children():
+			if child is BoneAttachment3D and String(child.name) == "WeaponSocket":
+				socket_count += 1
+			rifle_count += child.find_children("PrimaryRifle", "Node3D", true, false).size()
+			muzzle_count += child.find_children("Muzzle", "Marker3D", true, false).size()
+	return {
+		"generation": _weapon_binding_generation,
+		"teardown_count": _weapon_teardown_count,
+		"socket_count": socket_count,
+		"rifle_count": rifle_count,
+		"muzzle_count": muzzle_count,
+		"single_direct_instance": socket_count == 1 and rifle_count == 1 and muzzle_count == 1,
 	}
 
 
@@ -734,15 +783,17 @@ func _build_animation_sources() -> void:
 
 
 func _attach_weapon() -> void:
+	_detach_weapon()
 	var right_hand_index: int = HumanoidBoneMapper.build_map(_target_skeleton).get("right_hand", -1)
 	if right_hand_index < 0:
 		return
+	# A previous queued socket from an older adapter must not coexist with the
+	# direct instance. Detach it from the live skeleton before queuing cleanup.
 	var previous := _target_skeleton.get_node_or_null("WeaponSocket")
 	if previous != null:
+		_target_skeleton.remove_child(previous)
 		previous.queue_free()
-	_weapon_root = null
-	_weapon_source = null
-	_muzzle_marker = null
+		_weapon_teardown_count += 1
 	var attachment := BoneAttachment3D.new()
 	attachment.name = "WeaponSocket"
 	attachment.bone_name = _target_skeleton.get_bone_name(right_hand_index)
@@ -775,6 +826,8 @@ func _attach_weapon() -> void:
 	_weapon_root = weapon
 	_weapon_source = source
 	_muzzle_marker = muzzle
+	_weapon_binding_generation += 1
+	_sync_weapon_attachment()
 
 
 func rifle_contact_report() -> Dictionary:

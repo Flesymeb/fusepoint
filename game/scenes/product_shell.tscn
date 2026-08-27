@@ -1,4 +1,4 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=19 format=3]
 
 [ext_resource type="Script" path="res://scripts/product_shell.gd" id="1_script"]
 [ext_resource type="Script" path="res://scripts/settings_store.gd" id="2_settings"]
@@ -10,6 +10,11 @@
 [ext_resource type="AudioStream" path="res://ui/shell/fps_menu_skin/audio/ui_confirm.wav" id="8_confirm"]
 [ext_resource type="AudioStream" path="res://ui/shell/fps_menu_skin/audio/ui_back.wav" id="9_back"]
 [ext_resource type="VideoStream" path="res://assets/cinematics/fusepoint_opening.ogv" id="10_opening_video"]
+[ext_resource type="Texture2D" path="res://ui/hud/combat/weapon_silhouettes/ak74m.svg" id="11_ak_silhouette"]
+[ext_resource type="Texture2D" path="res://ui/hud/combat/weapon_silhouettes/saiga12.svg" id="12_saiga_silhouette"]
+[ext_resource type="Texture2D" path="res://ui/shell/loadout/icons/magazine.svg" id="13_magazine_icon"]
+[ext_resource type="Texture2D" path="res://ui/shell/loadout/icons/fire_mode.svg" id="14_fire_mode_icon"]
+[ext_resource type="Texture2D" path="res://ui/shell/loadout/icons/role.svg" id="15_role_icon"]
 
 [sub_resource type="StyleBoxFlat" id="ProgressBackground"]
 bg_color = Color(0.015, 0.025, 0.03, 0.82)
@@ -258,30 +263,239 @@ text = "OPERATION FUSEPOINT\nRetake Alpha → secure Bravo → recover two defus
 autowrap_mode = 2
 
 [node name="Weapons" type="HBoxContainer" parent="Root/Pages/LoadoutPage/Content"]
-custom_minimum_size = Vector2(560, 164)
+custom_minimum_size = Vector2(560, 312)
 layout_mode = 2
 theme_override_constants/separation = 12
 [node name="AKButton" type="Button" parent="Root/Pages/LoadoutPage/Content/Weapons"]
-custom_minimum_size = Vector2(272, 150)
+custom_minimum_size = Vector2(272, 304)
 layout_mode = 2
+size_flags_horizontal = 3
 toggle_mode = true
 button_pressed = true
-text = "AK-74M\nASSAULT RIFLE\n30 / 120  •  AUTO / SEMI\nBALANCED ENTRY"
-alignment = 0
 theme_override_styles/normal = SubResource("LoadoutChoiceNormal")
 theme_override_styles/hover = SubResource("LoadoutChoiceHover")
 theme_override_styles/pressed = SubResource("LoadoutChoiceActive")
 theme_override_styles/focus = SubResource("LoadoutChoiceFocus")
-[node name="SaigaButton" type="Button" parent="Root/Pages/LoadoutPage/Content/Weapons"]
-custom_minimum_size = Vector2(272, 150)
+
+[node name="Identity" type="Control" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 18.0
+offset_top = 10.0
+offset_right = -14.0
+offset_bottom = -10.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Index" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity"]
+offset_right = 40.0
+offset_bottom = 22.0
+theme_override_colors/font_color = Color(0.23, 0.87, 0.94, 0.96)
+theme_override_font_sizes/font_size = 14
+text = "01"
+
+[node name="Name" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity"]
+offset_left = 42.0
+offset_right = 250.0
+offset_bottom = 38.0
+theme_override_fonts/font = ExtResource("5_semibold")
+theme_override_colors/font_color = Color(0.98, 0.96, 0.88, 1)
+theme_override_font_sizes/font_size = 28
+text = "AK-74M"
+
+[node name="RoleLabel" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity"]
+offset_left = 43.0
+offset_top = 36.0
+offset_right = 260.0
+offset_bottom = 58.0
+theme_override_colors/font_color = Color(0.66, 0.74, 0.74, 1)
+theme_override_font_sizes/font_size = 14
+text = "ASSAULT RIFLE  •  ENTRY"
+
+[node name="Silhouette" type="TextureRect" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity"]
+anchor_right = 1.0
+offset_top = 62.0
+offset_bottom = 184.0
+grow_horizontal = 2
+texture = ExtResource("11_ak_silhouette")
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Divider" type="ColorRect" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity"]
+anchor_right = 1.0
+offset_top = 190.0
+offset_bottom = 192.0
+grow_horizontal = 2
+color = Color(0.18, 0.72, 0.78, 0.5)
+
+[node name="Stats" type="GridContainer" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity"]
+anchor_right = 1.0
+offset_top = 202.0
+offset_bottom = 280.0
+grow_horizontal = 2
+theme_override_constants/h_separation = 24
+theme_override_constants/v_separation = 10
+columns = 2
+
+[node name="Ammo" type="HBoxContainer" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity/Stats"]
 layout_mode = 2
+theme_override_constants/separation = 7
+[node name="Icon" type="TextureRect" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity/Stats/Ammo"]
+custom_minimum_size = Vector2(24, 24)
+layout_mode = 2
+texture = ExtResource("13_magazine_icon")
+expand_mode = 1
+stretch_mode = 5
+[node name="Value" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity/Stats/Ammo"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "30 / 120"
+
+[node name="Mode" type="HBoxContainer" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity/Stats"]
+layout_mode = 2
+theme_override_constants/separation = 7
+[node name="Icon" type="TextureRect" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity/Stats/Mode"]
+custom_minimum_size = Vector2(24, 24)
+layout_mode = 2
+texture = ExtResource("14_fire_mode_icon")
+expand_mode = 1
+stretch_mode = 5
+[node name="Value" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity/Stats/Mode"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "AUTO / SEMI"
+
+[node name="Handling" type="HBoxContainer" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity/Stats"]
+layout_mode = 2
+theme_override_constants/separation = 7
+[node name="Icon" type="TextureRect" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity/Stats/Handling"]
+custom_minimum_size = Vector2(24, 24)
+layout_mode = 2
+texture = ExtResource("15_role_icon")
+expand_mode = 1
+stretch_mode = 5
+[node name="Value" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/AKButton/Identity/Stats/Handling"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "BALANCED"
+
+[node name="SaigaButton" type="Button" parent="Root/Pages/LoadoutPage/Content/Weapons"]
+custom_minimum_size = Vector2(272, 304)
+layout_mode = 2
+size_flags_horizontal = 3
 toggle_mode = true
-text = "SAIGA-12\nBREACH SHOTGUN\n08 / 40  •  AUTO\nCLOSE DEFENSE"
-alignment = 0
 theme_override_styles/normal = SubResource("LoadoutChoiceNormal")
 theme_override_styles/hover = SubResource("LoadoutChoiceHover")
 theme_override_styles/pressed = SubResource("LoadoutChoiceActive")
 theme_override_styles/focus = SubResource("LoadoutChoiceFocus")
+
+[node name="Identity" type="Control" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 18.0
+offset_top = 10.0
+offset_right = -14.0
+offset_bottom = -10.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Index" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity"]
+offset_right = 40.0
+offset_bottom = 22.0
+theme_override_colors/font_color = Color(0.23, 0.87, 0.94, 0.96)
+theme_override_font_sizes/font_size = 14
+text = "02"
+
+[node name="Name" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity"]
+offset_left = 42.0
+offset_right = 250.0
+offset_bottom = 38.0
+theme_override_fonts/font = ExtResource("5_semibold")
+theme_override_colors/font_color = Color(0.98, 0.96, 0.88, 1)
+theme_override_font_sizes/font_size = 28
+text = "SAIGA-12"
+
+[node name="RoleLabel" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity"]
+offset_left = 43.0
+offset_top = 36.0
+offset_right = 270.0
+offset_bottom = 58.0
+theme_override_colors/font_color = Color(0.66, 0.74, 0.74, 1)
+theme_override_font_sizes/font_size = 14
+text = "BREACH SHOTGUN  •  DEFENSE"
+
+[node name="Silhouette" type="TextureRect" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity"]
+anchor_right = 1.0
+offset_top = 62.0
+offset_bottom = 184.0
+grow_horizontal = 2
+texture = ExtResource("12_saiga_silhouette")
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Divider" type="ColorRect" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity"]
+anchor_right = 1.0
+offset_top = 190.0
+offset_bottom = 192.0
+grow_horizontal = 2
+color = Color(0.18, 0.72, 0.78, 0.5)
+
+[node name="Stats" type="GridContainer" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity"]
+anchor_right = 1.0
+offset_top = 202.0
+offset_bottom = 280.0
+grow_horizontal = 2
+theme_override_constants/h_separation = 24
+theme_override_constants/v_separation = 10
+columns = 2
+
+[node name="Ammo" type="HBoxContainer" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity/Stats"]
+layout_mode = 2
+theme_override_constants/separation = 7
+[node name="Icon" type="TextureRect" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity/Stats/Ammo"]
+custom_minimum_size = Vector2(24, 24)
+layout_mode = 2
+texture = ExtResource("13_magazine_icon")
+expand_mode = 1
+stretch_mode = 5
+[node name="Value" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity/Stats/Ammo"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "08 / 40"
+
+[node name="Mode" type="HBoxContainer" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity/Stats"]
+layout_mode = 2
+theme_override_constants/separation = 7
+[node name="Icon" type="TextureRect" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity/Stats/Mode"]
+custom_minimum_size = Vector2(24, 24)
+layout_mode = 2
+texture = ExtResource("14_fire_mode_icon")
+expand_mode = 1
+stretch_mode = 5
+[node name="Value" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity/Stats/Mode"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "AUTO"
+
+[node name="Handling" type="HBoxContainer" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity/Stats"]
+layout_mode = 2
+theme_override_constants/separation = 7
+[node name="Icon" type="TextureRect" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity/Stats/Handling"]
+custom_minimum_size = Vector2(24, 24)
+layout_mode = 2
+texture = ExtResource("15_role_icon")
+expand_mode = 1
+stretch_mode = 5
+[node name="Value" type="Label" parent="Root/Pages/LoadoutPage/Content/Weapons/SaigaButton/Identity/Stats/Handling"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "CLOSE DEFENSE"
 
 [node name="Selection" type="Label" parent="Root/Pages/LoadoutPage/Content"]
 layout_mode = 2
